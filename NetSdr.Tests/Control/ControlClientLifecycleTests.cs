@@ -12,6 +12,10 @@ public class ControlClientLifecycleTests
     static NetSdrControlClientOptions Fast(bool fault = true) =>
         new() { ResponseTimeout = TimeSpan.FromMilliseconds(150), FaultOnTimeout = fault };
 
+    // For tests where a request must time out and later ones must still be answered within the window.
+    static NetSdrControlClientOptions Patient() =>
+        new() { ResponseTimeout = TimeSpan.FromMilliseconds(400), FaultOnTimeout = false };
+
     const string ProductReply = "08 00 09 00 53 44 52 03";
     const string VersionReply = "06 00 03 00 11 02";
 
@@ -123,7 +127,7 @@ public class ControlClientLifecycleTests
     [Fact]
     public async Task Timeout_WithoutFault_LateReplyGoesToUnsolicited()
     {
-        await using var device = PipeDevice.Create(Fast(fault: false));
+        await using var device = PipeDevice.Create(Patient());
         var abandoned = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
         await Assert.ThrowsAsync<TimeoutException>(() => abandoned.WaitAsync(Limits.Test));
@@ -197,7 +201,7 @@ public class ControlClientLifecycleTests
     // The abandoned request
 
     [Fact]
-    public async Task LateReply_WithSamePairAsActiveRequest_StillGoesToUnsolicited()
+    public async Task ReplyMatchingActiveRequest_AnswersIt_EvenWhenAbandonedPairIsTheSame()
     {
         await using var device = PipeDevice.Create();
         using var cts = new CancellationTokenSource();
@@ -206,16 +210,71 @@ public class ControlClientLifecycleTests
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned.WaitAsync(Limits.Test));
 
+        // The protocol cannot tell the cancelled request's late reply from this request's own, so the first one
+        // answers it (the accepted cost); the wait for the old reply ends there.
         var next = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
-        await device.SendAsync(ProductReply);                        // the cancelled request's reply
-        var late = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
-        Assert.Equal((ReplyType.Response, (ushort)0x0009), (late.Type, late.Code));
-        Assert.False(next.IsCompleted);
-
-        await device.SendAsync("08 00 09 00 53 44 52 04");           // the real reply
-        Assert.Equal(0x04524453u, (await next.WaitAsync(Limits.Test)).Value);
+        await device.SendAsync(ProductReply);
+        Assert.Equal(0x03524453u, (await next.WaitAsync(Limits.Test)).Value);
         Assert.False(device.Client.Unsolicited.TryRead(out _));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DroppedReply_DoesNotBreakLaterRequestsForTheSameItem(bool byTimeout)
+    {
+        await using var device = PipeDevice.Create(Patient());
+        using var cts = new CancellationTokenSource();
+        var dropped = device.Client.GetAsync<ProductId>(cts.Token);
+        await device.ReadRequestAsync();
+        if (byTimeout)
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => dropped.WaitAsync(Limits.Test));
+        }
+        else
+        {
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dropped.WaitAsync(Limits.Test));
+        }
+
+        // The device never answers the dropped request. Every later request for the same item is still answered.
+        var second = device.Client.GetAsync<ProductId>();
+        await device.ReadRequestAsync();
+        await device.SendAsync(ProductReply);
+        Assert.Equal(0x03524453u, (await second.WaitAsync(Limits.Test)).Value);
+
+        var third = device.Client.GetAsync<ProductId>();
+        await device.ReadRequestAsync();
+        await device.SendAsync("08 00 09 00 53 44 52 04");
+        Assert.Equal(0x04524453u, (await third.WaitAsync(Limits.Test)).Value);
+        Assert.False(device.Client.Unsolicited.TryRead(out _));
+    }
+
+    [Fact]
+    public async Task ReplyToActiveRequest_OfAnotherItem_KeepsAbandonedPair()
+    {
+        await using var device = PipeDevice.Create();
+        using var cts = new CancellationTokenSource();
+        var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
+        await device.ReadRequestAsync();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned.WaitAsync(Limits.Test));
+
+        var version = device.Client.GetAsync<InterfaceVersion>();
+        await device.ReadRequestAsync();
+        await device.SendAsync(VersionReply);
+        Assert.Equal(529, (await version.WaitAsync(Limits.Test)).Version);
+
+        // The cancelled ProductId request is still awaited, so its reply does not fail an unrelated request.
+        var gain = device.Client.GetAsync<AfGain, byte>(0);
+        await device.ReadRequestAsync();
+        await device.SendAsync(ProductReply);
+        var late = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+        Assert.Equal((ushort)0x0009, late.Code);
+        Assert.False(gain.IsCompleted);
+        await device.SendAsync("06 00 48 00 00 0A");
+        Assert.Equal(10, (await gain.WaitAsync(Limits.Test)).Level);
     }
 
     [Fact]
@@ -275,14 +334,15 @@ public class ControlClientLifecycleTests
         Assert.Equal(((ushort)0x0003, RequestType.Get), (ex.Code, ex.RequestType));
         Assert.False(device.Client.Unsolicited.TryRead(out _));
 
-        // The pair is still abandoned: the first ProductId reply is the late one.
-        var next = device.Client.GetAsync<ProductId>();
+        // The pair is still abandoned: a ProductId reply is the late one and does not fail an unrelated request.
+        var next = device.Client.GetAsync<InterfaceVersion>();
         await device.ReadRequestAsync();
         await device.SendAsync(ProductReply);
-        await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+        var late = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+        Assert.Equal((ushort)0x0009, late.Code);
         Assert.False(next.IsCompleted);
-        await device.SendAsync("08 00 09 00 53 44 52 04");
-        Assert.Equal(0x04524453u, (await next.WaitAsync(Limits.Test)).Value);
+        await device.SendAsync(VersionReply);
+        Assert.Equal(529, (await next.WaitAsync(Limits.Test)).Version);
     }
 
     [Fact]
@@ -294,17 +354,17 @@ public class ControlClientLifecycleTests
         await device.SendAsync(VersionReply);
         await Assert.ThrowsAsync<NetSdrProtocolException>(() => failed.WaitAsync(Limits.Test));
 
-        var next = device.Client.GetAsync<ProductId>();
+        var next = device.Client.GetAsync<AfGain, byte>(0);
         await device.ReadRequestAsync();
         await device.SendAsync(ProductReply);                        // the failed request's real reply
         var foreign = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
         var late = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
         Assert.Equal((ushort)0x0003, foreign.Code);
         Assert.Equal((ushort)0x0009, late.Code);
-        Assert.False(next.IsCompleted);
+        Assert.False(next.IsCompleted);                              // it would have failed had the late reply not been recognised
 
-        await device.SendAsync("08 00 09 00 53 44 52 04");
-        Assert.Equal(0x04524453u, (await next.WaitAsync(Limits.Test)).Value);
+        await device.SendAsync("06 00 48 00 00 0A");
+        Assert.Equal(10, (await next.WaitAsync(Limits.Test)).Level);
     }
 
     [Fact]
@@ -316,16 +376,16 @@ public class ControlClientLifecycleTests
         await device.SendAsync("0A 40 20 00 00 90 C6 D5 00 00");     // RangeResponse to a Get
         await Assert.ThrowsAsync<NetSdrProtocolException>(() => failed.WaitAsync(Limits.Test));
 
-        var next = device.Client.GetAsync<ReceiverFrequency, byte>(0);
+        var next = device.Client.GetAsync<InterfaceVersion>();
         await device.ReadRequestAsync();
         await device.SendAsync("0A 00 20 00 00 90 C6 D5 00 00");     // the failed request's real reply
         await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
         var late = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
         Assert.Equal((ReplyType.Response, (ushort)0x0020), (late.Type, late.Code));
-        Assert.False(next.IsCompleted);
+        Assert.False(next.IsCompleted);                              // it would have failed had the late reply not been recognised
 
-        await device.SendAsync("0A 00 20 00 00 80 96 98 00 00");
-        Assert.Equal(10_000_000UL, (ulong)(await next.WaitAsync(Limits.Test)).Hz);
+        await device.SendAsync(VersionReply);
+        Assert.Equal(529, (await next.WaitAsync(Limits.Test)).Version);
     }
 
     // Faults and disposal

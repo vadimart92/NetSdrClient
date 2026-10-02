@@ -41,9 +41,10 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     // Written under _sync. _state is also read without the lock by IsConnected.
     private volatile State _state;
     private PendingRequest? _pending;
-    // The item and reply type of the one request the device may still answer after its caller stopped waiting
-    // (cancelled, or timed out without faulting the client). The reader recognises that late reply and keeps it
-    // from answering the request in flight.
+    // The item and reply type of the one request the device may still answer after its caller stopped waiting:
+    // it was cancelled after it was sent, it timed out without faulting the client, or a reply for another item or
+    // of the wrong type failed it. A reply with this pair that does not match the request in flight is taken for that
+    // late reply and goes to Unsolicited. A reply that does match the request in flight answers it and ends the wait.
     private (ushort Code, ReplyType Type)? _abandoned;
     private Exception? _fault;
     private Stream? _output;
@@ -610,26 +611,30 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         bool answers = false;
         lock (_sync)
         {
-            if (_abandoned is { } abandoned && abandoned.Code == code && abandoned.Type == type)
+            PendingRequest? active = _pending;
+            if (active is not null && active.Code == code && active.ExpectedType == type)
             {
-                // The late reply of a request nobody waits for. The protocol has no transaction identifiers, so
-                // even a request in flight for the same item cannot claim it: the device answers in order and
-                // the older request comes first. It is consumed, and the request in flight stays untouched.
+                // The reply answers the request in flight, even when the abandoned slot holds the same pair:
+                // the device is evidently answering that item again, so the wait for the old reply ends here.
+                _pending = null;
+                pending = active;
+                answers = true;
+                if (_abandoned is { } same && same.Code == code && same.Type == type)
+                {
+                    _abandoned = null;
+                }
+            }
+            else if (_abandoned is { } abandoned && abandoned.Code == code && abandoned.Type == type)
+            {
+                // The late reply of a request nobody waits for. It is consumed, and the request in flight stays untouched.
                 _abandoned = null;
             }
-            else
+            else if (active is not null)
             {
-                pending = _pending;
+                // Neither reply is expected. The device's real reply to the request that is about to fail may still follow.
                 _pending = null;
-                if (pending is not null)
-                {
-                    answers = pending.Code == code && pending.ExpectedType == type;
-                    if (!answers)
-                    {
-                        // The device's real reply to the request that is about to fail may still follow.
-                        _abandoned = (pending.Code, pending.ExpectedType);
-                    }
-                }
+                pending = active;
+                _abandoned = (active.Code, active.ExpectedType);
             }
         }
 
