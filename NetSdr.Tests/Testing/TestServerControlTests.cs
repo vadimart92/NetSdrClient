@@ -257,6 +257,22 @@ public class TestServerControlTests
     }
 
     [Fact]
+    public async Task FailingHandler_IsRecordedInHandlerErrors()
+    {
+        var failure = new InvalidOperationException("handler failure");
+        var (server, client) = await StartAsync(s => s.OnRequest<ProductId>(_ => throw failure));
+        await using var _ = server; await using var __ = client;
+        Assert.Empty(server.HandlerErrors);
+
+        await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>());
+        Assert.Same(failure, Assert.Single(server.HandlerErrors));
+
+        // A NAK the server chooses to send is not an error: nothing was thrown.
+        await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<InterfaceVersion>());
+        Assert.Single(server.HandlerErrors);
+    }
+
+    [Fact]
     public async Task ReplyTooLargeForOneFrame_IsAnsweredWithNak()
     {
         var (server, client) = await StartAsync(s =>

@@ -584,6 +584,10 @@ public class TestServerStreamingTests
         Assert.Empty(c.Packets);
         // The rejected Run was not stored, and the server still works.
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ReceiverState>());
+        // Both rejections came from the server refusing the target, and it recorded why. The Get above is a NAK it
+        // chose to send.
+        Assert.Equal(2, server.HandlerErrors.Count);
+        Assert.All(server.HandlerErrors, error => Assert.IsType<ArgumentException>(error));
     }
 
     [Fact]

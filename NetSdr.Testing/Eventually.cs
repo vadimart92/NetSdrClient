@@ -11,10 +11,18 @@ public static class Eventually
     /// <summary>Completes when <paramref name="condition"/> returns <see langword="true"/>, checking every 10 ms.</summary>
     /// <param name="condition">The condition to poll.</param>
     /// <param name="timeout">How long to wait; 5 seconds when omitted.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="timeout"/> is zero, negative or <see cref="Timeout.InfiniteTimeSpan"/>: a wait in a test must end.
+    /// </exception>
     /// <exception cref="TimeoutException">The condition did not become true within <paramref name="timeout"/>.</exception>
     public static async Task ThatAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(condition);
+        if (timeout is { } given && given <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout), given, "The timeout must be positive; an infinite wait would hang the test.");
+        }
 
         TimeSpan limit = timeout ?? DefaultTimeout;
         var clock = Stopwatch.StartNew();

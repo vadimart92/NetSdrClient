@@ -24,10 +24,11 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _clientConnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    // The next four are guarded by _sync. Handlers always run outside it, so a handler may call back into the server.
+    // The next five are guarded by _sync. Handlers always run outside it, so a handler may call back into the server.
     private readonly Dictionary<ushort, Func<ControlRequest, ControlReply>> _handlers = [];
     private readonly Dictionary<ushort, List<byte[]>> _state = [];
     private readonly List<ControlRequest> _received = [];
+    private readonly List<Exception> _handlerErrors = [];
     private Connection? _client;
 
     private TcpListener? _listener;
@@ -48,6 +49,24 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             lock (_sync)
             {
                 return _received.ToArray();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A snapshot of the exceptions that made the server answer a request with a NAK, oldest first: one thrown by a
+    /// handler, or by the server itself while it handled the request, for example for a stream target it cannot use.
+    /// The NAK keeps the client going, so a failing handler would otherwise leave no trace; a test that does not
+    /// expect a NAK can check that this is empty. A NAK the server sends on purpose (no value stored, a
+    /// <see cref="ControlReply.Nak"/> returned by a handler) is not recorded.
+    /// </summary>
+    public IReadOnlyList<Exception> HandlerErrors
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _handlerErrors.ToArray();
             }
         }
     }
@@ -80,7 +99,8 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     /// <summary>
     /// Sets the handler for the item <typeparamref name="T"/>, replacing an earlier one for the same code. It runs
     /// instead of the default behaviour: for a Set <see cref="ControlRequest{T}.Item"/> holds the item, for a Get or
-    /// GetRange the key is read with <see cref="ControlRequest{T}.Key{TKey}"/>. An exception from the handler is answered with a NAK.
+    /// GetRange the key is read with <see cref="ControlRequest{T}.Key{TKey}"/>. An exception from the handler is answered with a NAK
+    /// and recorded in <see cref="HandlerErrors"/>.
     /// </summary>
     public void OnRequest<T>(Func<ControlRequest<T>, ControlReply> handler) where T : struct, IControlItem<T>
     {
@@ -93,7 +113,8 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
     /// <summary>
     /// Sets the handler for an item code, replacing an earlier one for the same code. It runs on the connection's
-    /// thread, one request at a time. An exception from the handler is answered with a NAK.
+    /// thread, one request at a time. An exception from the handler is answered with a NAK and recorded in
+    /// <see cref="HandlerErrors"/>.
     /// </summary>
     public void OnRequest(ushort code, Func<ControlRequest, ControlReply> handler)
     {
@@ -362,9 +383,15 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
                 replyFrame = reply.ToFrame(in request);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // A failing handler, or a reply that cannot be encoded, is the device rejecting the request.
+            // A failing handler, or a reply that cannot be encoded, is the device rejecting the request. The
+            // client only sees the NAK, so the cause is kept for the test.
+            lock (_sync)
+            {
+                _handlerErrors.Add(ex);
+            }
+
             reply = ControlReply.Nak;
             replyFrame = ControlReply.NakFrameBytes;
             afterReply = null;

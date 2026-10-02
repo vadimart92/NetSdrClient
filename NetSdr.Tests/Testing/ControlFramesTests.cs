@@ -56,6 +56,16 @@ public class ControlFramesTests
     }
 
     [Fact]
+    public async Task Eventually_NonPositiveOrInfiniteTimeout_Throws()
+    {
+        foreach (TimeSpan timeout in new[] { TimeSpan.Zero, TimeSpan.FromSeconds(-1), Timeout.InfiniteTimeSpan })
+        {
+            var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Eventually.ThatAsync(() => true, timeout));
+            Assert.Equal("timeout", ex.ParamName);
+        }
+    }
+
+    [Fact]
     public async Task Eventually_TimesOut() =>
         await Assert.ThrowsAsync<TimeoutException>(() => Eventually.ThatAsync(() => false, TimeSpan.FromMilliseconds(50)));
 }
