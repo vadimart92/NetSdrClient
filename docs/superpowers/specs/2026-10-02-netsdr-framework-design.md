@@ -4,6 +4,8 @@
 Статус: узгоджено. Розділ 11 (приклад Vega) і окремий `NetSdr.Testing` додано того ж дня,
 чекають на огляд письмової версії. Розділ 11 доповнено версіями v1/v2 згідно зі спекою
 `2026-10-02-netsdr-device-identification-design.md`.
+Узгоджено з реалізацією 2026-10-02 (фінальний огляд гілки): розділи 2.1, 2.2, 4.1, 5.1, 5.2,
+6.2, 7.1, 7.2, 9 і 11.3 приведено до збудованого коду.
 
 ## 1. Мета і межі
 
@@ -68,8 +70,10 @@ flowchart LR
 ```
 NetSdr.sln
 NetSdr/                     бібліотека, net10.0, без залежностей поза BCL
+  (корінь)                  NetSdrException, NetSdrProtocolException, NetSdrNakException;
+                            простір імен NetSdr, бо їх кидають Framing, Control і Data
   Framing/                  FrameHeader, RequestType, ReplyType
-  Control/                  NetSdrControlClient, options, ControlItemMessage, винятки
+  Control/                  NetSdrControlClient, options, ControlItemMessage
   Data/                     NetSdrDataReceiver, options, DataPacketInfo, SampleFormat, DataRate
   Items/                    IControlItem<T>, UInt40, стандартні структури
 NetSdr.Testing/             бібліотека, net10.0, залежить лише від NetSdr, без xUnit
@@ -106,7 +110,7 @@ sequenceDiagram
     App->>DR: SetReceiveBuffer(200 ms, DataRate.BytesPerSecond(...))
     App->>CC: SetAsync(new OutputSampleRate(0, 500_000))
     App->>CC: SetAsync(new ReceiverFrequency(0, 14_010_000))
-    App->>CC: SetAsync(DataOutputUdpAddress.For(DR.LocalEndPoint))
+    App->>CC: SetAsync(DataOutputUdpAddress.For(new IPEndPoint(CC.LocalEndPoint.Address, DR.LocalEndPoint.Port)))
     App->>CC: SetAsync(ReceiverState.Start(complex: true, bits24: true))
     CC->>Dev: [08 00] [18 00] [80 02 80 00]
     Dev-->>CC: echo
@@ -118,6 +122,12 @@ sequenceDiagram
     App->>DR: Dispose()
     App->>CC: DisposeAsync()
 ```
+
+`Bind(0)` прив'язує приймач до всіх інтерфейсів, тому `DR.LocalEndPoint.Address` це
+0.0.0.0, а реальний пристрій на таку адресу нічого не надішле. Для 0x00C5 застосунок бере
+адресу з'єднання керування: `CC.LocalEndPoint.Address` це адреса, за якою пристрій бачить
+клієнта, а порт це порт приймача. Лише тестовий сервер читає 0.0.0.0 у 0x00C5 як "IP
+клієнта" (7.3).
 
 ## 3. Кадрування (`NetSdr.Framing`)
 
@@ -193,8 +203,11 @@ public interface IControlItem<TSelf> where TSelf : struct, IControlItem<TSelf>
 
 Для пункту змінної довжини структура може містити `string` або масив і перевизначає
 `Read`. `Write` за замовчуванням для такої структури кине `ArgumentException` із
-`MemoryMarshal`, і це прийнятно, бо всі такі пункти лише читаються. Якщо колись знадобиться
-записувати змінну довжину, структура перевизначає `GetSize` і `Write`.
+`MemoryMarshal`, і це прийнятно для пунктів, які лише читаються (`StatusCodes`,
+`FrequencyRanges`). Якщо пункт треба записувати, структура перевизначає `GetSize` і `Write`:
+так роблять `TargetName` і `SerialNumber` (ASCII і завершальний нуль, довжина тексту плюс 1;
+символ понад 0x7F у `Write` кидає `ArgumentException`), щоб їх можна було класти в тестовий
+сервер через `Preload`, і `FpgaConfiguration` для Set-форми.
 
 ```mermaid
 classDiagram
@@ -313,6 +326,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     public ChannelReader<ControlItemMessage> Unsolicited { get; }
     public Task Completion { get; }
     public bool IsConnected { get; }
+    public IPEndPoint? LocalEndPoint { get; }    // кінці TCP-сокета після ConnectAsync;
+    public IPEndPoint? RemoteEndPoint { get; }   // null до підключення і для клієнта на pipe (internal Attach)
     public ValueTask DisposeAsync();
 }
 
@@ -336,6 +351,11 @@ public readonly struct ControlItemMessage
 
 `SendAsync` це сирий шлях для коду без структури і для експериментів. Відповідь
 копіюється в `ControlItemMessage`.
+
+`LocalEndPoint` і `RemoteEndPoint` читаються із сокета під час `ConnectAsync` і лишаються
+доступними після відключення. IPv4-адреса, яку двомодовий сокет повідомляє як
+IPv4-mapped IPv6, повертається як IPv4, бо `DataOutputUdpAddress.For` приймає лише IPv4.
+`LocalEndPoint.Address` це адреса для 0x00C5 (див. 2.2).
 
 ### 5.2. Внутрішня будова
 
@@ -387,6 +407,19 @@ flowchart TB
   завершується `TimeoutException`, сокет закривається. Причина: без ідентифікаторів
   запізніла відповідь могла б закрити наступний запит із тим самим кодом. Пристрій, що
   не відповідає, вважається втраченим, застосунок створює новий клієнт.
+- Покинутий запит. Запит, що завершився без відповіді, клієнт запам'ятовує як пару (код,
+  тип відповіді) в одному слоті: новий покинутий запит замінює попередній. Це запит,
+  скасований після відправлення; запит із таймаутом при `FaultOnTimeout = false`; запит,
+  який провалила відповідь із чужим кодом або чужого типу. Запит, скасований до
+  відправлення, нічого не залишає. Відповідь, що збігається з активним запитом,
+  завершує його і очищає слот, якщо в слоті та сама пара. Відповідь, що збігається лише зі
+  слотом, це запізніла відповідь покинутого запиту: вона йде в `Unsolicited`, слот
+  очищається, активний запит чекає далі. NAK не має коду пункту, тому завжди дістається
+  активному запиту і слота не чіпає; без активного запиту він іде в `Unsolicited` і
+  очищає слот. Отже, запізнілий NAK на покинутий запит провалює наступний. Прийнята ціна:
+  запит того самого пункту одразу після покинутого може отримати запізнілу відповідь
+  замість власної, а при `FaultOnTimeout = false` повільний пристрій може тримати щільний
+  цикл запитів одного пункту на одну відповідь позаду.
 - Запис: заголовок + код + `T.Write` в один орендований буфер, один `WriteAsync`.
   Для `GetAsync<T, TKey>` payload це `MemoryMarshal.AsBytes` від ключа.
 - `Unsolicited` обмежений, при переповненні викидається найстаріше. Повідомлення
@@ -465,10 +498,13 @@ flowchart TB
     L4 -- ні --> L5[seq = байти 2..3]
     L5 --> L6{seq == 0 або перший пакет?}
     L6 -- так --> L7[gap = 0, IsCaptureStart]
-    L6 -- ні --> L8["gap = відстань(expected, seq)"]
-    L8 --> L9[Lost += gap]
+    L6 -- ні --> L8["d = відстань(expected, seq)"]
+    L8 --> L8a{"d > 0xFFFF - 1024?"}
+    L8a -- "так: запізнілий" --> L8b[gap = 0, expected і Lost не змінюються]
+    L8a -- ні --> L9["gap = d, Lost += gap"]
     L7 --> L10
     L9 --> L10["expected = seq == 0xFFFF ? 1 : seq + 1"]
+    L8b --> L11
     L10 --> L11[Format за довжиною: 1028/516 Int16, 1444/388 Int24, інакше Unknown]
     L11 --> L12["handler(in info, buf[4..n])"]
     L12 --> L13{виняток?}
@@ -483,6 +519,18 @@ flowchart TB
 нуля: `seq >= expected ? seq - expected : seq + 0xFFFF - expected`. Якщо перший
 отриманий пакет має ненульовий номер, приймач вважає, що приєднався до потоку
 посередині, і розрив не рахує.
+
+Запізнілий пакет. Номер має цикл у 0xFFFF пакетів, тому за номером не відрізнити пакет
+далеко позаду від пакета далеко попереду, і приймач проводить межу вікном
+`ReorderWindow = 1024`: пакет, що менш як на 1024 позаду очікуваного (відстань
+`> 0xFFFF - 1024`), вважається переставленим або продубльованим. Він доставляється з
+`GapBefore = 0`, а `Lost` і очікуваний номер не змінюються. 1024 пакети це близько 130 мс при 7,8 тисячі пакетів на секунду, значно
+більше за переставляння в мережі. Будь-яка інша ненульова відстань це розрив уперед:
+`GapBefore = d`, `Lost += d`, `expected = Next(seq)`, хоч яким великим він буде, тож
+простій на десятки тисяч пакетів не ховається. Ціна: стрибок більший за приблизно повний
+цикл (65535 мінус 1024 пакети) приймач прийме за запізнілий пакет, а захоплення,
+перезапущене, коли його пакет 0 загубився, виглядає як розрив уперед відносно попереднього
+захоплення (якщо це важливо, на кожне захоплення потрібен новий приймач).
 
 Jumbo frames: поле довжини 13-бітне, максимум 8194 через спеціальний нуль. Пристрій із
 датаграмами понад 8194 байти не може описати їх стандартним заголовком. Для нього
@@ -521,6 +569,7 @@ public sealed class NetSdrTestServer : IAsyncDisposable
     public void OnRequest(ushort code, Func<ControlRequest, ControlReply> handler);
     public void Preload<T>(T item) where T : struct, IControlItem<T>;
     public IReadOnlyList<ControlRequest> Received { get; }
+    public IReadOnlyList<Exception> HandlerErrors { get; }   // винятки обробників, за які сервер відповів NAK
 
     public Task SendUnsolicitedAsync<T>(T item) where T : struct, IControlItem<T>;
     public Task SendUnsolicitedAsync(ushort code, ReadOnlyMemory<byte> payload);
@@ -557,15 +606,16 @@ public readonly struct ControlReply
     public ControlReply After(TimeSpan delay);
 }
 
-public delegate void FillSamples(Span<byte> destination, long firstSampleIndex);
+public delegate void FillSamples(Span<byte> destination, long firstSampleIndex, SampleFormat format);
 
 public enum Pacing { RealTime, Unthrottled }
 
 public sealed class StreamOptions
 {
-    public SampleFormat Format { get; set; } = SampleFormat.Int16;
-    public int PayloadSize { get; set; } = 1024;    // байтів семплів у пакеті
-    public double SampleRate { get; set; } = 200_000;
+    public SampleFormat? Format { get; set; }       // null: зі стану пристрою, інакше Int16
+    public int? PayloadSize { get; set; }           // байтів семплів у пакеті; null: за форматом і розміром
+                                                    // пакета 0x00C4, 1024/512 (16 біт) або 1440/384 (24 біти)
+    public double? SampleRate { get; set; }         // null: зі стану (0x00B8), інакше 200_000
     public int Channels { get; set; } = 1;
     public Pacing Pacing { get; set; } = Pacing.RealTime;   // або Unthrottled
     public FillSamples Source { get; set; } = SampleSources.Counter();
@@ -575,7 +625,7 @@ public sealed class StreamOptions
 public static class SampleSources
 {
     public static FillSamples FromBuffer(ReadOnlyMemory<byte> samples);   // зациклений буфер
-    public static FillSamples Tone(double frequencyHz, double sampleRate, double amplitude, SampleFormat format);
+    public static FillSamples Tone(double frequencyHz, double sampleRate, double amplitude);
     public static FillSamples Counter();   // I = індекс семпла, Q = ~індекс; детерміновано для assert-ів
 }
 
@@ -586,8 +636,22 @@ public static class ControlFrames
     public static byte[] Request<T>(RequestType type, in T item) where T : struct, IControlItem<T>;
     public static byte[] Reply<T>(ReplyType type, in T item) where T : struct, IControlItem<T>;
     public static byte[] Encode(byte type, ushort code, ReadOnlySpan<byte> payload);
+    public static T Decode<T>(ReadOnlySpan<byte> frame) where T : struct, IControlItem<T>;
+        // кадр із заголовком у структуру; ArgumentException для чужого коду або довжини
+}
+
+// Очікування стану в асинхронних тестах замість фіксованих пауз.
+public static class Eventually
+{
+    public static Task ThatAsync(Func<bool> condition, TimeSpan? timeout = null);
+        // опитує кожні 10 мс, за замовчуванням 5 с; TimeoutException при вичерпанні;
+        // ArgumentOutOfRangeException для нульового, від'ємного і нескінченного таймауту
 }
 ```
+
+`StreamOptions.Format`, `PayloadSize` і `SampleRate` nullable: `null` означає "зі стану
+пристрою або за замовчуванням", задане значення має пріоритет над станом. Формат семплів
+`FillSamples` отримує від сервера, тому `Tone` не має параметра формату.
 
 ### 7.2. Поведінка керування
 
@@ -612,6 +676,9 @@ flowchart TB
 - Обробник за кодом має пріоритет над станом. `OnRequest<T>` реєструє обробник для
   `T.Code`; для Set `Item` читається через `T.Read`, для Get `Item` дорівнює `default`,
   а ключ доступний через `Key<TKey>()`.
+- Виняток з обробника (і з кодування його відповіді) сервер перетворює на NAK, а сам виняток
+  записує в `HandlerErrors`: клієнт бачить лише NAK, тож без запису тест, що чекає NAK,
+  міг би пройти з неправильної причини. NAK, який сервер шле свідомо, нічого не записує.
 - Стан заповнюється при Set і через `Preload<T>` до підключення.
 - Усі запити накопичуються в `Received` для перевірок. Список потокобезпечний: сервер
   додає з потоку з'єднання, тест читає знімок.
@@ -683,6 +750,8 @@ flowchart TB
 - 16 і 24 біти, великі й малі пакети, формат визначено правильно.
 - Розрив через `DropPacket`: `Lost` і `GapBefore` збігаються з кількістю пропущених.
 - Перехід 0xFFFF на 1 без фальшивого розриву; нуль посередині потоку це новий старт.
+- Запізнілий пакет у межах вікна 1024 не рахується втратою, пакет, що наздоганяє пропущені
+  (0, 1, 4, 5, 2, 3), дає `Lost == 2`; стрибок уперед на 40000 пакетів рахується втратою.
 - Чужий заголовок і неправильна довжина відкидаються; з `ValidateLength = false` jumbo
   на 9000 байт доставляється.
 - `RemoteAddress` відкидає датаграми з іншої адреси.
@@ -806,7 +875,8 @@ public sealed class VegaV2Receiver : VegaReceiverBase   // BoardTemperatureV2
 }
 
 public abstract record VegaEvent;
-public sealed record TemperatureReport(TemperatureSensor Sensor, double Celsius) : VegaEvent;
+public sealed record TemperatureReport(TemperatureSensor Sensor, double Celsius, byte? Status = null) : VegaEvent;
+// Status: байт статусу з події v2 (спека ідентифікації, 6.1); у v1 його немає, тому null
 public sealed record OverloadDetected(byte Channel, OverloadFlags Flags) : VegaEvent;
 ```
 

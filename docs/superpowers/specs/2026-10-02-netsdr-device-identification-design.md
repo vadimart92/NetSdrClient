@@ -1,7 +1,9 @@
 # NetSdr: ідентифікація пристрою і вибір клієнта
 
 Дата: 2026-10-02
-Статус: узгоджено в обговоренні, чекає на огляд письмової версії
+Статус: узгоджено в обговоренні, чекає на огляд письмової версії.
+Узгоджено з реалізацією 2026-10-02 (фінальний огляд гілки): розділ 8 називає шість кодів
+стандартних проб, не сім.
 Базується на: `2026-10-02-netsdr-framework-design.md` (далі "базова спека")
 
 ## 1. Мета і межі
@@ -440,6 +442,7 @@ public sealed class VegaEmulator : IAsyncDisposable
 | Таймаут, обрив, `NetSdrProtocolException` під час проб | летить назовні з `ReadAsync`; `ConnectAsync` закриває клієнт, `AttachAsync` ні |
 | Жодне правило не збіглося, дефолту немає | `DeviceNotRecognizedException` з `Identity` і `Candidates`; `ConnectAsync` закриває клієнт |
 | Фабрика кинула виняток | пролітає як є; `ConnectAsync` закриває клієнт |
+| Фабрика повернула `null` | `InvalidOperationException` з назвою реєстрації (або "default"); `ConnectAsync` закриває клієнт, `AttachAsync` ні |
 | `Get<TFact>` без факту | `KeyNotFoundException` з іменем типу |
 | `Register` або `Default` паралельно з `ConnectAsync` | не підтримується, поведінка не визначена; у документації явно |
 | Vega: неправильний ключ | `NetSdrNakException` з кодом 0x8000 з проби, клієнт закрито |
@@ -450,10 +453,11 @@ public sealed class VegaEmulator : IAsyncDisposable
 Усі інтеграційні тести через `NetSdrTestServer` на loopback, TDD.
 
 **Identification**
-- Сервер із `Preload` усіх семи пунктів: кожне поле паспорта заповнене, `Unsupported`
-  порожній, 529 дає `5.29`, ID 3 дає `Fpga`, не версію.
-- Голий сервер: усі поля `null`, `Unsupported` містить сім кодів, `Model == Unknown`,
-  винятку немає.
+- Сервер із `Preload` усіх шести кодів (0x0001, 0x0002, 0x0003, 0x0004, 0x0009, 0x000A):
+  кожне поле паспорта заповнене, `Unsupported` порожній, 529 дає `5.29`, ID 3 дає `Fpga`,
+  не версію.
+- Голий сервер: усі поля `null`, `Unsupported` містить шість кодів (0x0001, 0x0002, 0x0003,
+  0x0004, 0x0009, 0x000A), `Model == Unknown`, винятку немає.
 - `Model` за іменем: `SDR-IP`, `NetSDR`, `CloudIQ`, `Cloud-IQ`, `CloudSDR`, `netsdr`
   у нижньому регістрі, невідоме ім'я.
 - 0x0004 з NAK лише на ID 2: `HardwareVersion == null`, 0x0004 не в `Unsupported`.
