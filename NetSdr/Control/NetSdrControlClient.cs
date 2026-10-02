@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Pipelines;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using NetSdr.Framing;
@@ -33,18 +35,39 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly TimeSpan _responseTimeout;
+    private readonly bool _faultOnTimeout;
 
     // Written under _sync. _state is also read without the lock by IsConnected.
     private volatile State _state;
     private PendingRequest? _pending;
+    // The item and reply type of the one request the device may still answer after its caller stopped waiting
+    // (cancelled, or timed out without faulting the client). The reader recognises that late reply and keeps it
+    // from answering the request in flight.
+    private (ushort Code, ReplyType Type)? _abandoned;
     private Exception? _fault;
     private Stream? _output;
     private Task? _readLoop;
 
-    /// <exception cref="ArgumentOutOfRangeException"><see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1, or
+    /// <see cref="NetSdrControlClientOptions.ResponseTimeout"/> is neither positive (up to <see cref="int.MaxValue"/> milliseconds)
+    /// nor <see cref="Timeout.InfiniteTimeSpan"/>.
+    /// </exception>
     public NetSdrControlClient(NetSdrControlClientOptions? options = null)
     {
         options ??= new NetSdrControlClientOptions();
+        TimeSpan timeout = options.ResponseTimeout;
+        if (timeout != Timeout.InfiniteTimeSpan && (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                timeout,
+                "ResponseTimeout must be positive (at most Int32.MaxValue milliseconds) or Timeout.InfiniteTimeSpan.");
+        }
+
+        _responseTimeout = timeout;
+        _faultOnTimeout = options.FaultOnTimeout;
         _unsolicited = Channel.CreateBounded<ControlItemMessage>(new BoundedChannelOptions(options.UnsolicitedCapacity)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -67,12 +90,58 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <summary>Whether the client is attached to a connection and has not faulted or been disposed.</summary>
     public bool IsConnected => _state == State.Connected;
 
+    /// <summary>Connects to the device over TCP and starts the client.</summary>
+    /// <param name="host">Host name or IP address of the device.</param>
+    /// <param name="port">TCP port of the control channel; the device listens on 50000 by default.</param>
+    /// <exception cref="InvalidOperationException">The client is already connected or has faulted.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    public async Task ConnectAsync(string host, int port = 50000, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ThrowIfCannotAttach();
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(host, port, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+
+        AttachSocket(socket);
+    }
+
+    /// <summary>Connects to the device over TCP and starts the client.</summary>
+    /// <exception cref="InvalidOperationException">The client is already connected or has faulted.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    public async Task ConnectAsync(IPEndPoint endPoint, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(endPoint);
+        ThrowIfCannotAttach();
+
+        var socket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(endPoint, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+
+        AttachSocket(socket);
+    }
+
     /// <summary>Sets a control item and returns the item the device echoes back.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
     public Task<T> SetAsync<T>(T item, CancellationToken ct = default) where T : struct, IControlItem<T>
     {
         var pending = new PendingRequest<T>(RequestType.Set);
-        RentedFrame frame = RentFrame(RequestType.Set, T.Code, T.GetSize(in item));
+        RentedFrame frame = RentFrame(RequestType.Set, T.Code, T.GetSize(in item), nameof(item));
         try
         {
             T.Write(in item, frame.Payload);
@@ -88,17 +157,19 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
     /// <summary>Requests a control item that needs no key.</summary>
     public Task<T> GetAsync<T>(CancellationToken ct = default) where T : struct, IControlItem<T> =>
-        RequestAsync<T>(RequestType.Get, default, ct);
+        RequestAsync<T>(RequestType.Get, default, null, ct);
 
     /// <summary>Requests a control item identified by <paramref name="key"/>, sent as its raw little-endian bytes (for example a channel number).</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     public Task<T> GetAsync<T, TKey>(TKey key, CancellationToken ct = default)
         where T : struct, IControlItem<T> where TKey : unmanaged =>
-        RequestAsync<T>(RequestType.Get, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), ct);
+        RequestAsync<T>(RequestType.Get, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
 
     /// <summary>Requests the range of a control item; the device answers with a <c>RangeResponse</c>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     public Task<T> GetRangeAsync<T, TKey>(TKey key, CancellationToken ct = default)
         where T : struct, IControlItem<T> where TKey : unmanaged =>
-        RequestAsync<T>(RequestType.GetRange, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), ct);
+        RequestAsync<T>(RequestType.GetRange, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
 
     /// <summary>
     /// Sends a request for any item code and returns the device's reply uninterpreted. The reply type is
@@ -116,16 +187,20 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
 
         var pending = new PendingRawRequest(code, type);
-        RentedFrame frame = RentFrame(type, code, payload.Length);
+        RentedFrame frame = RentFrame(type, code, payload.Length, nameof(payload));
         payload.Span.CopyTo(frame.Payload);
         return ExchangeAsync(pending, pending.Reply, frame, ct);
     }
 
-    /// <summary>Stops the client and closes the connection. Fails the request in flight with <see cref="ObjectDisposedException"/>.</summary>
+    /// <summary>
+    /// Stops the client and closes the connection. Fails the request in flight with <see cref="ObjectDisposedException"/>.
+    /// A client that had already faulted keeps its fault in <see cref="Completion"/>.
+    /// </summary>
     public ValueTask DisposeAsync()
     {
         PendingRequest? pending;
         Task? readLoop;
+        Exception? fault;
         lock (_sync)
         {
             if (_state == State.Disposed)
@@ -133,13 +208,14 @@ public sealed class NetSdrControlClient : IAsyncDisposable
                 return new ValueTask(_disposed.Task);
             }
 
+            fault = _state == State.Faulted ? _fault : null;
             _state = State.Disposed;
             pending = _pending;
             _pending = null;
             readLoop = _readLoop;
         }
 
-        return DisposeCoreAsync(pending, readLoop);
+        return DisposeCoreAsync(fault, pending, readLoop);
     }
 
     /// <summary>Starts the read loop on an established connection.</summary>
@@ -152,27 +228,54 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         lock (_sync)
         {
-            switch (_state)
-            {
-                case State.NotConnected:
-                    break;
-                case State.Disposed:
-                    throw new ObjectDisposedException(nameof(NetSdrControlClient));
-                default:
-                    throw new InvalidOperationException("The client is already attached to a connection.");
-            }
-
+            ThrowIfCannotAttach();
             _output = output;
             _state = State.Connected;
             _readLoop = Task.Run(() => ReadLoopAsync(input));
         }
     }
 
-    private async ValueTask DisposeCoreAsync(PendingRequest? pending, Task? readLoop)
+    /// <summary>Attaches an established connection. Closes it if the client cannot take it.</summary>
+    private void AttachSocket(Socket socket)
+    {
+        var stream = new NetworkStream(socket, ownsSocket: true);
+        try
+        {
+            Attach(PipeReader.Create(stream), stream);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    /// <exception cref="InvalidOperationException">The client is already attached or has faulted.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    private void ThrowIfCannotAttach()
+    {
+        lock (_sync)
+        {
+            switch (_state)
+            {
+                case State.NotConnected:
+                    return;
+                case State.Disposed:
+                    throw new ObjectDisposedException(nameof(NetSdrControlClient));
+                case State.Faulted:
+                    throw new InvalidOperationException("The client has faulted; create a new client.", _fault);
+                default:
+                    throw new InvalidOperationException("The client is already attached to a connection.");
+            }
+        }
+    }
+
+    private async ValueTask DisposeCoreAsync(Exception? fault, PendingRequest? pending, Task? readLoop)
     {
         try
         {
-            Finish(error: null);
+            // A client that faulted before the disposal keeps its fault, whichever of the two finishes first.
+            Finish(fault);
         }
         finally
         {
@@ -192,18 +295,19 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
     }
 
-    private Task<T> RequestAsync<T>(RequestType type, ReadOnlySpan<byte> payload, CancellationToken ct)
+    /// <param name="payloadName">The public parameter the payload comes from, for the size error; <see langword="null"/> when there is none.</param>
+    private Task<T> RequestAsync<T>(RequestType type, ReadOnlySpan<byte> payload, string? payloadName, CancellationToken ct)
         where T : struct, IControlItem<T>
     {
         var pending = new PendingRequest<T>(type);
-        RentedFrame frame = RentFrame(type, T.Code, payload.Length);
+        RentedFrame frame = RentFrame(type, T.Code, payload.Length, payloadName);
         payload.CopyTo(frame.Payload);
         return ExchangeAsync(pending, pending.Reply, frame, ct);
     }
 
     /// <summary>
     /// Waits for the request's turn, writes the frame and waits for the reply. Takes ownership of
-    /// <paramref name="frame"/> and returns it to the pool when done.
+    /// <paramref name="frame"/> and returns it to the pool as soon as it has been written.
     /// </summary>
     private async Task<TResult> ExchangeAsync<TResult>(
         PendingRequest pending, Task<TResult> reply, RentedFrame frame, CancellationToken ct)
@@ -211,30 +315,113 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         try
         {
             await _gate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            frame.Return();
+            throw;
+        }
+
+        try
+        {
+            await SendFrameAsync(pending, frame, ct).ConfigureAwait(false);
+            return await AwaitReplyAsync(pending, reply, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="pending"/> the request in flight and writes <paramref name="frame"/>, which it then returns to the pool.
+    /// A write failure faults the client, which fails the pending request.
+    /// </summary>
+    /// <exception cref="OperationCanceledException">The token was cancelled before anything was written.</exception>
+    private async Task SendFrameAsync(PendingRequest pending, RentedFrame frame, CancellationToken ct)
+    {
+        try
+        {
+            // The token may have been cancelled just as the request's turn came.
+            ct.ThrowIfCancellationRequested();
+            Stream output = Register(pending);
             try
             {
-                Stream output = Register(pending);
-                try
-                {
-                    // Never cancelled: an interrupted write would leave half a frame on the wire.
-                    await output.WriteAsync(frame.Memory, CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    // Faulting fails the pending request, so awaiting the reply below throws the failure.
-                    Fault(ex as IOException ?? new IOException("Failed to write a request to the device.", ex));
-                }
-
-                return await reply.ConfigureAwait(false);
+                // Never cancelled: an interrupted write would leave half a frame on the wire.
+                await output.WriteAsync(frame.Memory, CancellationToken.None).ConfigureAwait(false);
             }
-            finally
+            catch (Exception ex)
             {
-                _gate.Release();
+                Fault(ex as IOException ?? new IOException("Failed to write a request to the device.", ex));
             }
         }
         finally
         {
             frame.Return();
+        }
+    }
+
+    /// <summary>
+    /// Waits for the reply to the request in flight. On a timeout or cancellation the request is dropped:
+    /// the client faults if it was a timeout and <see cref="NetSdrControlClientOptions.FaultOnTimeout"/> is set,
+    /// otherwise the request is remembered as abandoned so its late reply cannot answer a later request.
+    /// </summary>
+    private async Task<TResult> AwaitReplyAsync<TResult>(PendingRequest pending, Task<TResult> reply, CancellationToken ct)
+    {
+        try
+        {
+            return await reply.WaitAsync(_responseTimeout, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            bool timedOut = ex is TimeoutException;
+            bool faultClient = timedOut && _faultOnTimeout;
+            if (!TryAbandon(pending, remember: !faultClient))
+            {
+                // The reader, a fault or the disposal took the request at the same moment and completes it
+                // right away, so the outcome is theirs, not the timeout's.
+                return await reply.ConfigureAwait(false);
+            }
+
+            if (!timedOut)
+            {
+                throw;
+            }
+
+            var timeout = new TimeoutException(
+                $"The device did not reply to the {pending.RequestType} request for item 0x{pending.Code:X4} " +
+                $"within {_responseTimeout.TotalMilliseconds:0} ms.");
+            if (faultClient)
+            {
+                // The terminal state is complete before the caller learns about the timeout.
+                Fault(timeout);
+            }
+
+            throw timeout;
+        }
+    }
+
+    /// <summary>
+    /// Withdraws <paramref name="pending"/> as the request in flight. Returns <see langword="false"/> when something
+    /// else has already taken it, which then owns its outcome.
+    /// </summary>
+    /// <param name="remember">Record the request as abandoned.</param>
+    private bool TryAbandon(PendingRequest pending, bool remember)
+    {
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_pending, pending))
+            {
+                return false;
+            }
+
+            _pending = null;
+            if (remember)
+            {
+                _abandoned = (pending.Code, pending.ExpectedType);
+            }
+
+            return true;
         }
     }
 
@@ -258,22 +445,13 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
     }
 
-    private PendingRequest? TakePending()
-    {
-        lock (_sync)
-        {
-            PendingRequest? pending = _pending;
-            _pending = null;
-            return pending;
-        }
-    }
-
-    private static RentedFrame RentFrame(RequestType type, ushort code, int payloadSize)
+    /// <param name="paramName">The public parameter the payload comes from, named in the error when it is too large.</param>
+    private static RentedFrame RentFrame(RequestType type, ushort code, int payloadSize, string? paramName)
     {
         if ((uint)payloadSize > MaxPayloadSize)
         {
             throw new ArgumentOutOfRangeException(
-                "payload",
+                paramName,
                 payloadSize,
                 $"A payload of {payloadSize} bytes does not fit in a control frame; the limit is {MaxPayloadSize} bytes.");
         }
@@ -372,16 +550,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         if (length == FrameHeader.Size)
         {
-            // A header-only frame is a NAK. Only a Response can answer the request in flight.
-            if (replyType == ReplyType.Response && TakePending() is { } rejected)
-            {
-                rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
-            }
-            else
-            {
-                Publish(replyType, 0, ReadOnlySequence<byte>.Empty);
-            }
-
+            HandleNak(replyType);
             return;
         }
 
@@ -406,16 +575,71 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A header-only frame is a NAK. Only a <c>Response</c> can answer the request in flight; without one it is just
+    /// another message, and it ends the wait for the reply of an abandoned request.
+    /// </summary>
+    private void HandleNak(ReplyType type)
+    {
+        PendingRequest? rejected = null;
+        if (type == ReplyType.Response)
+        {
+            lock (_sync)
+            {
+                rejected = _pending;
+                _pending = null;
+                if (rejected is null)
+                {
+                    _abandoned = null;
+                }
+            }
+        }
+
+        if (rejected is null)
+        {
+            Publish(type, 0, ReadOnlySequence<byte>.Empty);
+            return;
+        }
+
+        rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
+    }
+
     private void HandleReply(ReplyType type, ushort code, ReadOnlySequence<byte> payload)
     {
-        PendingRequest? pending = TakePending();
+        PendingRequest? pending = null;
+        bool answers = false;
+        lock (_sync)
+        {
+            if (_abandoned is { } abandoned && abandoned.Code == code && abandoned.Type == type)
+            {
+                // The late reply of a request nobody waits for. The protocol has no transaction identifiers, so
+                // even a request in flight for the same item cannot claim it: the device answers in order and
+                // the older request comes first. It is consumed, and the request in flight stays untouched.
+                _abandoned = null;
+            }
+            else
+            {
+                pending = _pending;
+                _pending = null;
+                if (pending is not null)
+                {
+                    answers = pending.Code == code && pending.ExpectedType == type;
+                    if (!answers)
+                    {
+                        // The device's real reply to the request that is about to fail may still follow.
+                        _abandoned = (pending.Code, pending.ExpectedType);
+                    }
+                }
+            }
+        }
+
         if (pending is null)
         {
             Publish(type, code, payload);
             return;
         }
 
-        if (pending.Code == code && pending.ExpectedType == type)
+        if (answers)
         {
             CompletePending(pending, payload);
             return;
@@ -487,7 +711,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <param name="error">The cause of a fault, or <see langword="null"/> for a normal disposal.</param>
     private void Finish(Exception? error)
     {
-        _unsolicited.Writer.TryComplete();
+        // Completion first: whoever sees Unsolicited end can rely on Completion already holding its outcome.
         if (error is null)
         {
             _completion.TrySetResult();
@@ -498,6 +722,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             _ = _completion.Task.Exception;
         }
 
+        _unsolicited.Writer.TryComplete();
         _lifetime.Cancel();
         try
         {

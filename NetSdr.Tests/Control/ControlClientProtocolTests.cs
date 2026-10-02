@@ -1,4 +1,5 @@
 using System.IO.Pipelines;
+using System.Runtime.CompilerServices;
 using NetSdr.Control;
 using NetSdr.Framing;
 using NetSdr.Items;
@@ -231,6 +232,64 @@ public class ControlClientProtocolTests
     }
 
     [Fact]
+    public async Task ControlFrameOfLength3_FaultsClient()
+    {
+        await using var device = PipeDevice.Create();
+        var call = device.Client.GetAsync<ProductId>();
+        await device.ReadRequestAsync();
+        await device.SendAsync("03 00 AA");
+        await Assert.ThrowsAsync<NetSdrProtocolException>(() => call.WaitAsync(Limits.Test));
+        await Assert.ThrowsAsync<NetSdrProtocolException>(() => device.Client.Completion.WaitAsync(Limits.Test));
+        Assert.False(device.Client.IsConnected);
+    }
+
+    [Fact]
+    public async Task NakWithoutRequest_GoesToUnsolicitedWithCodeZero()
+    {
+        await using var device = PipeDevice.Create();
+        await device.SendAsync("02 00");
+        var message = await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+        Assert.Equal((ReplyType.Response, (ushort)0), (message.Type, message.Code));
+        Assert.True(message.Payload.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Fault_CompletesUnsolicitedWithoutError()
+    {
+        await using var device = PipeDevice.Create();
+        await device.SendAsync("01 00");
+        await device.Client.Unsolicited.Completion.WaitAsync(Limits.Test);
+        Assert.True(device.Client.Unsolicited.Completion.IsCompletedSuccessfully);
+        await Assert.ThrowsAsync<NetSdrProtocolException>(() => device.Client.Completion.WaitAsync(Limits.Test));
+    }
+
+    [Fact]
+    public async Task OversizedItem_NamesTheItemParameter()
+    {
+        await using var device = PipeDevice.Create();
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.SetAsync(new HugeItem()));
+        Assert.Equal("item", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task OversizedKey_NamesTheKeyParameter()
+    {
+        await using var device = PipeDevice.Create();
+        var get = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetAsync<ProductId, HugeKey>(default));
+        var range = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetRangeAsync<ProductId, HugeKey>(default));
+        Assert.Equal(("key", "key"), (get.ParamName, range.ParamName));
+    }
+
+    [Fact]
+    public async Task OversizedPayload_NamesThePayloadParameter()
+    {
+        await using var device = PipeDevice.Create();
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => device.Client.SendAsync(RequestType.Set, 0x0150, new byte[8188]));
+        Assert.Equal("payload", ex.ParamName);
+    }
+
+    [Fact]
     public async Task OversizedPayload_ThrowsBeforeWrite()
     {
         await using var device = PipeDevice.Create();
@@ -240,5 +299,24 @@ public class ControlClientProtocolTests
         Assert.Equal(Hex.Parse("06 00 38 00 00 EC"), await device.ReadRequestAsync());
         await device.SendAsync("06 00 38 00 00 EC");
         Assert.Equal(-20, (await call.WaitAsync(Limits.Test)).GainDb);
+    }
+
+    /// <summary>An item whose payload cannot fit in a frame.</summary>
+    private readonly struct HugeItem : IControlItem<HugeItem>
+    {
+        public static ushort Code => 0x7001;
+
+        public static int GetSize(in HugeItem item) => 9000;
+
+        public static void Write(in HugeItem item, Span<byte> destination)
+        {
+        }
+    }
+
+    /// <summary>A key that cannot fit in a frame.</summary>
+    [InlineArray(9000)]
+    private struct HugeKey
+    {
+        private byte _element;
     }
 }
