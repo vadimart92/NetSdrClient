@@ -26,7 +26,10 @@ public readonly struct DataPacketInfo
 
     /// <summary>
     /// How many packets went missing right before this one; 0 for the first packet, at the start of a capture, and
-    /// for a packet that arrived out of order.
+    /// for a packet that arrived late (out of order or twice, at most about 1000 packets behind the expected one).
+    /// A jump of more than about a full sequence cycle (65535 minus 1024 packets) cannot be told from a late
+    /// packet, so it is not reported as a gap. A capture restarted while its packet 0 is lost shows up as a forward
+    /// gap against the previous capture; use a new receiver for each capture if that matters.
     /// </summary>
     public int GapBefore { get; }
 

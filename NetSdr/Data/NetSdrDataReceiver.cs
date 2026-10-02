@@ -18,8 +18,16 @@ public sealed class NetSdrDataReceiver : IDisposable
     // Where the IPv4 address sits in the byte buffer of an IPv4 SocketAddress (after the family and the port).
     private const int AddressOffset = 4;
     private const int AddressSize = 4;
-    // A distance this large means the packet is behind the expected one, not ahead of it.
-    private const int ReorderedDistance = 0x8000;
+
+    /// <summary>
+    /// How far behind the expected packet a packet may fall and still be taken for a late one (reordered or
+    /// duplicated) rather than for a jump forward: a packet fewer than this many packets behind is delivered with
+    /// no gap and the expectation stays. 1024 packets are about 130 ms of a stream of 7.8k packets a second
+    /// (2 MS/s of 16-bit complex samples), far more than the network reorders. Anything else that is not the
+    /// expected packet is a forward gap, however large: a window of half a cycle (0x8000) would hide every loss
+    /// after an outage of that many packets, as the stream would look reordered until the numbers wrapped around.
+    /// </summary>
+    private const int ReorderWindow = 1024;
 
     private enum State
     {
@@ -293,14 +301,16 @@ public sealed class NetSdrDataReceiver : IDisposable
         int gapBefore = 0;
         if (_hasExpected && sequence != 0)
         {
+            // The sequence cycle is 0xFFFF packets long (0 is skipped), so a packet k behind the expected one is at
+            // distance 0xFFFF - k.
             int distance = DataSequence.Distance(_expected, sequence);
-            if (distance < ReorderedDistance)
+            if (distance <= ushort.MaxValue - ReorderWindow)
             {
                 gapBefore = distance;
                 _expected = DataSequence.Next(sequence);
             }
 
-            // Otherwise the packet is behind the expected one: deliver it, but leave the expectation alone.
+            // Otherwise the packet is just behind the expected one: deliver it, but leave the expectation alone.
         }
         else
         {

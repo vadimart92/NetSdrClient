@@ -13,6 +13,12 @@ public static class DataSequence
     /// How many packets lie between <paramref name="expected"/> and <paramref name="actual"/>, skipping the
     /// number 0 when the count wraps around. Zero means <paramref name="actual"/> is the expected packet.
     /// </summary>
+    /// <remarks>
+    /// The cycle is 65535 packets long, so a packet <c>k</c> behind <paramref name="expected"/> is at distance
+    /// <c>65535 - k</c>: the result alone cannot tell a packet far ahead from one a little behind. A receiver treats a
+    /// small number of packets behind as late and anything else as ahead, so a jump of more than about a full cycle
+    /// (65535 minus the reorder window of 1024 packets) is taken for a late packet. See <see cref="NetSdrDataReceiver"/>.
+    /// </remarks>
     public static int Distance(ushort expected, ushort actual) =>
         actual >= expected ? actual - expected : actual + ushort.MaxValue - expected;
 }

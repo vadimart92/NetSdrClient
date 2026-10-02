@@ -81,6 +81,42 @@ public class DataReceiverTests
     }
 
     [Fact]
+    public async Task LateBurst_IsDeliveredWithoutGapAndNotCountedAsLost()
+    {
+        using var c = new PacketCollector();
+        Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(4, 1028),
+            UdpTestSender.Datagram(5, 1028), UdpTestSender.Datagram(2, 1028), UdpTestSender.Datagram(3, 1028));
+        await Eventually.ThatAsync(() => c.Packets.Count == 6);
+        Assert.Equal(new[] { 0, 0, 2, 0, 0, 0 }, Infos(c).Select(i => i.GapBefore));
+        Assert.Equal(2, c.Receiver.Statistics.Lost);
+    }
+
+    [Fact]
+    public async Task LargeForwardJump_IsCountedAsLoss()
+    {
+        using var c = new PacketCollector();
+        Send(c, Enumerable.Range(0, 101).Select(i => UdpTestSender.Datagram((ushort)i, 1028)).ToArray());
+        Send(c, UdpTestSender.Datagram(40101, 1028), UdpTestSender.Datagram(40102, 1028), UdpTestSender.Datagram(40108, 1028));
+        await Eventually.ThatAsync(() => c.Packets.Count == 104);
+        var gaps = Infos(c).Select(i => i.GapBefore).ToArray();
+        Assert.Equal(new[] { 40000, 0, 5 }, gaps[101..]);
+        Assert.All(gaps[..101], gap => Assert.Equal(0, gap));
+        Assert.Equal(40005, c.Receiver.Statistics.Lost);
+    }
+
+    [Fact]
+    public async Task ReorderWindow_EndsAtAThousandPacketsBehind()
+    {
+        using var c = new PacketCollector();
+        // The first packet joins the stream at 5000, so 5001 is expected next. A packet 1023 behind it (3978) is
+        // late; one 1024 behind it (3977) is too far back to be told from a jump almost a full cycle ahead.
+        Send(c, UdpTestSender.Datagram(5000, 1028), UdpTestSender.Datagram(3978, 1028), UdpTestSender.Datagram(3977, 1028));
+        await Eventually.ThatAsync(() => c.Packets.Count == 3);
+        Assert.Equal(new[] { 0, 0, 64511 }, Infos(c).Select(i => i.GapBefore));
+        Assert.Equal(64511, c.Receiver.Statistics.Lost);
+    }
+
+    [Fact]
     public async Task Rejects_ForeignTypeShortAndWrongLength()
     {
         using var c = new PacketCollector();
@@ -144,7 +180,10 @@ public class DataReceiverTests
     [Fact]
     public void SetReceiveBuffer_FromDuration()
     {
-        using var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) => { });
+        // A small initial buffer, so the assertion below holds only if the call enlarged it.
+        using var receiver = new NetSdrDataReceiver(
+            (in DataPacketInfo _, ReadOnlySpan<byte> _) => { }, new DataReceiverOptions { InitialReceiveBufferBytes = 8192 });
+        Assert.True(receiver.ActualReceiveBufferSize < 200_000);
         receiver.SetReceiveBuffer(TimeSpan.FromMilliseconds(200), 1_000_000);
         Assert.True(receiver.ActualReceiveBufferSize >= 200_000);
     }
