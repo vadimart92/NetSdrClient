@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NetSdr\NetSdr.csproj" />
+    <ProjectReference Include="..\NetSdr.Testing\NetSdr.Testing.csproj" />
   </ItemGroup>
 
 </Project>
