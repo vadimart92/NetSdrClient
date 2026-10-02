@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\NetSdr\NetSdr.csproj" />
+  </ItemGroup>
+
+</Project>
