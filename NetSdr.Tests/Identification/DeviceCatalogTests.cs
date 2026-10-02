@@ -121,6 +121,37 @@ public class DeviceCatalogTests
         Assert.Same(client, device.Client);
     }
 
+    // A factory that returns null breaks its contract. The error names the registration, or the default.
+
+    [Theory]
+    [InlineData(false, "null maker")]
+    [InlineData(true, "default")]
+    public async Task FactoryReturnsNull_Connect_ThrowsAndClosesClient(bool viaDefault, string expectedName)
+    {
+        await using var server = await ServerAsync();
+        var catalog = NullFactoryCatalog(viaDefault);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ConnectAsync(At(server)));
+        Assert.Contains(expectedName, ex.Message);
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Theory]
+    [InlineData(false, "null maker")]
+    [InlineData(true, "default")]
+    public async Task FactoryReturnsNull_Attach_ThrowsAndKeepsClientOpen(bool viaDefault, string expectedName)
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(9)));
+        await using var _ = server; await using var __ = client;
+        var catalog = NullFactoryCatalog(viaDefault);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.AttachAsync(client));
+        Assert.Contains(expectedName, ex.Message);
+        Assert.Equal(9u, (await client.GetAsync<ProductId>()).Value);
+    }
+
+    static DeviceCatalog<Dev> NullFactoryCatalog(bool viaDefault) => viaDefault
+        ? new DeviceCatalog<Dev>().Default((c, id) => null!)
+        : new DeviceCatalog<Dev>().Register("null maker", _ => true, (c, id) => null!);
+
     [Fact]
     public async Task CancelDuringIdentification_ClosesClient()
     {

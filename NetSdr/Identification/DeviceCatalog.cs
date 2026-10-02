@@ -48,7 +48,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// </summary>
     /// <param name="name">Shown in <see cref="DeviceNotRecognizedException.Candidates"/>.</param>
     /// <param name="matches">Decides from the whole identity, including the facts of probes. An exception it throws is not caught.</param>
-    /// <param name="create">Creates the device; from then on the device owns the client.</param>
+    /// <param name="create">Creates the device; from then on the device owns the client. It must not return <see langword="null"/>.</param>
     public DeviceCatalog<TDevice> Register(
         string name, Func<DeviceIdentity, bool> matches, Func<NetSdrControlClient, DeviceIdentity, TDevice> create)
     {
@@ -59,7 +59,10 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// <summary>
     /// Registers a kind of device that is created asynchronously, for example after a few more requests.
     /// </summary>
-    /// <param name="createAsync">Creates the device; it gets the token of the <c>ConnectAsync</c> or <c>AttachAsync</c> call.</param>
+    /// <param name="createAsync">
+    /// Creates the device; it gets the token of the <c>ConnectAsync</c> or <c>AttachAsync</c> call. It must not return
+    /// a <see langword="null"/> device.
+    /// </param>
     /// <inheritdoc cref="Register(string, Func{DeviceIdentity, bool}, Func{NetSdrControlClient, DeviceIdentity, TDevice})"/>
     public DeviceCatalog<TDevice> Register(
         string name,
@@ -103,6 +106,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// <param name="port">TCP port of the control channel; the device listens on 50000 by default.</param>
     /// <param name="ct">Cancels the connection, the identification and an asynchronous factory.</param>
     /// <exception cref="DeviceNotRecognizedException">No registration matches and there is no default.</exception>
+    /// <exception cref="InvalidOperationException">The factory that was chosen returned <see langword="null"/>; the message names it.</exception>
     public Task<TDevice> ConnectAsync(string host, int port = 50000, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -122,6 +126,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// object has been returned.
     /// </summary>
     /// <exception cref="DeviceNotRecognizedException">No registration matches and there is no default.</exception>
+    /// <exception cref="InvalidOperationException">The factory that was chosen returned <see langword="null"/>; the message names it. The client stays open.</exception>
     public Task<TDevice> AttachAsync(NetSdrControlClient client, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -151,17 +156,22 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         {
             if (registration.Matches(identity))
             {
-                return await registration.CreateAsync(client, identity, ct).ConfigureAwait(false);
+                TDevice? device = await registration.CreateAsync(client, identity, ct).ConfigureAwait(false);
+                return device ?? throw FactoryReturnedNull($"The factory of registration \"{registration.Name}\"");
             }
         }
 
         if (_default is { } createDefault)
         {
-            return await createDefault(client, identity, ct).ConfigureAwait(false);
+            TDevice? device = await createDefault(client, identity, ct).ConfigureAwait(false);
+            return device ?? throw FactoryReturnedNull("The default factory");
         }
 
         throw new DeviceNotRecognizedException(identity, Registrations);
     }
+
+    private static InvalidOperationException FactoryReturnedNull(string factory) =>
+        new($"{factory} returned null instead of a device.");
 
     private readonly record struct Registration(
         string Name,
