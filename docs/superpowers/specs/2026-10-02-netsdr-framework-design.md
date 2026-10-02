@@ -2,7 +2,8 @@
 
 Дата: 2026-10-02
 Статус: узгоджено. Розділ 11 (приклад Vega) і окремий `NetSdr.Testing` додано того ж дня,
-чекають на огляд письмової версії
+чекають на огляд письмової версії. Розділ 11 доповнено версіями v1/v2 згідно зі спекою
+`2026-10-02-netsdr-device-identification-design.md`.
 
 ## 1. Мета і межі
 
@@ -712,14 +713,23 @@ Vega це вигаданий приймач, сумісний із NetSDR: ст�
 через емулятор свого пристрою. Приклад це бібліотека плюс тести, консольного застосунку
 немає. Коди і поведінка вигадані.
 
+Vega має дві версії прошивки, v1 і v2, які відрізняються форматом пункту 0x8002 і
+наявністю 0x8005. Автоматичний вибір версії клієнта описаний у спеці
+`2026-10-02-netsdr-device-identification-design.md`, розділ 6; тут наведено лише те, що
+потрібно для структури прикладу.
+
 ### 11.1. Проєкти
 
 ```
 examples/Vega/
   NetSdr.Examples.Vega/         net10.0, посилається на NetSdr
-    Items/                      VendorUnlock, AntennaSelect, BoardTemperature, DeviceLabel, OverloadEvent
+    Items/                      VendorUnlock, AntennaSelect, BoardTemperatureV1, BoardTemperatureV2,
+                                VegaFirmwareInfo, DeviceLabel, OverloadEvent
     VegaProtocol.cs             константи: ProductId, коди, межі
-    VegaReceiver.cs             типізований клієнт
+    VegaReceiverBase.cs         спільна частина типізованого клієнта, статичний ConnectAsync
+    VegaV1Receiver.cs           версійна частина для v1
+    VegaV2Receiver.cs           версійна частина для v2
+    VegaProbes.cs, VegaInfo.cs  проба ідентифікації і її факт
     VegaEvent.cs                події з unsolicited
     VegaException.cs
   NetSdr.Examples.Vega.Tests/   xUnit, посилається на приклад і NetSdr.Testing
@@ -733,9 +743,11 @@ examples/Vega/
 |---|---|---|---|---|
 | `VendorUnlock` | 0x8000 | `uint Key` | лише Set | без розблокування пристрій відповідає NAK на всі коди 0x8001+ |
 | `AntennaSelect` | 0x8001 | `byte Channel`, `AntennaPort Port` | `byte Channel` | Set і Get із ключем; enum як поле blittable-структури |
-| `BoardTemperature` | 0x8002 | `TemperatureSensor Sensor`, `short CentiCelsius` | `TemperatureSensor` | Get із ключем-enum; той самий пункт приходить unsolicited як телеметрія |
+| `BoardTemperatureV1` | 0x8002 | `TemperatureSensor Sensor`, `short CentiCelsius` | `TemperatureSensor` | Get із ключем-enum; той самий пункт приходить unsolicited як телеметрія; формат прошивки v1 |
+| `BoardTemperatureV2` | 0x8002 | `TemperatureSensor Sensor`, `int MilliCelsius`, `byte Status` | `TemperatureSensor` | той самий код, інший формат у прошивці v2 |
 | `DeviceLabel` | 0x8003 | `string Value` | немає | змінна довжина в обидва боки: власні `GetSize`, `Write`, `Read` |
 | `OverloadEvent` | 0x8004 | `byte Channel`, `OverloadFlags Flags` | лише unsolicited | подія, яку хост ніколи не запитує |
+| `VegaFirmwareInfo` | 0x8005 | `ushort Version` (×100) | немає | є лише у v2 і лише після розблокування; v1 відповідає NAK |
 
 Переліки: `AntennaPort : byte { A = 0, B = 1, Loop = 2 }`,
 `TemperatureSensor : byte { Board = 0, Adc = 1, Fpga = 2 }`,
@@ -744,30 +756,32 @@ examples/Vega/
 `VegaProtocol.ProductId = 0x41474556`, тобто байти `56 45 47 41`, ASCII "VEGA" у відповіді
 на 0x0009.
 
-`BoardTemperature.Celsius` це `CentiCelsius / 100.0`. Приклади кадрів: Set антени B на
-каналі 0 це `06 00 01 80 00 01`, Get антени каналу 1 це `05 20 01 80 01`, unsolicited
-температура АЦП -12.5 °C це `07 20 02 80 01 1E FB`.
+`BoardTemperatureV1.Celsius` це `CentiCelsius / 100.0`, `BoardTemperatureV2.Celsius` це
+`MilliCelsius / 1000.0`. Приклади кадрів: Set антени B на каналі 0 це `06 00 01 80 00 01`,
+Get антени каналу 1 це `05 20 01 80 01`, unsolicited температура АЦП -12.5 °C це
+`07 20 02 80 01 1E FB` у v1 і `0A 20 02 80 01 2C CF FF FF 00` у v2.
 
 `DeviceLabel`: ASCII, до `VegaProtocol.MaxLabelLength = 32` символів, на дроті з нулем у
 кінці. Конструктор кидає `ArgumentException` для довшого рядка або символів поза ASCII,
 тому некоректна мітка не доходить до сокета. `GetSize` це довжина плюс 1. `Read` бере
 байти до першого нуля або до кінця payload. `default(DeviceLabel).Value` це порожній рядок.
 
-### 11.3. `VegaReceiver`
+### 11.3. `VegaReceiverBase`, `VegaV1Receiver`, `VegaV2Receiver`
 
 ```csharp
-public sealed class VegaReceiver : IAsyncDisposable
+public abstract class VegaReceiverBase : IAsyncDisposable
 {
-    public static Task<VegaReceiver> ConnectAsync(string host, int port, uint unlockKey,
+    public static Task<VegaReceiverBase> ConnectAsync(string host, int port, uint unlockKey,
         NetSdrControlClientOptions? options = null, CancellationToken ct = default);
-    public static Task<VegaReceiver> ConnectAsync(IPEndPoint endPoint, uint unlockKey,
+    public static Task<VegaReceiverBase> ConnectAsync(IPEndPoint endPoint, uint unlockKey,
         NetSdrControlClientOptions? options = null, CancellationToken ct = default);
 
     public NetSdrControlClient Control { get; }      // стандартні пункти напряму
+    public DeviceIdentity Identity { get; }          // паспорт, зібраний при підключенні
 
     public Task SelectAntennaAsync(byte channel, AntennaPort port, CancellationToken ct = default);
     public Task<AntennaPort> GetAntennaAsync(byte channel, CancellationToken ct = default);
-    public Task<double> GetTemperatureAsync(TemperatureSensor sensor, CancellationToken ct = default);
+    public abstract Task<double> GetTemperatureAsync(TemperatureSensor sensor, CancellationToken ct = default);
     public Task SetLabelAsync(string label, CancellationToken ct = default);
     public Task<string> GetLabelAsync(CancellationToken ct = default);
 
@@ -776,7 +790,18 @@ public sealed class VegaReceiver : IAsyncDisposable
     public Task StopStreamAsync(CancellationToken ct = default);
 
     public IAsyncEnumerable<VegaEvent> ReadEventsAsync(CancellationToken ct = default);
+    protected abstract VegaEvent? TryParseEvent(in ControlItemMessage message);   // версійний розбір
     public ValueTask DisposeAsync();                 // закриває Control
+}
+
+public sealed class VegaV1Receiver : VegaReceiverBase   // BoardTemperatureV1
+{
+    public VegaV1Receiver(NetSdrControlClient control, DeviceIdentity identity);
+}
+
+public sealed class VegaV2Receiver : VegaReceiverBase   // BoardTemperatureV2
+{
+    public VegaV2Receiver(NetSdrControlClient control, DeviceIdentity identity);
 }
 
 public abstract record VegaEvent;
@@ -787,36 +812,43 @@ public sealed record OverloadDetected(byte Channel, OverloadFlags Flags) : VegaE
 ```mermaid
 sequenceDiagram
     participant App as Застосунок
-    participant V as VegaReceiver
+    participant V as VegaReceiverBase.ConnectAsync
+    participant Cat as DeviceCatalog
     participant C as NetSdrControlClient
     participant D as Vega або VegaEmulator
 
     App->>V: ConnectAsync(host, port, key)
-    V->>C: ConnectAsync
-    V->>C: GetAsync<ProductId>()
-    C->>D: [04 20] [09 00]
-    D-->>C: [08 00] [09 00] 56 45 47 41
+    V->>Cat: ConnectAsync через каталог із VegaProbes.Identify(key)
+    Cat->>C: ConnectAsync + стандартні проби
+    Cat->>C: проба Vega: ProductId?
     alt ProductId не Vega
-        V->>C: DisposeAsync
-        V-->>App: VegaException
+        Cat->>C: DisposeAsync
+        V-->>App: VegaException (з паспортом)
     else Vega
-        V->>C: SetAsync(new VendorUnlock(key))
-        D-->>C: echo або NAK
-        V-->>App: VegaReceiver або NetSdrNakException
+        C->>D: SetAsync(VendorUnlock), потім GetAsync<VegaFirmwareInfo>
+        D-->>C: echo, потім 0x8005 або NAK
+        Cat-->>V: VegaV2Receiver або VegaV1Receiver
+        V-->>App: VegaReceiverBase
     end
 ```
 
-- `ConnectAsync` при будь-якій помилці після TCP-підключення закриває клієнт і лише тоді
-  кидає виняток.
+- `ConnectAsync` це `DeviceCatalog<VegaReceiverBase>` з пробою `VegaProbes.Identify`,
+  реєстраціями "Vega v2" і "Vega v1" і без дефолту. При будь-якій помилці після
+  TCP-підключення каталог закриває клієнт і лише тоді кидає виняток.
+  `DeviceNotRecognizedException` перетворюється на `VegaException`.
+- Конструктори версійних класів публічні: застосунок із власним каталогом створює їх сам.
+- Спільна логіка в базі, версійне лише `GetTemperatureAsync` і `TryParseEvent`.
+  `OverloadEvent` розбирається в базі, бо однаковий в обох версіях.
 - `StartStreamAsync` надсилає по черзі `OutputSampleRate(0, sampleRate)`,
   `ReceiverFrequency(0, frequencyHz)`, `DataOutputUdpAddress.For(target)`,
   `ReceiverState.Start(complex: true, bits24: false)`. Формат завжди 16 біт.
   `StopStreamAsync` надсилає `ReceiverState.Stop`.
 - `ReadEventsAsync` перебирає `Control.Unsolicited` без фонової задачі. Бере лише
-  повідомлення типу `Unsolicited`, перетворює `BoardTemperature` і `OverloadEvent` на
-  події. Невідомі коди і повідомлення, на яких `As<T>` кидає `NetSdrProtocolException`,
-  пропускаються: одна зламана телеметрія не зупиняє потік подій. Канал має одного
-  читача, тому одночасно працює лише один перебір.
+  повідомлення типу `Unsolicited`, перетворює `BoardTemperatureV1` або
+  `BoardTemperatureV2` (залежно від класу) і `OverloadEvent` на події. Невідомі коди і
+  повідомлення, на яких `As<T>` кидає `NetSdrProtocolException`, пропускаються: одна
+  зламана телеметрія не зупиняє потік подій. Канал має одного читача, тому одночасно
+  працює лише один перебір.
 
 Помилки: чужий `ProductId` дає `VegaException`, NAK пристрою проходить як
 `NetSdrNakException`, некоректна мітка дає `ArgumentException` ще до надсилання.
@@ -828,11 +860,14 @@ sequenceDiagram
 пристрою поверх `NetSdrTestServer`, не змінюючи фреймворк.
 
 ```csharp
+public enum VegaFirmware { V1, V2 }
+
 public sealed class VegaEmulator : IAsyncDisposable
 {
     public const uint DefaultKey = 0xC0DE_5EC5;
-    public VegaEmulator(uint unlockKey = DefaultKey);
+    public VegaEmulator(uint unlockKey = DefaultKey, VegaFirmware firmware = VegaFirmware.V2);
     public NetSdrTestServer Server { get; }
+    public VegaFirmware Firmware { get; }
     public int Port { get; }
     public bool IsUnlocked { get; }
     public Task StartAsync();
@@ -846,10 +881,11 @@ public sealed class VegaEmulator : IAsyncDisposable
 - `Preload(new ProductId(VegaProtocol.ProductId))`; стандартні пункти обробляє стан
   сервера, включно з `AutoStream`.
 - `OnRequest<VendorUnlock>`: правильний ключ розблоковує і дає `Echo`, інакше `Nak`.
-- Для 0x8001..0x8004 обробники спершу перевіряють розблокування, без нього `Nak`.
+- Для 0x8001..0x8005 обробники спершу перевіряють розблокування, без нього `Nak`.
   Антени зберігаються по каналах (за замовчуванням A), температура читається за ключем
-  сенсора (Set дає `Nak`), мітка зберігається при Set і віддається при Get. Запит
-  0x8004 завжди дає `Nak`.
+  сенсора (Set дає `Nak`) і кодується за режимом `Firmware`, мітка зберігається при Set і
+  віддається при Get. Запит 0x8004 завжди дає `Nak`. 0x8005 у режимі V1 завжди `Nak`,
+  у режимі V2 віддає `VegaFirmwareInfo(200)`.
 - Стан розблокування живе стільки ж, скільки емулятор.
 
 Тести:
@@ -859,7 +895,9 @@ public sealed class VegaEmulator : IAsyncDisposable
 payload.
 
 **Receiver.**
-- Правильний ключ: `IsUnlocked`, у `Received` по черзі Get 0x0009 і Set 0x8000.
+- Правильний ключ: `IsUnlocked`, у `Received` Get 0x0009 передує Set 0x8000; емулятор V2
+  дає `VegaV2Receiver`, V1 дає `VegaV1Receiver` (решта тестів вибору версії в спеці
+  ідентифікації, розділ 8).
 - Неправильний ключ: `NetSdrNakException` із кодом 0x8000.
 - Чужий `ProductId` на голому `NetSdrTestServer`: `VegaException`, запиту 0x8000 немає.
 - Вендорська команда через сирий `Control` до розблокування: `NetSdrNakException`.
