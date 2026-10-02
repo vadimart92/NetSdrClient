@@ -58,4 +58,22 @@ public class VegaItemTests
         Assert.Equal("", default(DeviceLabel).Value);
         Assert.Equal("AB", ControlFrames.Decode<DeviceLabel>(Hex.Parse("06 00 03 80 41 42")).Value);
     }
+
+    [Fact]
+    public void DeviceLabel_OverLongFromWire_IsRead_ButNeverWritten()
+    {
+        // Reading is lenient: a device may report a label longer than the host would ever send.
+        var overLong = ControlFrames.Decode<DeviceLabel>(Hex.Parse("25 00 03 80 " + string.Concat(Enumerable.Repeat("78", 33))));
+        Assert.Equal(new string('x', 33), overLong.Value);
+
+        // Writing is not: an over-long label must not reach the wire.
+        Assert.Throws<ArgumentException>(() => ControlFrames.Request(RequestType.Set, overLong));
+        Assert.Throws<ArgumentException>(() => DeviceLabel.Write(overLong, new byte[64]));
+
+        // The limit itself is still written, zero included.
+        var atLimit = new DeviceLabel(new string('x', VegaProtocol.MaxLabelLength));
+        var payload = new byte[DeviceLabel.GetSize(atLimit)];
+        DeviceLabel.Write(atLimit, payload);
+        Assert.Equal(0, payload[^1]);
+    }
 }
