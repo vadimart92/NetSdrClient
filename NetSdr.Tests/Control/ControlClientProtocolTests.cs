@@ -1,5 +1,6 @@
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using NetSdr.Control;
 using NetSdr.Framing;
 using NetSdr.Items;
@@ -299,6 +300,50 @@ public class ControlClientProtocolTests
         Assert.Equal(Hex.Parse("06 00 38 00 00 EC"), await device.ReadRequestAsync());
         await device.SendAsync("06 00 38 00 00 EC");
         Assert.Equal(-20, (await call.WaitAsync(Limits.Test)).GainDb);
+    }
+
+    [Fact]
+    public async Task SetAsync_ItemThatWritesLessThanItsSize_DoesNotLeakPooledBytes()
+    {
+        await using var device = PipeDevice.Create();
+        // Each round first sends an item that fills its payload, so the pooled buffer the silent item rents next
+        // is likely to hold the filler bytes.
+        for (var round = 0; round < 50; round++)
+        {
+            var filled = device.Client.SetAsync(new FillerItem(0xAAAA));
+            Assert.Equal(Hex.Parse("06 00 01 7F AA AA"), await device.ReadRequestAsync());
+            await device.SendAsync("06 00 01 7F AA AA");
+            await filled.WaitAsync(Limits.Test);
+
+            var silent = device.Client.SetAsync(new SilentItem(0));
+            Assert.Equal(Hex.Parse("06 00 02 7F 00 00"), await device.ReadRequestAsync());
+            await device.SendAsync("06 00 02 7F 00 00");
+            await silent.WaitAsync(Limits.Test);
+        }
+    }
+
+    /// <summary>An item that writes its whole 2-byte payload.</summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private readonly struct FillerItem(ushort value) : IControlItem<FillerItem>
+    {
+        public readonly ushort Value = value;
+
+        public static ushort Code => 0x7F01;
+
+        public static void Write(in FillerItem item, Span<byte> destination) => destination[..2].Fill(0xAA);
+    }
+
+    /// <summary>A faulty item: it promises 2 payload bytes and writes none of them.</summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private readonly struct SilentItem(ushort value) : IControlItem<SilentItem>
+    {
+        public readonly ushort Value = value;
+
+        public static ushort Code => 0x7F02;
+
+        public static void Write(in SilentItem item, Span<byte> destination)
+        {
+        }
     }
 
     /// <summary>An item whose payload cannot fit in a frame.</summary>

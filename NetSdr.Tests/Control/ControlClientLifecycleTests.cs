@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net;
+using System.Net.Sockets;
 using NetSdr.Control;
+using NetSdr.Testing;
 using NetSdr.Framing;
 using NetSdr.Items;
 
@@ -475,6 +477,52 @@ public class ControlClientLifecycleTests
     }
 
     // Connecting
+
+    [Fact]
+    public async Task EndPoints_AreNull_BeforeConnect_AndForAPipeAttachedClient()
+    {
+        await using var unconnected = new NetSdrControlClient();
+        Assert.Null(unconnected.LocalEndPoint);
+        Assert.Null(unconnected.RemoteEndPoint);
+
+        await using var device = PipeDevice.Create();
+        Assert.Null(device.Client.LocalEndPoint);
+        Assert.Null(device.Client.RemoteEndPoint);
+    }
+
+    [Fact]
+    public async Task EndPoints_AfterConnect_AreTheTcpSocketEndPoints()
+    {
+        var (server, client) = await Loopback.StartAsync();
+        await using var _ = server; await using var __ = client;
+        Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
+        Assert.NotEqual(server.Port, client.LocalEndPoint.Port);
+        Assert.Equal(new IPEndPoint(IPAddress.Loopback, server.Port), client.RemoteEndPoint);
+    }
+
+    [Fact]
+    public async Task EndPoints_AfterConnectByHostName_AreIPv4()
+    {
+        // The socket for a host name may be dual-mode and report IPv4 addresses mapped to IPv6; the address the
+        // application sends to the device in DataOutputUdpAddress.For has to be IPv4.
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        await using var client = new NetSdrControlClient();
+        await client.ConnectAsync("127.0.0.1", server.Port);
+        Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
+        Assert.Equal(new IPEndPoint(IPAddress.Loopback, server.Port), client.RemoteEndPoint);
+    }
+
+    [Fact]
+    public async Task EndPoints_StayAvailable_AfterDispose()
+    {
+        var (server, client) = await Loopback.StartAsync();
+        await using var _ = server;
+        var local = client.LocalEndPoint;
+        await client.DisposeAsync();
+        Assert.Equal(local, client.LocalEndPoint);
+        Assert.Equal(server.Port, client.RemoteEndPoint!.Port);
+    }
 
     [Fact]
     public async Task ConnectAsync_WhenAlreadyConnected_Throws()

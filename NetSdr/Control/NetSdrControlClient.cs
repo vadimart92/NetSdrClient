@@ -49,6 +49,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     private Exception? _fault;
     private Stream? _output;
     private Task? _readLoop;
+    private IPEndPoint? _localEndPoint;
+    private IPEndPoint? _remoteEndPoint;
 
     /// <exception cref="ArgumentOutOfRangeException">
     /// <see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1, or
@@ -90,6 +92,40 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
     /// <summary>Whether the client is attached to a connection and has not faulted or been disposed.</summary>
     public bool IsConnected => _state == State.Connected;
+
+    /// <summary>
+    /// The local end of the TCP connection, set by <c>ConnectAsync</c>; <see langword="null"/> before the client has
+    /// connected and for a client attached to something other than a socket. The address is the one the device sees
+    /// the client at, so it is what to give the device for a data stream, together with the port of the data receiver:
+    /// <c>new IPEndPoint(client.LocalEndPoint.Address, receiver.LocalEndPoint.Port)</c> passed to
+    /// <see cref="DataOutputUdpAddress.For"/>. It stays available after the client is disconnected or disposed.
+    /// </summary>
+    public IPEndPoint? LocalEndPoint
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _localEndPoint;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The device's end of the TCP connection, set by <c>ConnectAsync</c>; <see langword="null"/> before the client has
+    /// connected and for a client attached to something other than a socket. It stays available after the client is
+    /// disconnected or disposed.
+    /// </summary>
+    public IPEndPoint? RemoteEndPoint
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _remoteEndPoint;
+            }
+        }
+    }
 
     /// <summary>Connects to the device over TCP and starts the client.</summary>
     /// <param name="host">Host name or IP address of the device.</param>
@@ -145,6 +181,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         RentedFrame frame = RentFrame(RequestType.Set, T.Code, T.GetSize(in item), nameof(item));
         try
         {
+            // The buffer comes from a pool and may hold an earlier frame: an item that writes fewer bytes than
+            // its GetSize promised must send zeros, not another request's leftovers.
+            frame.Payload.Clear();
             T.Write(in item, frame.Payload);
         }
         catch
@@ -222,7 +261,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <summary>Starts the read loop on an established connection.</summary>
     /// <exception cref="InvalidOperationException">The client is already attached or has faulted.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
-    internal void Attach(PipeReader input, Stream output)
+    internal void Attach(PipeReader input, Stream output) => Attach(input, output, null, null);
+
+    private void Attach(PipeReader input, Stream output, IPEndPoint? localEndPoint, IPEndPoint? remoteEndPoint)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -231,6 +272,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         {
             ThrowIfCannotAttach();
             _output = output;
+            _localEndPoint = localEndPoint;
+            _remoteEndPoint = remoteEndPoint;
             _state = State.Connected;
             _readLoop = Task.Run(() => ReadLoopAsync(input));
         }
@@ -239,10 +282,13 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <summary>Attaches an established connection. Closes it if the client cannot take it.</summary>
     private void AttachSocket(Socket socket)
     {
+        // Read before the stream takes the socket: they are gone once it is closed.
+        IPEndPoint? local = AsIPv4IfMapped(socket.LocalEndPoint as IPEndPoint);
+        IPEndPoint? remote = AsIPv4IfMapped(socket.RemoteEndPoint as IPEndPoint);
         var stream = new NetworkStream(socket, ownsSocket: true);
         try
         {
-            Attach(PipeReader.Create(stream), stream);
+            Attach(PipeReader.Create(stream), stream, local, remote);
         }
         catch
         {
@@ -250,6 +296,15 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             throw;
         }
     }
+
+    /// <summary>
+    /// The socket that <c>ConnectAsync(string, int)</c> creates is dual-mode, and reports the IPv4 address it is connected
+    /// over as an IPv4-mapped IPv6 address, which <see cref="DataOutputUdpAddress.For"/> does not accept.
+    /// </summary>
+    private static IPEndPoint? AsIPv4IfMapped(IPEndPoint? endPoint) =>
+        endPoint is { Address.IsIPv4MappedToIPv6: true }
+            ? new IPEndPoint(endPoint.Address.MapToIPv4(), endPoint.Port)
+            : endPoint;
 
     /// <exception cref="InvalidOperationException">The client is already attached or has faulted.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
@@ -365,7 +420,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <summary>
     /// Waits for the reply to the request in flight. On a timeout or cancellation the request is dropped:
     /// the client faults if it was a timeout and <see cref="NetSdrControlClientOptions.FaultOnTimeout"/> is set,
-    /// otherwise the request is remembered as abandoned so its late reply cannot answer a later request.
+    /// otherwise the request is remembered as abandoned so that its late reply is not taken for the answer to a later
+    /// request for a different item. A later request for the same item can still be answered by the late reply; see
+    /// <see cref="NetSdrControlClientOptions.FaultOnTimeout"/>.
     /// </summary>
     private async Task<TResult> AwaitReplyAsync<TResult>(PendingRequest pending, Task<TResult> reply, CancellationToken ct)
     {

@@ -23,6 +23,13 @@ public readonly struct DataOutputUdpAddress : IControlItem<DataOutputUdpAddress>
     }
 
     /// <summary>Builds the item for an IPv4 end point.</summary>
+    /// <remarks>
+    /// The address must be one the device can reach. The local end point of a data receiver that is bound to
+    /// <see cref="IPAddress.Any"/> is <c>0.0.0.0</c>, and a real device cannot send to that. Build the end point from
+    /// the address of the control connection and the port of the receiver:
+    /// <c>new IPEndPoint(client.LocalEndPoint.Address, receiver.LocalEndPoint.Port)</c>;
+    /// see <see cref="Control.NetSdrControlClient.LocalEndPoint"/>.
+    /// </remarks>
     /// <exception cref="ArgumentException"><paramref name="endPoint"/> is not an IPv4 address.</exception>
     public static DataOutputUdpAddress For(IPEndPoint endPoint)
     {

@@ -24,8 +24,14 @@ public sealed class NetSdrControlClientOptions
     /// and type that does not answer the request in flight goes to <see cref="NetSdrControlClient.Unsolicited"/>.
     /// A reply that does answer the request in flight always completes it, so the client cannot get stuck
     /// when the device never answers the remembered request. The price: while the old reply is still on its way, a
-    /// later request for the same item may receive that stale reply instead of its own, once; its own reply then goes
-    /// to <see cref="NetSdrControlClient.Unsolicited"/> or answers the next request for that item.
+    /// later request for the same item may receive that stale reply instead of its own; its own reply then goes
+    /// to <see cref="NetSdrControlClient.Unsolicited"/> or answers the next request for that item. A device that is
+    /// slow to answer can therefore keep a tight loop of requests for the same item one reply behind.
     /// </summary>
+    /// <remarks>
+    /// A NAK carries no item code, so the client cannot tell which request it rejects: it always goes to the request
+    /// in flight. While a request is remembered as unanswered, a late NAK for it therefore fails the next request
+    /// (and the remembered request stays remembered); that is a limit of the protocol, not of this setting.
+    /// </remarks>
     public bool FaultOnTimeout { get; set; } = true;
 }
