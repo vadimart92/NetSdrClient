@@ -8,7 +8,7 @@
 
 **Tech Stack:** .NET 10 (SDK 10.0.401), C# latest, xUnit 2.9.3, Microsoft.NET.Test.Sdk 17.14.1, xunit.runner.visualstudio 3.1.4 (версії з шаблону `dotnet new xunit`), System.IO.Pipelines і System.Threading.Channels з BCL.
 
-**Spec:** `docs/superpowers/specs/2026-10-02-netsdr-framework-design.md` (базова спека) і `docs/superpowers/specs/2026-10-02-netsdr-device-identification-design.md` (спека ідентифікації); байтові приклади з `sdripinterfacespec103.pdf`.
+**Spec:** `docs/superpowers/specs/2026-10-02-netsdr-framework-design.md` (базова спека) і `docs/superpowers/specs/2026-10-02-netsdr-device-identification-design.md` (спека ідентифікації); байтові приклади з RFSPACE SDR-IP Interface Specification 1.03 (PDF у репозиторії не зберігається, усі потрібні байти вже вписані в тести плану).
 
 ## Global Constraints
 
