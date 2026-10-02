@@ -534,32 +534,37 @@ public class TestServerStreamingTests
     {
         await using var server = new NetSdrTestServer();
         await server.StartAsync();
-        // Bind the UDP socket first and give the TCP connection the same local port: the server then sends data to
-        // the port the TCP client connected from, and that is where the socket listens.
-        for (var attempt = 0; ; attempt++)
+        // The server sends data to the port the TCP client connected from, so the receiver and the TCP client need the
+        // same local port: the receiver binds a port, then the TCP client binds that same number.
+        // Windows reserves blocks of TCP ports (Hyper-V, WinNAT) separately from the UDP blocks, and it hands out
+        // ephemeral UDP ports one after another, so asking for port 0 can walk into a TCP-reserved block again and
+        // again. A random port per attempt, and a generous number of attempts, makes that practically impossible.
+        const int maxAttempts = 50;
+        for (var attempt = 1; ; attempt++)
         {
-            using var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            udp.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-            var port = ((IPEndPoint)udp.LocalEndPoint!).Port;
+            int port = Random.Shared.Next(49152, 65536);
+            var received = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var receiver = new NetSdrDataReceiver(
+                (in DataPacketInfo _, ReadOnlySpan<byte> samples) => received.TrySetResult(samples.Length));
             TcpClient? tcp = null;
             try
             {
+                receiver.Bind(new IPEndPoint(IPAddress.Loopback, port));
+                receiver.Start();
                 tcp = new TcpClient(new IPEndPoint(IPAddress.Loopback, port));
                 await tcp.ConnectAsync(IPAddress.Loopback, server.Port);
             }
-            catch (SocketException) when (attempt < 5)
+            catch (SocketException) when (attempt < maxAttempts)
             {
                 tcp?.Dispose();
-                continue;    // that TCP port is in use, try another pair
+                continue;    // the UDP or the TCP port is unavailable, try another pair
             }
 
             using (tcp)
             {
                 var run = ControlFrames.Request(RequestType.Set, ReceiverState.Start(complex: true, bits24: false));
                 await tcp.GetStream().WriteAsync(run);
-                var datagram = new byte[2048];
-                int length = await udp.ReceiveAsync(datagram, SocketFlags.None, new CancellationTokenSource(Limits.Test).Token);
-                Assert.Equal(1028, length);
+                Assert.Equal(1024, await received.Task.WaitAsync(Limits.Test));
             }
 
             return;
