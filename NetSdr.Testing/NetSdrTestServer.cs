@@ -52,18 +52,6 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
     }
 
-    /// <summary>The remote end point of the client being served; <see langword="null"/> when there is none.</summary>
-    private IPEndPoint? ClientEndPoint
-    {
-        get
-        {
-            lock (_sync)
-            {
-                return _client?.RemoteEndPoint;
-            }
-        }
-    }
-
     /// <summary>Starts listening on loopback.</summary>
     /// <param name="port">The port to listen on; 0 lets the system choose, see <see cref="Port"/>.</param>
     /// <exception cref="InvalidOperationException">The server has already been started.</exception>
@@ -150,7 +138,10 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    /// <summary>Stops listening and closes the client's connection.</summary>
+    /// <summary>
+    /// Stops listening, closes the client's connection and stops the data stream. If a stream ended with an exception from
+    /// <see cref="StreamOptions.Source"/> or <see cref="StreamOptions.DropPacket"/>, it is thrown here.
+    /// </summary>
     public ValueTask DisposeAsync()
     {
         lock (_sync)
@@ -186,8 +177,18 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
         finally
         {
-            _lifetime.Dispose();
+            try
+            {
+                // A stream started by hand does not end with the client, so it is stopped here.
+                await StopStreamingAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _lifetime.Dispose();
+            }
         }
+
+        ThrowStreamFault();
     }
 
     private async Task AcceptLoopAsync(TcpListener listener)
@@ -248,6 +249,9 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             }
 
             connection.Dispose();
+
+            // The stream this client started ends with it.
+            await EndStreamOfAsync(connection).ConfigureAwait(false);
         }
     }
 
@@ -347,9 +351,12 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
         ControlReply reply;
         ReadOnlyMemory<byte> replyFrame = default;
+        Func<Task>? afterReply = null;
         try
         {
-            reply = Dispatch(request);
+            Dispatched dispatched = await DispatchAsync(request, connection).ConfigureAwait(false);
+            reply = dispatched.Reply;
+            afterReply = dispatched.AfterReply;
             if (!reply.IsSilent)
             {
                 replyFrame = reply.ToFrame(in request);
@@ -360,6 +367,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             // A failing handler, or a reply that cannot be encoded, is the device rejecting the request.
             reply = ControlReply.Nak;
             replyFrame = ControlReply.NakFrameBytes;
+            afterReply = null;
         }
 
         if (reply.IsSilent)
@@ -373,13 +381,20 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
 
         await connection.WriteAsync(replyFrame).ConfigureAwait(false);
+        if (afterReply is not null)
+        {
+            await afterReply().ConfigureAwait(false);
+        }
     }
 
+    /// <summary>A reply, and work that must wait until the reply has been written.</summary>
+    private readonly record struct Dispatched(ControlReply Reply, Func<Task>? AfterReply = null);
+
     /// <summary>
-    /// Chooses the reply to a request: the handler for its code if there is one, otherwise the default behaviour
-    /// from the state. Streaming adds its interception of the receiver state between the two.
+    /// Chooses the reply to a request: the handler for its code if there is one, then the receiver state when
+    /// <see cref="AutoStream"/> acts on it, otherwise the default behaviour from the state.
     /// </summary>
-    private ControlReply Dispatch(ControlRequest request)
+    private async ValueTask<Dispatched> DispatchAsync(ControlRequest request, Connection connection)
     {
         Func<ControlRequest, ControlReply>? handler;
         lock (_sync)
@@ -387,7 +402,17 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             _handlers.TryGetValue(request.Code, out handler);
         }
 
-        return handler is not null ? handler(request) : ReplyFromState(request);
+        if (handler is not null)
+        {
+            return new Dispatched(handler(request));
+        }
+
+        if (IsAutoStreamRequest(request))
+        {
+            return await ReplyToReceiverStateAsync(request, connection).ConfigureAwait(false);
+        }
+
+        return new Dispatched(ReplyFromState(request));
     }
 
     /// <summary>Set stores the payload and echoes it, Get answers from the stored payloads, GetRange is rejected.</summary>
@@ -396,11 +421,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         switch (request.Type)
         {
             case RequestType.Set:
-                lock (_sync)
-                {
-                    AddState(request.Code, request.Payload.ToArray());
-                }
-
+                StoreState(request);
                 return ControlReply.Echo;
             case RequestType.Get:
                 return TryGetState(request.Code, request.Payload.Span, out byte[] payload)
@@ -408,6 +429,15 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
                     : ControlReply.Nak;
             default:
                 return ControlReply.Nak;
+        }
+    }
+
+    /// <summary>Stores the payload of a Set as the newest of its code.</summary>
+    private void StoreState(ControlRequest request)
+    {
+        lock (_sync)
+        {
+            AddState(request.Code, request.Payload.ToArray());
         }
     }
 

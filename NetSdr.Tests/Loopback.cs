@@ -12,11 +12,32 @@ internal static class Loopback
         Action<NetSdrTestServer>? setup = null, NetSdrControlClientOptions? options = null)
     {
         var server = new NetSdrTestServer();
-        setup?.Invoke(server);
-        await server.StartAsync();
-        var client = new NetSdrControlClient(options);
-        await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
-        return (server, client);
+        try
+        {
+            setup?.Invoke(server);
+            await server.StartAsync();
+            var client = new NetSdrControlClient(options);
+            try
+            {
+                await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
+
+                // The connect completes before the server has accepted the client; a disconnect or an unsolicited
+                // frame sent right away would find nobody to talk to.
+                await server.ClientConnected.WaitAsync(Limits.Test);
+            }
+            catch
+            {
+                await client.DisposeAsync();
+                throw;
+            }
+
+            return (server, client);
+        }
+        catch
+        {
+            await server.DisposeAsync();
+            throw;
+        }
     }
 
     // The server serves one client at a time, so a NAK for a fresh client proves the previous one is gone.

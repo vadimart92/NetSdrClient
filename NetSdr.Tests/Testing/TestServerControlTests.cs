@@ -359,6 +359,19 @@ public class TestServerControlTests
     }
 
     [Fact]
+    public async Task Loopback_ReturnsOnlyOnceTheServerHasRegisteredTheClient()
+    {
+        // Without the registration a disconnect right after the helper returns can find no client and do nothing.
+        for (var i = 0; i < 25; i++)
+        {
+            var (server, client) = await StartAsync();
+            await using var _ = server; await using var __ = client;
+            await server.DisconnectClientAsync();
+            await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        }
+    }
+
+    [Fact]
     public async Task DisconnectClient_WithoutClient_DoesNothing()
     {
         await using var server = new NetSdrTestServer();
