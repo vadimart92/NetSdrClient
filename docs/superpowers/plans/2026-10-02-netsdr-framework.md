@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Бібліотека NetSdr для протоколу NetSDR/SDR-IP (TCP-керування, UDP-дані, структури команд), тестовий сервер `NetSdr.Testing` і приклад власного протоколу Vega з тестами на цьому сервері.
+**Goal:** Бібліотека NetSdr для протоколу NetSDR/SDR-IP (TCP-керування, UDP-дані, структури команд, ідентифікація пристрою і каталог клієнтів), тестовий сервер `NetSdr.Testing` і приклад власного протоколу Vega з двома версіями прошивки й тестами на цьому сервері.
 
-**Architecture:** Три незалежні компоненти ядра (`FrameHeader`, `NetSdrControlClient` на `PipeReader`, `NetSdrDataReceiver` на синхронному `ReceiveFrom` у власному потоці) плюс команди як `unmanaged`-структури з `static abstract`/`static virtual` членами інтерфейсу. Тестовий сервер в окремій бібліотеці емулює приймач через справжні сокети на loopback. Приклад Vega будує поверх ядра типізований клієнт і поверх тестового сервера емулятор свого пристрою.
+**Architecture:** Три незалежні компоненти ядра (`FrameHeader`, `NetSdrControlClient` на `PipeReader`, `NetSdrDataReceiver` на синхронному `ReceiveFrom` у власному потоці) плюс команди як `unmanaged`-структури з `static abstract`/`static virtual` членами інтерфейсу. Тестовий сервер в окремій бібліотеці емулює приймач через справжні сокети на loopback. Шар `NetSdr.Identification` читає паспорт пристрою пробами і вибирає клієнта через каталог із правилами. Приклад Vega будує поверх ядра версійні типізовані клієнти, вибирає їх каталогом, а поверх тестового сервера будує емулятор свого пристрою.
 
 **Tech Stack:** .NET 10 (SDK 10.0.401), C# latest, xUnit 2.9.3, Microsoft.NET.Test.Sdk 17.14.1, xunit.runner.visualstudio 3.1.4 (версії з шаблону `dotnet new xunit`), System.IO.Pipelines і System.Threading.Channels з BCL.
 
-**Spec:** `docs/superpowers/specs/2026-10-02-netsdr-framework-design.md`; байтові приклади з `sdripinterfacespec103.pdf`.
+**Spec:** `docs/superpowers/specs/2026-10-02-netsdr-framework-design.md` (базова спека) і `docs/superpowers/specs/2026-10-02-netsdr-device-identification-design.md` (спека ідентифікації); байтові приклади з `sdripinterfacespec103.pdf`.
 
 ## Global Constraints
 
@@ -39,16 +39,24 @@
 11. `FillSamples` отримує формат: `delegate void FillSamples(Span<byte> destination, long firstSampleIndex, SampleFormat format)`. Тому `SampleSources.Tone` не має параметра формату.
 12. `NetSdr.Testing` має ще два помічники: `ControlFrames.Decode<T>` і `Eventually.ThatAsync`.
 13. `RfFilter.Filter` лишається `byte`, як у специфікації; властивість `Selection` повертає `RfFilterSelection`.
+14. `TargetName` і `SerialNumber` перевизначають `GetSize` (довжина плюс 1) і `Write` (ASCII і нуль), щоб їх можна було класти в тестовий сервер через `Preload`. Цього вимагає тест паспорта «Preload усіх пунктів». Символ понад 0x7F у `Write` кидає `ArgumentException`.
+15. Відповідь на 0x0004 з payload коротшим за 3 байти означає, що поля для цього ID немає (спека ідентифікації каже «порожній payload»; відповідь лише з ID без версії трактується так само). На `Unsupported` це не впливає.
+16. `DeviceIdentityBuilder` має публічний конструктор без параметрів, щоб застосунок міг тестувати свої проби без сервера.
+17. `TemperatureReport` отримує третій необов'язковий параметр `byte? Status = null`: v2 переносить у подію `Status` (спека ідентифікації 6.1), v1 лишає `null`. Запис у базовій спеці 11.3 цього поля не має.
+18. Стандартні проби покривають шість кодів: 0x0001, 0x0002, 0x0003, 0x0004, 0x0009, 0x000A. Спека ідентифікації, розділ 8, двічі каже «сім»; у плані шість.
+19. Виняток із предиката `Register` обробляється як виняток фабрики: летить назовні, `ConnectAsync` закриває клієнт.
 
 ## Review Focus
 
-П'ять вхідних ситуацій, які специфікація мається на увазі, але жоден її тест не перевіряє. Кожна має тест у задачі-власнику.
+П'ять вхідних ситуацій, які специфікації маються на увазі, але жоден їхній тест не перевіряє. Кожна має тест у задачі-власнику.
 
 1. Дубльована або переставлена UDP-датаграма (номер позаду очікуваного) не повинна додати ~65 тисяч втрачених пакетів. Тест `Reordered_IsNotCountedAsLost`, задача 8.
 2. Запізніла відповідь на скасований запит не повинна провалити наступний запит з іншим кодом. Тест `LateReplyOfAbandonedRequest_GoesToUnsolicited`, задача 6.
-3. Частота понад 40 біт не повинна мовчки обрізатися. Тест `FromValueAbove40Bits_Throws`, задача 2.
+3. Пристрій мовчить на стандартну пробу під час `DeviceCatalog.ConnectAsync`: `TimeoutException` летить назовні, а клієнт закрито, не покинуто. Тест `ProbeTimeout_ClosesClient`, задача 11.
 4. Payload, що не вміщається в 13-бітну довжину, кидає `ArgumentOutOfRangeException` до запису в сокет, з'єднання лишається робочим. Тест `OversizedPayload_ThrowsBeforeWrite`, задача 5.
-5. `Dispose` приймача з його ж callback не повинен зависати. Тест `Dispose_FromHandler_DoesNotDeadlock`, задача 8.
+5. Предикат правила кидає (наприклад, `Get<TFact>` на чужому пристрої): виняток летить назовні, клієнт закрито. Тест `PredicateThrows_PropagatesAndClosesClient`, задача 11.
+
+Додатково тестами закрито: частота понад 40 біт (`FromValueAbove40Bits_Throws`, задача 2) і `Dispose` приймача з його ж callback (`Dispose_FromHandler_DoesNotDeadlock`, задача 8).
 
 ## File Structure
 
@@ -68,6 +76,9 @@ NetSdr/
   Control/  NetSdrControlClient.cs NetSdrControlClientOptions.cs ControlItemMessage.cs PendingRequest.cs
   Data/     NetSdrDataReceiver.cs DataReceiverOptions.cs DataPacketInfo.cs SampleFormat.cs
             DataRate.cs DataReceiverStatistics.cs DataSequence.cs
+  Identification/  DeviceIdentity.cs DeviceIdentityBuilder.cs KnownModel.cs FpgaInfo.cs DeviceVersion.cs
+            IdentificationOptions.cs (разом із ProbeAsync) Probes.cs DeviceCatalog.cs
+            DeviceNotRecognizedException.cs
 NetSdr.Testing/
   NetSdr.Testing.csproj
   ControlFrames.cs Eventually.cs ControlRequest.cs ControlReply.cs
@@ -76,7 +87,7 @@ NetSdr.Testing/
   StreamOptions.cs                        StreamOptions, Pacing, FillSamples
   SampleSources.cs
 NetSdr.Tests/
-  Hex.cs Limits.cs
+  Hex.cs Limits.cs Loopback.cs
   Framing/FrameHeaderTests.cs
   Items/ItemCodec.cs Items/MyVendorItem.cs Items/UInt40Tests.cs Items/ControlItemReadTests.cs
   Items/StandardItemTests.cs Items/VariableItemTests.cs
@@ -85,17 +96,19 @@ NetSdr.Tests/
   Control/PipeDevice.cs Control/ControlClientProtocolTests.cs Control/ControlClientLifecycleTests.cs
   Data/UdpTestSender.cs Data/PacketCollector.cs Data/DataSequenceTests.cs Data/DataRateTests.cs
   Data/DataReceiverTests.cs
+  Identification/KnownModelTests.cs Identification/DeviceIdentityTests.cs Identification/DeviceCatalogTests.cs
   EndToEndTests.cs
 examples/Vega/
   NetSdr.Examples.Vega/
-    NetSdr.Examples.Vega.csproj VegaProtocol.cs VegaException.cs VegaEvent.cs VegaReceiver.cs
+    NetSdr.Examples.Vega.csproj VegaProtocol.cs VegaException.cs VegaEvent.cs VegaInfo.cs VegaProbes.cs
+    VegaReceiverBase.cs VegaV1Receiver.cs VegaV2Receiver.cs
     Items/AntennaPort.cs TemperatureSensor.cs OverloadFlags.cs VendorUnlock.cs AntennaSelect.cs
-          BoardTemperature.cs DeviceLabel.cs OverloadEvent.cs
+          BoardTemperatureV1.cs BoardTemperatureV2.cs VegaFirmwareInfo.cs DeviceLabel.cs OverloadEvent.cs
   NetSdr.Examples.Vega.Tests/
-    NetSdr.Examples.Vega.Tests.csproj Hex.cs Limits.cs VegaEmulator.cs VegaFixture.cs
+    NetSdr.Examples.Vega.Tests.csproj Hex.cs Limits.cs VegaEmulator.cs (разом із VegaFirmware) VegaFixture.cs
     Items/VegaItemTests.cs
-    Receiver/VegaConnectTests.cs Receiver/VegaCommandTests.cs Receiver/VegaEventTests.cs
-    Receiver/VegaStreamTests.cs
+    Receiver/VegaConnectTests.cs Receiver/VegaCommandTests.cs Receiver/VegaCatalogTests.cs
+    Receiver/VegaEventTests.cs Receiver/VegaStreamTests.cs
 ```
 
 Команда перевірки для всіх задач: `dotnet test NetSdr.sln --filter "FullyQualifiedName~<клас>"`; наприкінці кожної задачі `dotnet test NetSdr.sln` має пройти повністю.
@@ -508,8 +521,8 @@ git commit -m "feat: standard fixed-size control items" -m "Co-Authored-By: Clau
 **Interfaces:**
 - Consumes: `IControlItem<T>`, `UInt40`, `ControlFrames`, `ItemCodec`.
 - Produces:
-  - `readonly struct TargetName` (0x0001) і `SerialNumber` (0x0002): `string Value` (`default` дає `""`), конструктор `(string value)`, власний `static Read`: ASCII до першого нуля або до кінця. `Write` не перевизначають, тому запис кидає `ArgumentException`.
-  - `readonly struct StatusCodes` (0x0005): `byte[] Codes` (усі байти payload), `const byte Idle = 0x0B, Busy = 0x0C, LoadingParameters = 0x0D, BootIdle = 0x0E, BootBusy = 0x0F, AdOverload = 0x20, BootError = 0x80`.
+  - `readonly struct TargetName` (0x0001) і `SerialNumber` (0x0002): `string Value` (`default` дає `""`), конструктор `(string value)`, власний `static Read`: ASCII до першого нуля або до кінця. Власні `GetSize` і `Write` за рішенням 14.
+  - `readonly struct StatusCodes` (0x0005): конструктор `(byte[] codes)`, `byte[] Codes` (усі байти payload); `Write` не перевизначено, тому запис кидає `ArgumentException` (поведінка за замовчуванням зі специфікації 4.1); `const byte Idle = 0x0B, Busy = 0x0C, LoadingParameters = 0x0D, BootIdle = 0x0E, BootBusy = 0x0F, AdOverload = 0x20, BootError = 0x80`.
   - `readonly struct FpgaConfiguration` (0x000C): `byte Selected`, `byte Id`, `byte Revision`, `string Description`; конструктори `(byte selected)` для Set і `(byte selected, byte id, byte revision, string description)`; `GetSize` дає 1, `Write` пише лише `Selected`, `Read` читає три байти і рядок до нуля.
   - `readonly record struct FrequencyRange(ulong Min, ulong Max, ulong Vco)`.
   - `readonly struct FrequencyRanges` (0x0020): `byte Channel`, `FrequencyRange[] Ranges`; `Read`: `[channel][count]`, далі `count` записів по 15 байтів (три `UInt40`). Payload коротший за `2 + count * 15` кидає `ArgumentException`.
@@ -527,7 +540,8 @@ public class VariableItemTests
         Assert.Equal("SDR-IP", ControlFrames.Decode<TargetName>(Hex.Parse("0B 00 01 00 53 44 52 2D 49 50 00")).Value);
         Assert.Equal("SDR-IP", ItemCodec.Read<TargetName>(Hex.Parse("53 44 52 2D 49 50")).Value);
         Assert.Equal("", default(TargetName).Value);
-        Assert.Throws<ArgumentException>(() => ItemCodec.Write(new TargetName("x")));
+        Assert.Equal(Hex.Parse("0B 00 01 00 53 44 52 2D 49 50 00"), ControlFrames.Reply(ReplyType.Response, new TargetName("SDR-IP")));
+        Assert.Throws<ArgumentException>(() => ItemCodec.Write(new TargetName("Вега")));
     }
 
     [Fact] public void SerialNumber_MT123456() =>
@@ -539,6 +553,7 @@ public class VariableItemTests
     {
         Assert.Equal(new[] { StatusCodes.Idle }, ControlFrames.Decode<StatusCodes>(Hex.Parse("05 00 05 00 0B")).Codes);
         Assert.Equal(new[] { StatusCodes.AdOverload }, ControlFrames.Decode<StatusCodes>(Hex.Parse("05 20 05 00 20")).Codes);
+        Assert.Throws<ArgumentException>(() => ItemCodec.Write(new StatusCodes([StatusCodes.Idle])));
     }
 
     [Fact]
@@ -1036,12 +1051,12 @@ git commit -m "feat: control client timeouts, cancellation and lifecycle" -m "Co
 ### Task 7: Тестовий сервер: канал керування
 
 **Files:**
-- Create: `NetSdr.Testing/NetSdrTestServer.cs`, `NetSdr.Testing/ControlRequest.cs`, `NetSdr.Testing/ControlReply.cs`
+- Create: `NetSdr.Testing/NetSdrTestServer.cs`, `NetSdr.Testing/ControlRequest.cs`, `NetSdr.Testing/ControlReply.cs`, `NetSdr.Tests/Loopback.cs`
 - Test: `NetSdr.Tests/Testing/TestServerControlTests.cs`
 
 **Interfaces:**
 - Consumes: `NetSdrControlClient` (Tasks 5, 6), `ControlFrames`, `Eventually` (Task 2), структури.
-- Produces: API специфікації 7.1 для керування: `NetSdrTestServer()` і `StartAsync`, `Port`, `ClientConnected`, `OnRequest<T>`, `OnRequest(ushort, ...)`, `Preload<T>`, `Received`, `SendUnsolicitedAsync<T>`, `SendUnsolicitedAsync(ushort, ReadOnlyMemory<byte>)`, `DisconnectClientAsync`, `DisposeAsync`; `ControlRequest` (`internal` конструктор), `ControlRequest<T>` з `Key<TKey>() => MemoryMarshal.Read<TKey>(Payload.Span)`; `ControlReply` (`Echo`, `Nak`, `Silent`, `Bytes`, `Item<T>`, `After`). Для Task 9 сервер зберігає `IPEndPoint` поточного клієнта і має приватний доступ до стану `bool TryGetLatestState(ushort code, out byte[] payload)`.
+- Produces: API специфікації 7.1 для керування: `NetSdrTestServer()` і `StartAsync`, `Port`, `ClientConnected`, `OnRequest<T>`, `OnRequest(ushort, ...)`, `Preload<T>`, `Received`, `SendUnsolicitedAsync<T>`, `SendUnsolicitedAsync(ushort, ReadOnlyMemory<byte>)`, `DisconnectClientAsync`, `DisposeAsync`; `ControlRequest` (`internal` конструктор), `ControlRequest<T>` з `Key<TKey>() => MemoryMarshal.Read<TKey>(Payload.Span)`; `ControlReply` (`Echo`, `Nak`, `Silent`, `Bytes`, `Item<T>`, `After`). Тестовий помічник `Loopback` (його беруть Tasks 9, 10, 11): `StartAsync(Action<NetSdrTestServer>? setup = null, NetSdrControlClientOptions? options = null)` повертає `(NetSdrTestServer Server, NetSdrControlClient Client)`; `AssertServerFreeAsync(NetSdrTestServer server)`. Для Task 9 сервер зберігає `IPEndPoint` поточного клієнта і має приватний доступ до стану `bool TryGetLatestState(ushort code, out byte[] payload)`.
 
 Правила:
 - Слухає `IPAddress.Loopback:port`. Клієнти по одному: після відключення приймається наступний. `ClientConnected` завершується на першому підключенні.
@@ -1054,9 +1069,10 @@ git commit -m "feat: control client timeouts, cancellation and lifecycle" -m "Co
 - [ ] **Step 1: Написати тести, що падають**
 
 ```csharp
-public class TestServerControlTests
+// NetSdr.Tests/Loopback.cs
+internal static class Loopback
 {
-    static async Task<(NetSdrTestServer Server, NetSdrControlClient Client)> StartAsync(
+    public static async Task<(NetSdrTestServer Server, NetSdrControlClient Client)> StartAsync(
         Action<NetSdrTestServer>? setup = null, NetSdrControlClientOptions? options = null)
     {
         var server = new NetSdrTestServer();
@@ -1066,6 +1082,22 @@ public class TestServerControlTests
         await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
         return (server, client);
     }
+
+    // The server serves one client at a time, so a NAK for a fresh client proves the previous one is gone.
+    public static async Task AssertServerFreeAsync(NetSdrTestServer server)
+    {
+        await using var next = new NetSdrControlClient();
+        await next.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
+        await Assert.ThrowsAsync<NetSdrNakException>(
+            () => next.SendAsync(RequestType.Get, 0x7FFF, ReadOnlyMemory<byte>.Empty).WaitAsync(Limits.Test));
+    }
+}
+
+// NetSdr.Tests/Testing/TestServerControlTests.cs
+using static NetSdr.Tests.Loopback;
+
+public class TestServerControlTests
+{
 
     [Fact]
     public async Task Set_EchoesAndGetReturnsState()
@@ -1516,7 +1548,7 @@ git commit -m "feat: UDP data receiver" -m "Co-Authored-By: Claude Opus 5.5 <nor
 - Test: `NetSdr.Tests/Testing/TestServerStreamingTests.cs`, `NetSdr.Tests/Testing/SampleSourcesTests.cs`, `NetSdr.Tests/EndToEndTests.cs`
 
 **Interfaces:**
-- Consumes: `NetSdrTestServer` (Task 7), `DataSequence`, `SampleFormat`, `PacketCollector`, `NetSdrDataReceiver` (Task 8).
+- Consumes: `NetSdrTestServer`, `Loopback` (Task 7), `DataSequence`, `SampleFormat`, `PacketCollector`, `NetSdrDataReceiver` (Task 8).
 - Produces:
   - `delegate void FillSamples(Span<byte> destination, long firstSampleIndex, SampleFormat format)`; `enum Pacing { RealTime, Unthrottled }`.
   - `sealed class StreamOptions { SampleFormat? Format; int? PayloadSize; double? SampleRate; int Channels = 1; Pacing Pacing = Pacing.RealTime; FillSamples Source = SampleSources.Counter(); Func<ushort, bool>? DropPacket; }`.
@@ -1573,16 +1605,6 @@ public class SampleSourcesTests
 
 public class TestServerStreamingTests
 {
-    static async Task<(NetSdrTestServer, NetSdrControlClient)> ConnectAsync(Action<NetSdrTestServer>? setup = null)
-    {
-        var server = new NetSdrTestServer();
-        setup?.Invoke(server);
-        await server.StartAsync();
-        var client = new NetSdrControlClient();
-        await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
-        return (server, client);
-    }
-
     static short[] Shorts(byte[] samples) => MemoryMarshal.Cast<byte, short>(samples).ToArray();
 
     [Fact]
@@ -1656,7 +1678,7 @@ public class TestServerStreamingTests
     [InlineData(true, DataOutputPacketSize.Small, 388)]
     public async Task AutoStream_PacketSizeFromState(bool bits24, byte size, int datagramLength)
     {
-        var (server, client) = await ConnectAsync();
+        var (server, client) = await Loopback.StartAsync();
         await using var _ = server; await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new DataOutputPacketSize(size));
@@ -1671,7 +1693,7 @@ public class TestServerStreamingTests
     [Fact]
     public async Task AutoStream_StopEndsStream()
     {
-        var (server, client) = await ConnectAsync();
+        var (server, client) = await Loopback.StartAsync();
         await using var _ = server; await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
@@ -1687,7 +1709,7 @@ public class TestServerStreamingTests
     [Fact]
     public async Task AutoStream_ZeroIp_UsesClientAddress()
     {
-        var (server, client) = await ConnectAsync();
+        var (server, client) = await Loopback.StartAsync();
         await using var _ = server; await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new DataOutputUdpAddress(0, (ushort)c.EndPoint.Port));
@@ -1698,7 +1720,7 @@ public class TestServerStreamingTests
     [Fact]
     public async Task AutoStream_ExplicitOptionsWin()
     {
-        var (server, client) = await ConnectAsync(s => s.Stream.PayloadSize = 200);
+        var (server, client) = await Loopback.StartAsync(s => s.Stream.PayloadSize = 200);
         await using var _ = server; await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
@@ -1710,7 +1732,7 @@ public class TestServerStreamingTests
     [Fact]
     public async Task AutoStream_Disabled_NoData()
     {
-        var (server, client) = await ConnectAsync(s => s.AutoStream = false);
+        var (server, client) = await Loopback.StartAsync(s => s.AutoStream = false);
         await using var _ = server; await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
@@ -1784,20 +1806,408 @@ git commit -m "feat: test server data streaming" -m "Co-Authored-By: Claude Opus
 
 ---
 
-### Task 10: Vega: проєкти і пункти протоколу
+### Task 10: Ідентифікація: паспорт і проби
 
 **Files:**
-- Create: `examples/Vega/NetSdr.Examples.Vega/NetSdr.Examples.Vega.csproj`, `VegaProtocol.cs`, `Items/AntennaPort.cs`, `Items/TemperatureSensor.cs`, `Items/OverloadFlags.cs`, `Items/VendorUnlock.cs`, `Items/AntennaSelect.cs`, `Items/BoardTemperature.cs`, `Items/DeviceLabel.cs`, `Items/OverloadEvent.cs`
+- Create: `NetSdr/Identification/DeviceIdentity.cs`, `DeviceIdentityBuilder.cs`, `KnownModel.cs`, `FpgaInfo.cs`, `DeviceVersion.cs`, `IdentificationOptions.cs`, `Probes.cs`
+- Test: `NetSdr.Tests/Identification/DeviceIdentityTests.cs`, `NetSdr.Tests/Identification/KnownModelTests.cs`
+
+**Interfaces:**
+- Consumes: `NetSdrControlClient` (Tasks 5, 6); `TargetName`, `SerialNumber`, `InterfaceVersion`, `FirmwareVersion`, `ProductId`, `Options` (Tasks 3, 4); `NetSdrTestServer`, `Loopback` (Task 7).
+- Produces (`NetSdr.Identification`): API спеки ідентифікації 3.1, 3.2 і 4.1 без змін, а також:
+  - `DeviceIdentity` з `internal` конструктором. Властивості `InterfaceVersion`, `FirmwareVersion`, `ProductId`, `SerialNumber` збігаються з іменами структур, тому всередині файлу структури пишуться повним іменем `NetSdr.Items.*`.
+  - `DeviceIdentityBuilder()` з публічним конструктором (рішення 16). Стандартні поля це `internal` властивості з сеттерами. `Current` щоразу створює новий `DeviceIdentity` з копіями мішка фактів і множини `Unsupported`.
+  - `internal static class KnownModelNames { static KnownModel FromName(string? name); }`: префікс без урахування регістру, `"SDR-IP"` дає `SdrIp`, `"NetSDR"` дає `NetSdr`, `"CloudIQ"` і `"Cloud-IQ"` дають `CloudIq`, `"CloudSDR"` дає `CloudSdr`, інше і `null` дають `Unknown`.
+  - `delegate Task ProbeAsync(...)` лежить в `IdentificationOptions.cs`.
+  - `DeviceVersion.FromHundredths(v)` дорівнює `new Version(v / 100, v % 100)`.
+
+Правила `ReadAsync`:
+- Якщо `IncludeStandardProbes`, по черзі йдуть `GetAsync<TargetName>`, `GetAsync<SerialNumber>`, `GetAsync<InterfaceVersion>`, чотири запити 0x0004, `GetAsync<ProductId>`, `GetAsync<Options>`. `NetSdrNakException` лишає поле `null` і викликає `MarkUnsupported(code)`; інші винятки летять назовні.
+- 0x0004 запитується як `client.SendAsync(RequestType.Get, FirmwareVersion.Code, new byte[] { id })` для `id` від 0 до 3. Payload коротший за 3 байти означає відсутність поля (рішення 15). Інакше `As<FirmwareVersion>()`: ID 0, 1, 2 дають `BootVersion`, `FirmwareVersion`, `HardwareVersion` через `DeviceVersion.FromHundredths`, ID 3 дає `FpgaInfo(FpgaConfigId, FpgaRevision)`. Код 0x0004 потрапляє в `Unsupported` лише після NAK на всі чотири.
+- Далі по черзі `options.Probes`. Результат це `builder.Current`. `Model` рахується з `Name`.
+- `Get<TFact>` без факту кидає `KeyNotFoundException($"Fact {typeof(TFact).Name} is not present in the device identity.")`.
+- `Probes.Item<T>()` і `Probes.Item<T, TKey>(key)` за спекою 4.1.
+
+- [ ] **Step 1: Написати тести, що падають**
+
+```csharp
+public class KnownModelTests
+{
+    [Theory]
+    [InlineData("SDR-IP", KnownModel.SdrIp)]
+    [InlineData("NetSDR", KnownModel.NetSdr)]
+    [InlineData("netsdr", KnownModel.NetSdr)]
+    [InlineData("CloudIQ", KnownModel.CloudIq)]
+    [InlineData("Cloud-IQ", KnownModel.CloudIq)]
+    [InlineData("CloudSDR", KnownModel.CloudSdr)]
+    [InlineData("SDR-14", KnownModel.Unknown)]
+    [InlineData(null, KnownModel.Unknown)]
+    public void FromName(string? name, KnownModel model) => Assert.Equal(model, KnownModelNames.FromName(name));
+
+    [Fact]
+    public void FromHundredths() => Assert.Equal(new Version(5, 29), DeviceVersion.FromHundredths(529));
+}
+
+public class DeviceIdentityTests
+{
+    sealed record TestFact(int Value);
+    sealed record OtherFact(string Value);
+
+    [Fact]
+    public async Task FullDevice_FillsEveryField()
+    {
+        var (server, client) = await Loopback.StartAsync(s =>
+        {
+            s.Preload(new TargetName("NetSDR"));
+            s.Preload(new SerialNumber("MT123456"));
+            s.Preload(new InterfaceVersion(529));
+            s.Preload(new FirmwareVersion(0, 104));
+            s.Preload(new FirmwareVersion(1, 529));
+            s.Preload(new FirmwareVersion(2, 300));
+            s.Preload(new FirmwareVersion(3, 0x1C03));
+            s.Preload(new ProductId(0x03524453));
+            s.Preload(new Options(Options.ReflockBoard, 0, 0));
+        });
+        await using var _ = server; await using var __ = client;
+        var id = await DeviceIdentity.ReadAsync(client);
+        Assert.Equal(("NetSDR", "MT123456", KnownModel.NetSdr), (id.Name, id.SerialNumber, id.Model));
+        Assert.Equal(new Version(5, 29), id.InterfaceVersion);
+        Assert.Equal(new Version(1, 4), id.BootVersion);
+        Assert.Equal(new Version(5, 29), id.FirmwareVersion);
+        Assert.Equal(new Version(3, 0), id.HardwareVersion);
+        Assert.Equal(new FpgaInfo(3, 28), id.Fpga);
+        Assert.Equal(0x03524453u, id.ProductId);
+        Assert.Equal(Options.ReflockBoard, id.Options!.Value.Flags);
+        Assert.Empty(id.Unsupported);
+    }
+
+    [Fact]
+    public async Task BareDevice_AllNull_SixCodesUnsupported()
+    {
+        var (server, client) = await Loopback.StartAsync();
+        await using var _ = server; await using var __ = client;
+        var id = await DeviceIdentity.ReadAsync(client);
+        Assert.Null(id.Name);
+        Assert.Null(id.FirmwareVersion);
+        Assert.Null(id.ProductId);
+        Assert.Equal(KnownModel.Unknown, id.Model);
+        Assert.Equal(new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0009, 0x000A }, id.Unsupported.Order());
+    }
+
+    [Fact]
+    public async Task FirmwareNakForOneId_LeavesOnlyThatFieldEmpty()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.OnRequest<FirmwareVersion>(r =>
+            r.Key<byte>() == 2 ? ControlReply.Nak : ControlReply.Item(new FirmwareVersion(r.Key<byte>(), 100))));
+        await using var _ = server; await using var __ = client;
+        var id = await DeviceIdentity.ReadAsync(client);
+        Assert.Null(id.HardwareVersion);
+        Assert.Equal(new Version(1, 0), id.FirmwareVersion);
+        Assert.DoesNotContain((ushort)0x0004, id.Unsupported);
+    }
+
+    [Fact]
+    public async Task FirmwareEmptyPayload_IsAbsentNotUnsupported()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.OnRequest(0x0004, r =>
+            r.Payload.Span[0] == 0
+                ? ControlReply.Bytes(ReadOnlyMemory<byte>.Empty)
+                : ControlReply.Bytes(new byte[] { r.Payload.Span[0], 100, 0 })));
+        await using var _ = server; await using var __ = client;
+        var id = await DeviceIdentity.ReadAsync(client);
+        Assert.Null(id.BootVersion);
+        Assert.Equal(new Version(1, 0), id.FirmwareVersion);
+        Assert.DoesNotContain((ushort)0x0004, id.Unsupported);
+    }
+
+    [Fact]
+    public async Task ItemProbe_StoresFact_NakMarksUnsupported()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new RfGain(0, -10)));
+        await using var _ = server; await using var __ = client;
+        var options = new IdentificationOptions
+        {
+            IncludeStandardProbes = false,
+            Probes = { Probes.Item<RfGain, byte>(0), Probes.Item<AfGain, byte>(0) },
+        };
+        var id = await DeviceIdentity.ReadAsync(client, options);
+        Assert.Equal(-10, id.Get<RfGain>().GainDb);
+        Assert.False(id.TryGet<AfGain>(out _));
+        Assert.Equal(new ushort[] { 0x0048 }, id.Unsupported);
+        Assert.Equal(new ushort[] { 0x0038, 0x0048 }, server.Received.Select(r => r.Code));
+    }
+
+    [Fact]
+    public async Task DelegateProbe_SeesStandardFields()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(0x41474556)));
+        await using var _ = server; await using var __ = client;
+        uint? seen = null;
+        var options = new IdentificationOptions { Probes = { (c, b, ct) => { seen = b.Current.ProductId; return Task.CompletedTask; } } };
+        await DeviceIdentity.ReadAsync(client, options);
+        Assert.Equal(0x41474556u, seen);
+    }
+
+    [Fact]
+    public async Task Facts_KeyedByType_LaterSetReplaces()
+    {
+        var (server, client) = await Loopback.StartAsync();
+        await using var _ = server; await using var __ = client;
+        var options = new IdentificationOptions
+        {
+            IncludeStandardProbes = false,
+            Probes =
+            {
+                (c, b, ct) => { b.Set(new TestFact(1)); b.Set(new OtherFact("a")); b.Set(new TestFact(2)); return Task.CompletedTask; },
+            },
+        };
+        var id = await DeviceIdentity.ReadAsync(client, options);
+        Assert.Equal(2, id.Get<TestFact>().Value);
+        Assert.Equal("a", id.Get<OtherFact>().Value);
+        Assert.Equal(2, id.FactTypes.Count);
+        var ex = Assert.Throws<KeyNotFoundException>(() => id.Get<string>());
+        Assert.Contains("String", ex.Message);
+    }
+
+    [Fact]
+    public async Task SilentDevice_TimeoutIsNotUnsupported()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.OnRequest<TargetName>(_ => ControlReply.Silent),
+            new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) });
+        await using var _ = server; await using var __ = client;
+        await Assert.ThrowsAsync<TimeoutException>(() => DeviceIdentity.ReadAsync(client));
+    }
+
+    [Fact]
+    public async Task ReadAsync_LeavesClientOpen()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(7)));
+        await using var _ = server; await using var __ = client;
+        await DeviceIdentity.ReadAsync(client);
+        Assert.Equal(7u, (await client.GetAsync<ProductId>()).Value);
+    }
+}
+```
+
+- [ ] **Step 2: Запустити й побачити падіння**
+
+Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~NetSdr.Tests.Identification"`
+Expected: збірка падає, простору імен `NetSdr.Identification` немає.
+
+- [ ] **Step 3: Реалізувати типи `NetSdr.Identification` за Interfaces і правилами задачі**
+
+- [ ] **Step 4: Запустити тести**
+
+Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~NetSdr.Tests.Identification"`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: device identity and probes" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Каталог пристроїв
+
+**Files:**
+- Create: `NetSdr/Identification/DeviceCatalog.cs`, `NetSdr/Identification/DeviceNotRecognizedException.cs`
+- Test: `NetSdr.Tests/Identification/DeviceCatalogTests.cs`
+
+**Interfaces:**
+- Consumes: `DeviceIdentity`, `IdentificationOptions`, `Probes` (Task 10); `Loopback.StartAsync`, `Loopback.AssertServerFreeAsync` (Task 7).
+- Produces: API спеки ідентифікації 5.1 без змін, а також `DeviceNotRecognizedException(DeviceIdentity identity, IReadOnlyList<string> candidates)` з повідомленням `$"Device was not recognized (name: {identity.Name ?? "?"}, product id: {identity.ProductId?.ToString("X8") ?? "?"}); candidates: {string.Join(", ", candidates)}."`
+
+Правила (спека ідентифікації 5.2):
+- `ConnectAsync` створює `new NetSdrControlClient(clientOptions)`, підключає, читає паспорт з `identification`, бере перший `Register` з `matches(identity) == true`, інакше `Default`, інакше `DeviceNotRecognizedException`.
+- Будь-який виняток до повернення пристрою закриває клієнт у `ConnectAsync` і ніколи не закриває його в `AttachAsync`. Сюди входять читання паспорта, предикат (рішення 19), фабрика і `DeviceNotRecognizedException`.
+- Синхронні фабрики загортаються в асинхронні. Асинхронна фабрика отримує токен виклику `ConnectAsync` або `AttachAsync`.
+- Повторний `Default` замінює попередній. `Registrations` повертає імена `Register` у порядку реєстрації.
+
+- [ ] **Step 1: Написати тести, що падають**
+
+```csharp
+public class DeviceCatalogTests
+{
+    sealed record Dev(string Kind, NetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => Client.DisposeAsync();
+    }
+
+    static async Task<NetSdrTestServer> ServerAsync(Action<NetSdrTestServer>? setup = null)
+    {
+        var server = new NetSdrTestServer();
+        setup?.Invoke(server);
+        await server.StartAsync();
+        return server;
+    }
+
+    static IPEndPoint At(NetSdrTestServer server) => new(IPAddress.Loopback, server.Port);
+
+    [Fact]
+    public async Task FirstMatchWins()
+    {
+        await using var server = await ServerAsync();
+        var catalog = new DeviceCatalog<Dev>()
+            .Register("a", _ => true, (c, id) => new Dev("a", c, id))
+            .Register("b", _ => true, (c, id) => new Dev("b", c, id));
+        await using var device = await catalog.ConnectAsync(At(server));
+        Assert.Equal("a", device.Kind);
+    }
+
+    [Fact]
+    public async Task NoMatchNoDefault_Throws_AndClosesClient()
+    {
+        await using var server = await ServerAsync(s => s.Preload(new TargetName("NetSDR")));
+        var catalog = new DeviceCatalog<Dev>()
+            .Register("x", _ => false, (c, id) => new Dev("x", c, id))
+            .Register("y", _ => false, (c, id) => new Dev("y", c, id));
+        var ex = await Assert.ThrowsAsync<DeviceNotRecognizedException>(() => catalog.ConnectAsync(At(server)));
+        Assert.Equal(new[] { "x", "y" }, ex.Candidates);
+        Assert.Equal("NetSDR", ex.Identity.Name);
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Fact]
+    public async Task NoMatch_UsesDefault_SecondDefaultReplacesFirst()
+    {
+        await using var server = await ServerAsync();
+        var catalog = new DeviceCatalog<Dev>()
+            .Register("x", _ => false, (c, id) => new Dev("x", c, id))
+            .Default((c, id) => new Dev("first", c, id))
+            .Default((c, id) => new Dev("second", c, id));
+        await using var device = await catalog.ConnectAsync(At(server));
+        Assert.Equal("second", device.Kind);
+        Assert.True(catalog.HasDefault);
+        Assert.Equal(new[] { "x" }, catalog.Registrations);
+    }
+
+    [Fact]
+    public async Task FactoryThrows_PropagatesAndClosesClient()
+    {
+        await using var server = await ServerAsync();
+        var catalog = new DeviceCatalog<Dev>().Register("boom", _ => true, (c, id) => throw new InvalidOperationException("boom"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ConnectAsync(At(server)));
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Fact]
+    public async Task PredicateThrows_PropagatesAndClosesClient()
+    {
+        await using var server = await ServerAsync();
+        var catalog = new DeviceCatalog<Dev>().Register("needs fact", id => id.Get<Version>().Major > 1, (c, id) => new Dev("v", c, id));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => catalog.ConnectAsync(At(server)));
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Fact]
+    public async Task ProbeTimeout_ClosesClient()
+    {
+        await using var server = await ServerAsync(s => s.OnRequest<TargetName>(_ => ControlReply.Silent));
+        var catalog = new DeviceCatalog<Dev>(clientOptions: new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) })
+            .Register("any", _ => true, (c, id) => new Dev("any", c, id));
+        await Assert.ThrowsAsync<TimeoutException>(() => catalog.ConnectAsync(At(server)));
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Fact]
+    public async Task Attach_NoMatch_KeepsClientOpen()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(9)));
+        await using var _ = server; await using var __ = client;
+        var catalog = new DeviceCatalog<Dev>().Register("x", _ => false, (c, id) => new Dev("x", c, id));
+        await Assert.ThrowsAsync<DeviceNotRecognizedException>(() => catalog.AttachAsync(client));
+        Assert.Equal(9u, (await client.GetAsync<ProductId>()).Value);
+    }
+
+    [Fact]
+    public async Task AsyncFactory_ReceivesCallerToken()
+    {
+        await using var server = await ServerAsync();
+        var factoryStarted = new TaskCompletionSource();
+        var catalog = new DeviceCatalog<Dev>().Register("slow", _ => true, async (c, id, ct) =>
+        {
+            factoryStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return new Dev("slow", c, id);
+        });
+        using var cts = new CancellationTokenSource();
+        var connect = catalog.ConnectAsync(At(server), cts.Token);
+        await factoryStarted.Task.WaitAsync(Limits.Test);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connect.WaitAsync(Limits.Test));
+        await Loopback.AssertServerFreeAsync(server);
+    }
+
+    [Fact]
+    public async Task ParallelConnects_GiveIndependentDevices()
+    {
+        await using var first = await ServerAsync(s => s.Preload(new ProductId(1)));
+        await using var second = await ServerAsync(s => s.Preload(new ProductId(2)));
+        var catalog = new DeviceCatalog<Dev>().Register("any", _ => true, (c, id) => new Dev("any", c, id));
+        var devices = await Task.WhenAll(catalog.ConnectAsync(At(first)), catalog.ConnectAsync(At(second))).WaitAsync(Limits.Test);
+        await using var a = devices[0]; await using var b = devices[1];
+        Assert.Equal((1u, 2u), (a.Identity.ProductId!.Value, b.Identity.ProductId!.Value));
+        Assert.NotSame(a.Client, b.Client);
+    }
+
+    [Fact]
+    public async Task CatalogProbe_RunsAfterStandardProbes()
+    {
+        await using var server = await ServerAsync(s => s.Preload(new RfGain(0, -10)));
+        var catalog = new DeviceCatalog<Dev>(new IdentificationOptions { Probes = { Probes.Item<RfGain, byte>(0) } })
+            .Register("any", _ => true, (c, id) => new Dev("any", c, id));
+        await using var device = await catalog.ConnectAsync(At(server));
+        var codes = server.Received.Select(r => r.Code).ToArray();
+        Assert.Equal(new ushort[] { 0x000A, 0x0038 }, codes[^2..]);
+        Assert.Equal(-10, device.Identity.Get<RfGain>().GainDb);
+    }
+}
+```
+
+- [ ] **Step 2: Запустити й побачити падіння**
+
+Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~DeviceCatalogTests"`
+Expected: збірка падає.
+
+- [ ] **Step 3: Реалізувати `DeviceCatalog<TDevice>` і `DeviceNotRecognizedException`**
+
+- [ ] **Step 4: Запустити всі тести**
+
+Run: `dotnet test NetSdr.sln`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: device catalog" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: Vega: проєкти і пункти протоколу v1/v2
+
+**Files:**
+- Create: `examples/Vega/NetSdr.Examples.Vega/NetSdr.Examples.Vega.csproj`, `VegaProtocol.cs`, `Items/AntennaPort.cs`, `Items/TemperatureSensor.cs`, `Items/OverloadFlags.cs`, `Items/VendorUnlock.cs`, `Items/AntennaSelect.cs`, `Items/BoardTemperatureV1.cs`, `Items/BoardTemperatureV2.cs`, `Items/VegaFirmwareInfo.cs`, `Items/DeviceLabel.cs`, `Items/OverloadEvent.cs`
 - Create: `examples/Vega/NetSdr.Examples.Vega.Tests/NetSdr.Examples.Vega.Tests.csproj`, `Hex.cs`, `Limits.cs`
 - Test: `examples/Vega/NetSdr.Examples.Vega.Tests/Items/VegaItemTests.cs`
 
 **Interfaces:**
 - Consumes: `IControlItem<T>`, `ControlFrames`.
-- Produces (простір імен `NetSdr.Examples.Vega` і `NetSdr.Examples.Vega.Items`):
-  - `static class VegaProtocol { const uint ProductId = 0x41474556; const int MaxLabelLength = 32; const ushort VendorUnlockCode = 0x8000, AntennaSelectCode = 0x8001, BoardTemperatureCode = 0x8002, DeviceLabelCode = 0x8003, OverloadEventCode = 0x8004; }`
+- Produces (простори імен `NetSdr.Examples.Vega` і `NetSdr.Examples.Vega.Items`):
+  - `static class VegaProtocol { const uint ProductId = 0x41474556; const int MaxLabelLength = 32; const ushort VendorUnlockCode = 0x8000, AntennaSelectCode = 0x8001, BoardTemperatureCode = 0x8002, DeviceLabelCode = 0x8003, OverloadEventCode = 0x8004, FirmwareInfoCode = 0x8005; }`
   - `enum AntennaPort : byte { A = 0, B = 1, Loop = 2 }`, `enum TemperatureSensor : byte { Board = 0, Adc = 1, Fpga = 2 }`, `[Flags] enum OverloadFlags : byte { None = 0, Adc = 1, Rf = 2 }`
-  - `VendorUnlock(uint key)` з полем `uint Key`; `AntennaSelect(byte channel, AntennaPort port)` з полями `Channel`, `Port`; `BoardTemperature(TemperatureSensor sensor, short centiCelsius)` з полями `Sensor`, `CentiCelsius`, властивістю `double Celsius => CentiCelsius / 100.0` і `static BoardTemperature FromCelsius(TemperatureSensor sensor, double celsius)` (`(short)Math.Round(celsius * 100)`); `OverloadEvent(byte channel, OverloadFlags flags)` з полями `Channel`, `Flags`. Усі blittable, Pack = 1, коди з `VegaProtocol`.
-  - `readonly struct DeviceLabel : IControlItem<DeviceLabel>`: `string Value` (`default` дає `""`), конструктор `(string value)` кидає `ArgumentException` для довжини понад `MaxLabelLength` або символу понад 0x7F; `GetSize` це `Value.Length + 1`; `Write` пише ASCII і нуль; `Read` читає до першого нуля або до кінця.
+  - Blittable-структури з Pack = 1 і кодами з `VegaProtocol`:
+    - `VendorUnlock(uint key)` з полем `Key`;
+    - `AntennaSelect(byte channel, AntennaPort port)` з полями `Channel`, `Port`;
+    - `BoardTemperatureV1(TemperatureSensor sensor, short centiCelsius)` з полями `Sensor`, `CentiCelsius`, властивістю `Celsius => CentiCelsius / 100.0` і `static FromCelsius(TemperatureSensor sensor, double celsius)`, де значення дорівнює `(short)Math.Round(celsius * 100)`;
+    - `BoardTemperatureV2(TemperatureSensor sensor, int milliCelsius, byte status)` з полями `Sensor`, `MilliCelsius`, `Status`, властивістю `Celsius => MilliCelsius / 1000.0` і `static FromCelsius(TemperatureSensor sensor, double celsius, byte status = 0)`, де значення дорівнює `(int)Math.Round(celsius * 1000)`;
+    - `VegaFirmwareInfo(ushort version)` з полем `Version`;
+    - `OverloadEvent(byte channel, OverloadFlags flags)` з полями `Channel`, `Flags`.
+  - `readonly struct DeviceLabel : IControlItem<DeviceLabel>`: `string Value` (`default` дає `""`). Конструктор `(string value)` кидає `ArgumentException` для довжини понад `MaxLabelLength` або символу понад 0x7F. `GetSize` це `Value.Length + 1`, `Write` пише ASCII і нуль, `Read` читає до першого нуля або до кінця.
 
 - [ ] **Step 1: Створити проєкти**
 
@@ -1828,13 +2238,25 @@ public class VegaItemTests
     }
 
     [Fact]
-    public void BoardTemperature_NegativeUnsolicited()
+    public void BoardTemperatureV1_NegativeUnsolicited()
     {
-        var item = BoardTemperature.FromCelsius(TemperatureSensor.Adc, -12.5);
-        var frame = ControlFrames.Reply(ReplyType.Unsolicited, item);
+        var frame = ControlFrames.Reply(ReplyType.Unsolicited, BoardTemperatureV1.FromCelsius(TemperatureSensor.Adc, -12.5));
         Assert.Equal(Hex.Parse("07 20 02 80 01 1E FB"), frame);
-        Assert.Equal(-12.5, ControlFrames.Decode<BoardTemperature>(frame).Celsius);
+        Assert.Equal(-12.5, ControlFrames.Decode<BoardTemperatureV1>(frame).Celsius);
     }
+
+    [Fact]
+    public void BoardTemperatureV2_NegativeUnsolicited()
+    {
+        var frame = ControlFrames.Reply(ReplyType.Unsolicited, BoardTemperatureV2.FromCelsius(TemperatureSensor.Adc, -12.5));
+        Assert.Equal(Hex.Parse("0A 20 02 80 01 2C CF FF FF 00"), frame);
+        var item = ControlFrames.Decode<BoardTemperatureV2>(frame);
+        Assert.Equal((-12.5, (byte)0), (item.Celsius, item.Status));
+        Assert.Equal(BoardTemperatureV1.Code, BoardTemperatureV2.Code);
+    }
+
+    [Fact] public void VegaFirmwareInfo_Frame() =>
+        Assert.Equal(Hex.Parse("06 00 05 80 C8 00"), ControlFrames.Reply(ReplyType.Response, new VegaFirmwareInfo(200)));
 
     [Fact] public void OverloadEvent_Frame() =>
         Assert.Equal(Hex.Parse("06 20 04 80 01 03"),
@@ -1865,7 +2287,7 @@ public class VegaItemTests
 Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~VegaItemTests"`
 Expected: збірка падає.
 
-- [ ] **Step 4: Реалізувати `VegaProtocol`, переліки і п'ять структур за Interfaces**
+- [ ] **Step 4: Реалізувати `VegaProtocol`, переліки і сім структур за Interfaces**
 
 - [ ] **Step 5: Запустити тести**
 
@@ -1876,67 +2298,94 @@ Expected: PASS.
 
 ```bash
 git add -A
-git commit -m "feat: Vega example protocol items" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat: Vega example protocol items for firmware v1 and v2" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 11: Vega: емулятор, підключення і команди
+### Task 13: Vega: проба, версійні клієнти, емулятор
 
 **Files:**
-- Create: `examples/Vega/NetSdr.Examples.Vega/VegaException.cs`, `VegaEvent.cs`, `VegaReceiver.cs`
+- Create: `examples/Vega/NetSdr.Examples.Vega/VegaInfo.cs`, `VegaProbes.cs`, `VegaException.cs`, `VegaEvent.cs`, `VegaReceiverBase.cs`, `VegaV1Receiver.cs`, `VegaV2Receiver.cs`
 - Create: `examples/Vega/NetSdr.Examples.Vega.Tests/VegaEmulator.cs`, `VegaFixture.cs`
-- Test: `examples/Vega/NetSdr.Examples.Vega.Tests/Receiver/VegaConnectTests.cs`, `Receiver/VegaCommandTests.cs`
+- Test: `examples/Vega/NetSdr.Examples.Vega.Tests/Receiver/VegaConnectTests.cs`, `Receiver/VegaCommandTests.cs`, `Receiver/VegaCatalogTests.cs`
 
 **Interfaces:**
-- Consumes: пункти Vega (Task 10), `NetSdrControlClient`, `NetSdrTestServer`, `ControlReply`, стандартні `ProductId` і `ReceiverState` тощо.
+- Consumes: пункти Vega (Task 12); `DeviceCatalog`, `DeviceIdentity`, `IdentificationOptions`, `ProbeAsync`, `DeviceVersion`, `DeviceNotRecognizedException` (Tasks 10, 11); `NetSdrControlClient`; `NetSdrTestServer`, `ControlReply`.
 - Produces:
-  - `VegaReceiver` з API специфікації 11.3; у цій задачі все, крім `ReadEventsAsync`, `StartStreamAsync`, `StopStreamAsync` (вони в Task 12). `VegaException(string message)` успадковує `Exception`. `VegaEvent`, `TemperatureReport`, `OverloadDetected` як записи зі специфікації 11.3.
-  - `VegaEmulator` з API специфікації 11.4, `DefaultKey = 0xC0DE_5EC5`.
-  - Тести: `static class VegaFixture { static Task<(VegaEmulator Emulator, VegaReceiver Vega)> ConnectAsync(); }`. Він запускає емулятор і підключає `VegaReceiver` до `127.0.0.1:Port` з `DefaultKey`.
+  - `sealed record VegaInfo(Version Firmware, bool Unlocked)` і `static class VegaProbes { static ProbeAsync Identify(uint unlockKey); }` дослівно за спекою ідентифікації 6.2.
+  - `sealed class VegaException : Exception` з конструктором `(string message, DeviceIdentity? identity = null)` і властивістю `DeviceIdentity? Identity`.
+  - `abstract record VegaEvent`; `sealed record TemperatureReport(TemperatureSensor Sensor, double Celsius, byte? Status = null) : VegaEvent` (рішення 17); `sealed record OverloadDetected(byte Channel, OverloadFlags Flags) : VegaEvent`.
+  - `abstract class VegaReceiverBase : IAsyncDisposable` з `protected VegaReceiverBase(NetSdrControlClient control, DeviceIdentity identity)`, двома статичними `ConnectAsync` зі спеки 11.3, `Control`, `Identity`, `SelectAntennaAsync`, `GetAntennaAsync`, `abstract Task<double> GetTemperatureAsync(TemperatureSensor sensor, CancellationToken ct = default)`, `SetLabelAsync`, `GetLabelAsync`, `DisposeAsync`. Події і потік додає Task 14.
+  - `sealed class VegaV1Receiver` і `VegaV2Receiver` з публічними конструкторами `(NetSdrControlClient control, DeviceIdentity identity)`. Температуру читають через `GetAsync<BoardTemperatureV1, TemperatureSensor>` і `GetAsync<BoardTemperatureV2, TemperatureSensor>` відповідно.
+  - Тести: `enum VegaFirmware { V1, V2 }`; `VegaEmulator` за спекою 11.4 базової спеки і 6.4 спеки ідентифікації, `DefaultKey = 0xC0DE_5EC5`; `static class VegaFixture` з методами `Task<(VegaEmulator Emulator, VegaReceiverBase Vega)> ConnectAsync(VegaFirmware firmware = VegaFirmware.V2)` (запускає емулятор і підключає `VegaReceiverBase.ConnectAsync` до `127.0.0.1:Port` з `DefaultKey`) і `Task AssertServerFreeAsync(NetSdrTestServer server)` (як у `Loopback` з Task 7).
 
-Правила емулятора (специфікація 11.4): `Preload(new ProductId(VegaProtocol.ProductId))`; обробники `VendorUnlock`, `AntennaSelect`, `BoardTemperature`, `DeviceLabel`, `OverloadEvent`; стан у полях емулятора під замком. `AntennaSelect`: Set зберігає порт для каналу і дає Echo, Get повертає `AntennaSelect(channel, порт або A)`. `BoardTemperature`: Get для заданого сенсора дає `Item`, для незаданого `Nak`; Set дає `Nak`. `DeviceLabel`: Set зберігає і дає Echo, Get повертає мітку (за замовчуванням `""`). `SendTemperatureAsync` і `SendOverloadAsync` викликають `Server.SendUnsolicitedAsync`.
+Правила `VegaReceiverBase.ConnectAsync`:
 
-Правила `VegaReceiver`: `ConnectAsync` створює клієнт, підключає, читає `ProductId`; чужий дає `VegaException($"Device is not a Vega receiver (product id 0x{id:X8}).")`; потім `SetAsync(new VendorUnlock(key))`. Будь-який виняток після створення клієнта закриває клієнт і пробрасується далі. `SetLabelAsync` створює `DeviceLabel` до надсилання, тож `ArgumentException` летить раніше за будь-який запит.
+```csharp
+var catalog = new DeviceCatalog<VegaReceiverBase>(
+        new IdentificationOptions { Probes = { VegaProbes.Identify(unlockKey) } }, options)
+    .Register("Vega v2",
+        id => id.ProductId == VegaProtocol.ProductId && id.Get<VegaInfo>().Firmware >= new Version(2, 0),
+        (client, id) => new VegaV2Receiver(client, id))
+    .Register("Vega v1",
+        id => id.ProductId == VegaProtocol.ProductId,
+        (client, id) => new VegaV1Receiver(client, id));
+```
+
+`DeviceNotRecognizedException ex` перетворюється на `VegaException($"Device is not a Vega receiver (product id 0x{ex.Identity.ProductId?.ToString("X8") ?? "none"}).", ex.Identity)`. Інші винятки, зокрема `NetSdrNakException` від розблокування, проходять як є. Клієнт закриває каталог.
+
+Правила емулятора:
+- `Preload(new ProductId(VegaProtocol.ProductId))`; стандартні пункти обслуговує стан сервера.
+- `VendorUnlock`: правильний ключ дає `Echo` і розблоковує, інакше `Nak`.
+- Коди 0x8001..0x8005 без розблокування дають `Nak`. `AntennaSelect`: Set зберігає порт каналу, Get повертає його (за замовчуванням `A`). Температура зберігається в градусах по сенсорах; Get відповідає `BoardTemperatureV1` або `BoardTemperatureV2` зі `Status = 0` залежно від `Firmware`; незаданий сенсор і Set дають `Nak`. `DeviceLabel`: Set зберігає, Get віддає (за замовчуванням `""`). 0x8004 завжди дає `Nak`. 0x8005 дає `VegaFirmwareInfo(200)` у V2 і `Nak` у V1.
+- `SendTemperatureAsync` кодує за `Firmware` так само, як Get. `SendOverloadAsync` шле `OverloadEvent`.
 
 - [ ] **Step 1: Написати тести, що падають**
 
 ```csharp
 public class VegaConnectTests
 {
-    [Fact]
-    public async Task CorrectKey_Unlocks()
+    [Theory]
+    [InlineData(VegaFirmware.V1, typeof(VegaV1Receiver), 1)]
+    [InlineData(VegaFirmware.V2, typeof(VegaV2Receiver), 2)]
+    public async Task Connect_PicksClientByFirmware(VegaFirmware firmware, Type receiverType, int major)
     {
-        var (emulator, vega) = await VegaFixture.ConnectAsync();
+        var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
         await using var _ = emulator; await using var __ = vega;
+        Assert.IsType(receiverType, vega);
+        Assert.Equal(new Version(major, 0), vega.Identity.Get<VegaInfo>().Firmware);
         Assert.True(emulator.IsUnlocked);
-        Assert.Equal(new[] { (RequestType.Get, (ushort)0x0009), (RequestType.Set, VegaProtocol.VendorUnlockCode) },
-            emulator.Server.Received.Select(r => (r.Type, r.Code)));
+        var codes = emulator.Server.Received.Select(r => r.Code).ToList();
+        Assert.True(codes.IndexOf(0x0009) < codes.IndexOf(VegaProtocol.VendorUnlockCode));
+        Assert.Equal(codes.IndexOf(VegaProtocol.VendorUnlockCode) + 1, codes.IndexOf(VegaProtocol.FirmwareInfoCode));
     }
 
     [Fact]
-    public async Task WrongKey_ThrowsNak()
+    public async Task WrongKey_ThrowsNak_ClosesClient()
     {
         await using var emulator = new VegaEmulator();
         await emulator.StartAsync();
         var ex = await Assert.ThrowsAsync<NetSdrNakException>(
-            () => VegaReceiver.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
+            () => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
         Assert.Equal(VegaProtocol.VendorUnlockCode, ex.Code);
         Assert.False(emulator.IsUnlocked);
+        Assert.DoesNotContain(emulator.Server.Received, r => r.Code == VegaProtocol.FirmwareInfoCode);
+        await VegaFixture.AssertServerFreeAsync(emulator.Server);
     }
 
     [Fact]
-    public async Task ForeignDevice_ThrowsAndClosesConnection()
+    public async Task ForeignDevice_ThrowsVegaException_WithIdentity()
     {
         await using var server = new NetSdrTestServer();
         server.Preload(new ProductId(0x03524453));
         await server.StartAsync();
-        await Assert.ThrowsAsync<VegaException>(
-            () => VegaReceiver.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
-        Assert.DoesNotContain(server.Received, r => r.Code == VegaProtocol.VendorUnlockCode);
-        await using var next = new NetSdrControlClient();       // server takes one client at a time,
-        await next.ConnectAsync("127.0.0.1", server.Port);      // so this proves the first one closed
-        Assert.Equal(0x03524453u, (await next.GetAsync<ProductId>().WaitAsync(Limits.Test)).Value);
+        var ex = await Assert.ThrowsAsync<VegaException>(
+            () => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
+        Assert.Equal(0x03524453u, ex.Identity!.ProductId);
+        Assert.DoesNotContain(server.Received,
+            r => r.Code is VegaProtocol.VendorUnlockCode or VegaProtocol.FirmwareInfoCode);
+        await VegaFixture.AssertServerFreeAsync(server);
     }
 
     [Fact]
@@ -1964,10 +2413,12 @@ public class VegaCommandTests
         Assert.Equal(AntennaPort.A, await vega.GetAntennaAsync(2));
     }
 
-    [Fact]
-    public async Task Temperature_BySensor()
+    [Theory]
+    [InlineData(VegaFirmware.V1)]
+    [InlineData(VegaFirmware.V2)]
+    public async Task Temperature_ReadsFormatOfFirmware(VegaFirmware firmware)
     {
-        var (emulator, vega) = await VegaFixture.ConnectAsync();
+        var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
         await using var _ = emulator; await using var __ = vega;
         emulator.SetTemperature(TemperatureSensor.Adc, 41.25);
         emulator.SetTemperature(TemperatureSensor.Board, -12.5);
@@ -1994,14 +2445,44 @@ public class VegaCommandTests
         Assert.DoesNotContain(emulator.Server.Received, r => r.Code == VegaProtocol.DeviceLabelCode);
     }
 }
+
+public class VegaCatalogTests
+{
+    sealed record GenericDevice(NetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => Client.DisposeAsync();
+    }
+
+    static DeviceCatalog<IAsyncDisposable> Catalog() =>
+        new DeviceCatalog<IAsyncDisposable>(new IdentificationOptions { Probes = { VegaProbes.Identify(VegaEmulator.DefaultKey) } })
+            .Register("Vega v2",
+                id => id.ProductId == VegaProtocol.ProductId && id.Get<VegaInfo>().Firmware >= new Version(2, 0),
+                (c, id) => new VegaV2Receiver(c, id))
+            .Register("Vega v1", id => id.ProductId == VegaProtocol.ProductId, (c, id) => new VegaV1Receiver(c, id))
+            .Default((c, id) => new GenericDevice(c, id));
+
+    [Fact]
+    public async Task OwnCatalog_VegaGetsVersionClient_OtherGetsDefault()
+    {
+        await using var emulator = new VegaEmulator(firmware: VegaFirmware.V1);
+        await emulator.StartAsync();
+        await using var bare = new NetSdrTestServer();
+        await bare.StartAsync();
+        var catalog = Catalog();
+        await using var vega = await catalog.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port));
+        await using var other = await catalog.ConnectAsync(new IPEndPoint(IPAddress.Loopback, bare.Port));
+        Assert.IsType<VegaV1Receiver>(vega);
+        Assert.IsType<GenericDevice>(other);
+    }
+}
 ```
 
 - [ ] **Step 2: Запустити й побачити падіння**
 
-Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~VegaConnectTests|FullyQualifiedName~VegaCommandTests"`
+Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~VegaConnectTests|FullyQualifiedName~VegaCommandTests|FullyQualifiedName~VegaCatalogTests"`
 Expected: збірка падає.
 
-- [ ] **Step 3: Реалізувати `VegaException`, `VegaEvent`, `VegaReceiver` (частина цієї задачі), `VegaEmulator`, `VegaFixture`**
+- [ ] **Step 3: Реалізувати `VegaInfo`, `VegaProbes`, `VegaException`, `VegaEvent`, `VegaReceiverBase` (частина цієї задачі), `VegaV1Receiver`, `VegaV2Receiver`, `VegaEmulator`, `VegaFixture`**
 
 - [ ] **Step 4: Запустити тести**
 
@@ -2012,29 +2493,32 @@ Expected: PASS.
 
 ```bash
 git add -A
-git commit -m "feat: Vega receiver client and device emulator" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat: Vega identification probe, versioned clients and emulator" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 12: Vega: події і потік даних
+### Task 14: Vega: події і потік даних
 
 **Files:**
-- Modify: `examples/Vega/NetSdr.Examples.Vega/VegaReceiver.cs`
+- Modify: `examples/Vega/NetSdr.Examples.Vega/VegaReceiverBase.cs`, `VegaV1Receiver.cs`, `VegaV2Receiver.cs`
 - Test: `examples/Vega/NetSdr.Examples.Vega.Tests/Receiver/VegaEventTests.cs`, `Receiver/VegaStreamTests.cs`
 
 **Interfaces:**
-- Consumes: `VegaReceiver`, `VegaEmulator`, `VegaFixture` (Task 11); `NetSdrDataReceiver`, `DataPacketInfo` (Task 8); `AutoStream` тестового сервера (Task 9).
-- Produces: `IAsyncEnumerable<VegaEvent> ReadEventsAsync([EnumeratorCancellation] CancellationToken ct = default)`, `Task StartStreamAsync(IPEndPoint target, ulong frequencyHz, uint sampleRate, CancellationToken ct = default)`, `Task StopStreamAsync(CancellationToken ct = default)` за специфікацією 11.3.
+- Consumes: `VegaReceiverBase`, `VegaV1Receiver`, `VegaV2Receiver`, `VegaEmulator`, `VegaFixture` (Task 13); `NetSdrDataReceiver`, `DataPacketInfo` (Task 8); `AutoStream` тестового сервера (Task 9); `Eventually`.
+- Produces на `VegaReceiverBase`: `IAsyncEnumerable<VegaEvent> ReadEventsAsync([EnumeratorCancellation] CancellationToken ct = default)`, `protected abstract VegaEvent? TryParseEvent(in ControlItemMessage message)`, `Task StartStreamAsync(IPEndPoint target, ulong frequencyHz, uint sampleRate, CancellationToken ct = default)`, `Task StopStreamAsync(CancellationToken ct = default)`.
 
-Правила: `ReadEventsAsync` перебирає `Control.Unsolicited.ReadAllAsync(ct)`, бере лише `ReplyType.Unsolicited`, `BoardTemperature` перетворює на `TemperatureReport(Sensor, Celsius)`, `OverloadEvent` на `OverloadDetected(Channel, Flags)`; інші коди і `NetSdrProtocolException` з `As<T>` пропускає. Порядок і значення запитів `StartStreamAsync` і `StopStreamAsync` за специфікацією 11.3.
+Правила:
+- `ReadEventsAsync` перебирає `Control.Unsolicited.ReadAllAsync(ct)` і бере лише `ReplyType.Unsolicited`. `OverloadEvent` розбирає база і дає `OverloadDetected(Channel, Flags)`; решту передає в `TryParseEvent`. `null` і `NetSdrProtocolException` з `As<T>` пропускаються.
+- `TryParseEvent` у V1 перетворює `BoardTemperatureV1` на `TemperatureReport(Sensor, Celsius)`, у V2 перетворює `BoardTemperatureV2` на `TemperatureReport(Sensor, Celsius, Status)`; інші коди дають `null`.
+- Запити `StartStreamAsync` і `StopStreamAsync` у порядку зі специфікації 11.3.
 
 - [ ] **Step 1: Написати тести, що падають**
 
 ```csharp
 public class VegaEventTests
 {
-    static async Task<List<VegaEvent>> TakeAsync(VegaReceiver vega, int count)
+    static async Task<List<VegaEvent>> TakeAsync(VegaReceiverBase vega, int count)
     {
         using var cts = new CancellationTokenSource(Limits.Test);
         var events = new List<VegaEvent>();
@@ -2046,14 +2530,18 @@ public class VegaEventTests
         return events;
     }
 
-    [Fact]
-    public async Task Events_ArriveInOrder()
+    [Theory]
+    [InlineData(VegaFirmware.V1)]
+    [InlineData(VegaFirmware.V2)]
+    public async Task Events_ParsedPerFirmware_InOrder(VegaFirmware firmware)
     {
-        var (emulator, vega) = await VegaFixture.ConnectAsync();
+        var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
         await using var _ = emulator; await using var __ = vega;
         await emulator.SendTemperatureAsync(TemperatureSensor.Board, 36.6);
         await emulator.SendOverloadAsync(1, OverloadFlags.Rf);
-        Assert.Equal(new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6), new OverloadDetected(1, OverloadFlags.Rf) },
+        byte? status = firmware == VegaFirmware.V2 ? (byte)0 : null;
+        Assert.Equal(
+            new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6, status), new OverloadDetected(1, OverloadFlags.Rf) },
             await TakeAsync(vega, 2));
     }
 
@@ -2062,10 +2550,10 @@ public class VegaEventTests
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
         await using var _ = emulator; await using var __ = vega;
-        emulator.Server.OnRequest<BoardTemperature>(r =>
+        emulator.Server.OnRequest<BoardTemperatureV2>(r =>
         {
             emulator.SendOverloadAsync(0, OverloadFlags.Adc).GetAwaiter().GetResult();
-            return ControlReply.Item(BoardTemperature.FromCelsius(r.Key<TemperatureSensor>(), 30));
+            return ControlReply.Item(BoardTemperatureV2.FromCelsius(r.Key<TemperatureSensor>(), 30));
         });
         Assert.Equal(30.0, await vega.GetTemperatureAsync(TemperatureSensor.Board));
         Assert.Equal(new VegaEvent[] { new OverloadDetected(0, OverloadFlags.Adc) }, await TakeAsync(vega, 1));
@@ -2097,9 +2585,9 @@ public class VegaStreamTests
         receiver.Start();
 
         await vega.StartStreamAsync(receiver.LocalEndPoint, 7_100_000, 200_000);
-        await Eventually.ThatAsync(() => packets.Count >= 3);
         Assert.Equal(new ushort[] { 0x00B8, 0x0020, 0x00C5, 0x0018 },
-            emulator.Server.Received.Skip(2).Select(r => r.Code));
+            emulator.Server.Received.Select(r => r.Code).TakeLast(4));
+        await Eventually.ThatAsync(() => packets.Count >= 3);
         var first = packets.First();
         Assert.Equal((SampleFormat.Int16, (ushort)0), (first.Info.Format, first.Info.Sequence));
         Assert.Equal(new short[] { 0, -1, 1, -2 }, MemoryMarshal.Cast<byte, short>(first.Samples)[..4].ToArray());
@@ -2118,7 +2606,7 @@ public class VegaStreamTests
 Run: `dotnet test NetSdr.sln --filter "FullyQualifiedName~VegaEventTests|FullyQualifiedName~VegaStreamTests"`
 Expected: збірка падає, методів немає.
 
-- [ ] **Step 3: Реалізувати `ReadEventsAsync`, `StartStreamAsync`, `StopStreamAsync`**
+- [ ] **Step 3: Реалізувати `ReadEventsAsync`, `TryParseEvent` у V1 і V2, `StartStreamAsync`, `StopStreamAsync`**
 
 - [ ] **Step 4: Запустити всі тести рішення тричі поспіль**
 
