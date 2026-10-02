@@ -1,7 +1,10 @@
 using System.Net;
+using System.Runtime.CompilerServices;
 using NetSdr.Control;
 using NetSdr.Examples.Vega.Items;
+using NetSdr.Framing;
 using NetSdr.Identification;
+using NetSdr.Items;
 
 namespace NetSdr.Examples.Vega;
 
@@ -91,8 +94,93 @@ public abstract class VegaReceiverBase : IAsyncDisposable
         return reply.Value;
     }
 
+    /// <summary>
+    /// Points the data output at <paramref name="target"/> and starts a 16-bit I/Q stream of channel 0. The requests go
+    /// in this order: sample rate, frequency, destination, then the receiver state that starts the capture.
+    /// </summary>
+    /// <param name="target">Where the receiver sends the UDP data; an IPv4 end point, usually that of a <see cref="NetSdr.Data.NetSdrDataReceiver"/>.</param>
+    /// <param name="frequencyHz">Receiver frequency in hertz, at most <see cref="UInt40.MaxValue"/>.</param>
+    /// <param name="sampleRate">Output sample rate in hertz.</param>
+    /// <param name="ct">Cancels the wait for the replies.</param>
+    /// <exception cref="ArgumentException"><paramref name="target"/> is not an IPv4 end point. Nothing is sent then.</exception>
+    /// <exception cref="OverflowException"><paramref name="frequencyHz"/> does not fit in 40 bits. Nothing is sent then.</exception>
+    public async Task StartStreamAsync(IPEndPoint target, ulong frequencyHz, uint sampleRate, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        // Everything that can be rejected is built before the first request, so a bad argument leaves the device untouched.
+        var rate = new OutputSampleRate(0, sampleRate);
+        var frequency = new ReceiverFrequency(ReceiverFrequency.Channel1, frequencyHz);
+        var destination = DataOutputUdpAddress.For(target);
+
+        await Control.SetAsync(rate, ct).ConfigureAwait(false);
+        await Control.SetAsync(frequency, ct).ConfigureAwait(false);
+        await Control.SetAsync(destination, ct).ConfigureAwait(false);
+        await Control.SetAsync(ReceiverState.Start(complex: true, bits24: false), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Stops the stream.</summary>
+    public Task StopStreamAsync(CancellationToken ct = default) =>
+        Control.SetAsync(ReceiverState.Stop, ct);
+
+    /// <summary>
+    /// Reads the events the receiver sends on its own, in the order they arrive. The sequence ends when the control
+    /// client is closed or fails. Messages that are not events of this class, or whose payload cannot be read, are skipped.
+    /// </summary>
+    /// <remarks>
+    /// The events come from <see cref="NetSdrControlClient.Unsolicited"/>, which has one reader, so only one enumeration
+    /// at a time is supported.
+    /// </remarks>
+    /// <param name="ct">Stops the enumeration; it then throws <see cref="OperationCanceledException"/>.</param>
+    public async IAsyncEnumerable<VegaEvent> ReadEventsAsync([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await foreach (var message in Control.Unsolicited.ReadAllAsync(ct).ConfigureAwait(false))
+        {
+            if (message.Type != ReplyType.Unsolicited)
+            {
+                continue;
+            }
+
+            if (ParseEvent(message) is { } vegaEvent)
+            {
+                yield return vegaEvent;
+            }
+        }
+    }
+
     /// <summary>Closes the control client.</summary>
     public ValueTask DisposeAsync() => Control.DisposeAsync();
+
+    /// <summary>
+    /// Turns a message into an event of this firmware version. <see cref="OverloadEvent"/> is the same in every version
+    /// and is handled by the base class; the rest is left to <see cref="TryParseEvent"/>.
+    /// </summary>
+    /// <param name="message">An unsolicited message, which <see cref="ReadEventsAsync"/> has already selected.</param>
+    /// <returns>The event, or <see langword="null"/> for a message that is not one.</returns>
+    /// <exception cref="NetSdrProtocolException">
+    /// The payload of the item cannot be read, which <see cref="ControlItemMessage.As{T}"/> reports; <see cref="ReadEventsAsync"/>
+    /// skips such a message.
+    /// </exception>
+    protected abstract VegaEvent? TryParseEvent(in ControlItemMessage message);
+
+    // One telemetry frame with a broken payload must not end the stream of events, so a read failure is a skipped message.
+    private VegaEvent? ParseEvent(in ControlItemMessage message)
+    {
+        try
+        {
+            if (message.Is<OverloadEvent>())
+            {
+                var overload = message.As<OverloadEvent>();
+                return new OverloadDetected(overload.Channel, overload.Flags);
+            }
+
+            return TryParseEvent(in message);
+        }
+        catch (NetSdrProtocolException)
+        {
+            return null;
+        }
+    }
 
     // The catalog creates the client and closes it on any failure, so nothing leaks from here.
     private static async Task<VegaReceiverBase> ConnectCoreAsync(

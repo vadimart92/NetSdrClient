@@ -18,4 +18,15 @@ public sealed class VegaV2Receiver : VegaReceiverBase
         var reply = await Control.GetAsync<BoardTemperatureV2, TemperatureSensor>(sensor, ct).ConfigureAwait(false);
         return reply.Celsius;
     }
+
+    protected override VegaEvent? TryParseEvent(in ControlItemMessage message)
+    {
+        if (!message.Is<BoardTemperatureV2>())
+        {
+            return null;
+        }
+
+        var temperature = message.As<BoardTemperatureV2>();
+        return new TemperatureReport(temperature.Sensor, temperature.Celsius, temperature.Status);
+    }
 }
