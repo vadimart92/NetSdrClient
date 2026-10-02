@@ -30,8 +30,9 @@ RFSPACE (SDR-IP, NetSDR і сумісні). Перший застосунок з
 - Декодування семплів у числа. Для 16 біт це `MemoryMarshal.Cast<byte, short>` на боці
   застосунку, для 24 біт застосунок розбирає сам.
 
-**Джерела.** `sdripinterfacespec103.pdf` у корені репозиторію; реалізація в gr-osmosdr
-(`lib/rfspace/rfspace_source_c.cc`) як перевірка на практиці.
+**Джерела.** RFSPACE, "SDR-IP Interface Specification" ver. 1.03 від 2011-07-20
+(файл `sdripinterfacespec103.pdf` з www.rfspace.com; у репозиторії не зберігається);
+реалізація в gr-osmosdr (`lib/rfspace/rfspace_source_c.cc`) як перевірка на практиці.
 
 ## 2. Архітектура
 
