@@ -106,7 +106,7 @@ sequenceDiagram
     Dev-->>CC: [0B 00] [01 00] "SDR-IP\0"
     CC-->>App: TargetName { Value = "SDR-IP" }
 
-    App->>DR: Bind(0); Start()
+    App->>DR: Bind(0), Start()
     App->>DR: SetReceiveBuffer(200 ms, DataRate.BytesPerSecond(...))
     App->>CC: SetAsync(new OutputSampleRate(0, 500_000))
     App->>CC: SetAsync(new ReceiverFrequency(0, 14_010_000))
