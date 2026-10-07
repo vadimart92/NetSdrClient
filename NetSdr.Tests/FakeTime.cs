@@ -1,10 +1,27 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using Microsoft.Extensions.Time.Testing;
 
 namespace NetSdr.Tests;
 
 /// <summary>Helpers for driving a fake clock in tests.</summary>
 internal static class FakeTime
 {
+    /// <summary>
+    /// Advances fake time by <paramref name="step"/> until <paramref name="condition"/> holds. Pending timers of FakeTimeProvider
+    /// cannot be seen, so time moves in steps with a real millisecond between them for the released work to run.
+    /// </summary>
+    /// <exception cref="TimeoutException">The condition did not hold within Limits.Test of real time.</exception>
+    public static async Task AdvanceUntilAsync(this FakeTimeProvider time, Func<bool> condition, TimeSpan step)
+    {
+        var clock = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (clock.Elapsed > Limits.Test) throw new TimeoutException($"The condition was not met within {Limits.Test} of real time.");
+            time.Advance(step);
+            await Task.Delay(1);
+        }
+    }
 }
 
 /// <summary>

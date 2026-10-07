@@ -25,6 +25,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Channel<ControlItemMessage> _unsolicited;
     private readonly ResiliencePipeline _commandPipeline;
+    private readonly ResiliencePipeline _reconnect;
     private readonly NetSdrControlClientOptions _innerOptions;
     private readonly ResilientControlClientOptions _options;
     private readonly TimeProvider _time;
@@ -39,11 +40,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
     private long _lastAttemptStart;
-#pragma warning disable CS0169, CS0414, CS0649 // Written by the supervisor, which loss handling and reconnection add.
+
+    /// <summary>The link of the reconnection attempt in progress, from its pump start until it is published or closed; what <see cref="DisposeAsync"/> closes besides <see cref="_link"/>.</summary>
     private Link? _restoring;
+
+    /// <summary>The failure the client gave up with; <see langword="null"/> while it has not, and after a plain disposal.</summary>
     private IOException? _failure;
+#pragma warning disable CS0414 // Read by the CommandTimeout translation (spec 6.5 step 7), which a later task adds.
     private Exception? _lastLoss;
-#pragma warning restore CS0169, CS0414, CS0649
+#pragma warning restore CS0414
 
     private ResilientControlClient(
         Func<NetSdrControlClient, CancellationToken, Task> connect, string target, ResilientControlClientOptions options)
@@ -84,6 +89,31 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                 },
             })
             .Build();
+        // Polly needs MaxRetryAttempts >= 1, so with one attempt per loss there is no retry strategy at all.
+        _reconnect = options.ReconnectAttempts == 1
+            ? ResiliencePipeline.Empty
+            : new ResiliencePipelineBuilder { TimeProvider = options.TimeProvider }
+                .AddRetry(new RetryStrategyOptions
+                {
+                    MaxRetryAttempts = options.ReconnectAttempts - 1,
+                    BackoffType = DelayBackoffType.Exponential,
+                    Delay = TimeSpan.FromSeconds(1),
+                    MaxDelay = TimeSpan.FromSeconds(30),
+                    UseJitter = options.UseJitter,
+                    // Cancellation is the disposal, never a failed attempt. A fatal restore failure joins this condition
+                    // with the ConnectionRestored callback.
+                    ShouldHandle = static a => ValueTask.FromResult(
+                        a.Outcome.Exception is not null && !a.Context.CancellationToken.IsCancellationRequested),
+                    OnRetry = a =>
+                    {
+                        // OnRetryArguments carries no TState: the counter and the phase come from the context.
+                        ReconnectState state = a.Context.Properties.GetValue(ReconnectKey, null!);
+                        ResilientClientLog.ReconnectAttemptFailed(
+                            _logger, state.Attempt, _target, state.Phase, a.RetryDelay, a.Outcome.Exception!);
+                        return default;
+                    },
+                })
+                .Build();
     }
 
     /// <summary>
@@ -284,13 +314,23 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
     }
 
-    /// <summary>The first and only attempt of <c>ConnectAsync</c>: spec 7.4 steps 2-5 with the caller's token, then the publication.</summary>
+    /// <summary>
+    /// The first and only attempt of <c>ConnectAsync</c>: spec 7.4 steps 2-5 with the caller's token, then the
+    /// publication and the start of the supervisor.
+    /// </summary>
     private async Task<ResilientControlClient> ConnectCoreAsync(CancellationToken ct)
     {
         // Recorded as for a reconnection attempt, so the first attempt after an early loss keeps the 1 s floor.
         _lastAttemptStart = _time.GetTimestamp();
         Link link = await OpenLinkAsync(null, ct).ConfigureAwait(false);
-        Publish(link);
+        if (!Publish(link))
+        {
+            // Nobody holds the client yet, so only ConnectAsync itself could have closed it; kept for the invariant.
+            await CloseLinkAsync(link).ConfigureAwait(false);
+            throw new ObjectDisposedException(nameof(ResilientControlClient));
+        }
+
+        _supervisor = SuperviseAsync(link);
         try
         {
             ResilientClientLog.Connected(_logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint);
@@ -305,24 +345,6 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         return this;
     }
 
-    /// <summary>
-    /// Makes <paramref name="link"/> the connection commands use (spec 6.1 <c>Publish</c>). The supervisor adds the
-    /// Closed branch, which closes the link instead.
-    /// </summary>
-    private void Publish(Link link)
-    {
-        TaskCompletionSource changed;
-        lock (_sync)
-        {
-            _restoring = null;
-            _link = link;
-            _state = ClientState.Connected;
-            changed = SwapChanged();
-        }
-
-        changed.TrySetResult();
-    }
-
     /// <summary>Replaces the state-change signal; the caller completes the returned one outside the lock. Call under <see cref="_sync"/>.</summary>
     private TaskCompletionSource SwapChanged()
     {
@@ -333,10 +355,12 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Spec 7.4 steps 2-5 and 9: a new inner client, the TCP connection within
-    /// <see cref="ResilientControlClientOptions.ConnectTimeout"/>, the pump, and the verification request. On any
-    /// failure the inner client is closed and its pump awaited before the exception leaves.
+    /// <see cref="ResilientControlClientOptions.ConnectTimeout"/>, the pump, the handover to <see cref="_restoring"/>
+    /// and the verification request. On any failure the inner client is closed and its pump awaited before the
+    /// exception leaves.
     /// </summary>
     /// <param name="phase">Told the phase the attempt enters, for event 1104.</param>
+    /// <exception cref="ObjectDisposedException">The client was closed while the connection was being made.</exception>
     private async Task<Link> OpenLinkAsync(Action<ReconnectPhase>? phase, CancellationToken ct)
     {
         var inner = new NetSdrControlClient(_innerOptions);
@@ -351,16 +375,51 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             _ = inner.Completion.ContinueWith(
                 _ => OnInnerCompleted(link), CancellationToken.None, TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default);
             link.Pump = PumpAsync(link);
+
+            // Step 4. From here DisposeAsync sees the link and closes it; a client already closed takes no new link.
+            bool closed;
+            lock (_sync)
+            {
+                closed = _state == ClientState.Closed;
+                if (!closed)
+                {
+                    _restoring = link;
+                }
+            }
+
+            if (closed)
+            {
+                throw new ObjectDisposedException(nameof(ResilientControlClient));
+            }
+
             phase?.Invoke(ReconnectPhase.Verify);
             await VerifyAsync(link, ct).ConfigureAwait(false);
             return link;
         }
         catch
         {
-            await inner.DisposeAsync().ConfigureAwait(false);
-            await link.Pump.ConfigureAwait(false);
+            // Step 9.
+            await CloseLinkAsync(link).ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Ends a link the supervisor will not publish, or has retired: forgets it as the one being restored, closes its
+    /// inner client and waits for its pump, so no connection outlives the attempt (spec 6.10 invariant 10).
+    /// </summary>
+    private async Task CloseLinkAsync(Link link)
+    {
+        lock (_sync)
+        {
+            if (ReferenceEquals(_restoring, link))
+            {
+                _restoring = null;
+            }
+        }
+
+        await link.Client.DisposeAsync().ConfigureAwait(false);
+        await link.Pump.ConfigureAwait(false);
     }
 
     /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>.</exception>
