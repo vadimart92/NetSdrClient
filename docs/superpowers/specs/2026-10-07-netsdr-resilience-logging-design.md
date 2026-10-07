@@ -926,7 +926,8 @@ stateDiagram-v2
 - Захист від повторного входу. Якщо `_restoreScope.Value` це `{ Owner: this, Active: true }`,
   то створити `ex = new InvalidOperationException("Inside ConnectionRestored send requests
   through context.Client; the ResilientControlClient is waiting for this callback.")`,
-  записати `scope.Reentered = ex` і кинути `ex`.
+  записати його в `scope.Reentered`, якщо там ще нічого немає (`scope.Reentered ??= ex`:
+  відмову пояснює перший повторний вхід), і кинути `ex`.
 - Closed через `DisposeAsync`: `ObjectDisposedException`.
 - Closed через відмову: `InvalidOperationException("The client gave up reconnecting;
   create a new client.")` із внутрішнім `IOException` відмови. Тип винятку той самий, що в
@@ -962,6 +963,9 @@ a. Перейняття. Якщо `exec.Outstanding is { } e`: `exec.Outstanding
      Ніколи не повторюється.
    - `Lost(cause)`: `IOException("The connection to {target} was lost before {type}
      0x{code:X4} was answered.", cause)`. Повторюється на наступному з'єднанні.
+   - `OperationCanceledException` від `t` під час очікування: та сама передача, що в 4e.
+     Запит лишається на лінії й тримає Wire, а продовження на `e.Late` пише Debug 1108
+     (`CancelledCaller`), якщо обмін закінчиться запізнілою відповіддю.
 
 b. Link. `link = await WaitForLinkAsync(t)`:
    - `Connected` і `_link.Client.IsConnected`: повернути `_link`;
@@ -969,8 +973,9 @@ b. Link. `link = await WaitForLinkAsync(t)`:
      `_changed` і пробувати знову. Мертвий внутрішній клієнт завжди завершує `Completion`,
      і наглядач робить перехід;
    - Closed: `ObjectDisposedException` або `IOException` відмови;
-   - виконання сесії прив'язане до свого Link і бере його: мертвий Link дає `IOException`,
-     завершена сесія дає `InvalidOperationException`.
+   - виконання сесії прив'язане до свого Link і бере його. Перевірки йдуть у такому порядку:
+     завершена сесія дає `InvalidOperationException`, Closed дає кінцевий виняток
+     (`ObjectDisposedException` або `IOException` відмови), мертвий Link дає `IOException`.
 
 c. Лінія. `await link.Wire.WaitAsync(t)`.
    - Wire тримається, поки будь-який попередній обмін у польоті або без відповіді, тож
@@ -1318,7 +1323,9 @@ SuperviseAsync(Link link):
      що зловив `InvalidOperationException` повторного входу і повернувся нормально, все одно
      змушує клієнт відмовитися.
 7. Якщо `!inner.IsConnected`: `IOException("The connection was lost while it was being
-   restored.", link.LossCause)`.
+   restored.", LossCauseOf(link))`. `LossCauseOf(link)` це `link.LossCause`, а якщо його
+   немає, помилка, з якою завершився `Completion` внутрішнього клієнта (інакше `null`). Тож
+   причина є і тоді, коли з'єднання закрив пристрій, а не `Expire`.
 8. Повернути `link`.
 9. На будь-який виняток: під `_sync` очистити `_restoring`, якщо це цей Link,
    `await inner.DisposeAsync()`, `await link.Pump`, кинути далі. Поточна фаза лежить у
@@ -1335,7 +1342,7 @@ SuperviseAsync(Link link):
 - Виконується на перевіреному з'єднанні через `RestoreSession` (5.3). Запити сесії не
   займають admission (6.2), але займають Wire.
 - Повторний вхід заборонений. Виклик `ResilientControlClient` з колбеку кидає
-  `InvalidOperationException` синхронно і записує цей виняток у `scope.Reentered`. Після повернення
+  `InvalidOperationException` синхронно і записує перший такий виняток у `scope.Reentered`. Після повернення
   колбеку клієнт відмовляється перепідключатися з повідомленням, що називає помилку. Без
   цього колбек, що викликає клієнт, крутився б безкінечно: з'єднання, збій, backoff.
 - `scope` змінний об'єкт, а не значення. Задача, запущена в колбеку без очікування, може
@@ -1917,7 +1924,7 @@ TDD, як і раніше. Кожне очікування в тестах об�
 - **Обмін Link, що відновлюється**, розв'язується як `Lost` продовженням на `Completion`
   його внутрішнього клієнта, бо `MarkLost` діє лише на опублікований Link.
 - **Хто пише 1108.** Той, хто відмовився від обміну: наглядач для heartbeat, гілка
-  скасування для команди.
+  скасування для команди, і в кроці 4e, і під час перейняття в кроці 4a.
 - **Повторний вхід перевіряється після колбеку**, навіть якщо колбек зловив виняток.
 - **`Expire` діє на будь-який живий Link**, не лише на опублікований. Так запит сесії без
   відповіді понад дедлайн теж закриває з'єднання, що відновлюється (7.5).
