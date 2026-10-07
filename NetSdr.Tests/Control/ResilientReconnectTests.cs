@@ -164,6 +164,9 @@ public class ResilientReconnectTests
         {
             time.Advance(TimeSpan.FromSeconds(1));               // the first attempt after this loss may start at once
             device.CloseRemote();
+            // The loss and the refused attempt 2 run in real time on pool threads; fake time steps only once Polly has logged
+            // 1104 for it and is about to create its 1 s delay. The later attempts fire inline inside Advance and are exact.
+            await Eventually.ThatAsync(() => logs.Events(1104).Count == 1);
             await time.AdvanceUntilAsync(() => connector.Attempts >= 6, TimeSpan.FromMilliseconds(100));
             // Starts at 0, 1, 3, 7, 15 s: consecutive gaps, each late by at most a few 100 ms steps of fake time.
             var starts = connector.AttemptTimes.Skip(1).Take(5).ToArray();
