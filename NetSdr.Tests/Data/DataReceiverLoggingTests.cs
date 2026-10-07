@@ -167,6 +167,27 @@ public class DataReceiverLoggingTests
     public void StatisticsLogInterval_Infinite_Accepted() =>
         new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = Timeout.InfiniteTimeSpan }).Dispose();
 
+    [Fact]
+    public async Task Dispose_FromHandler_StoppedLoggedLast_WithThatHandlersError()
+    {
+        var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        int calls = 0;
+        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time }, onPacket: r =>
+        {
+            if (Interlocked.Increment(ref calls) < 256) return;
+            r.Dispose();                                       // on the 256th datagram, whose summary is due
+            throw new InvalidOperationException("handler");
+        });
+        time.Advance(TimeSpan.FromSeconds(10));
+        Send(c.EndPoint, 1, 256);
+        await Eventually.ThatAsync(() => logs.Events(1203).Count == 1);
+        await Task.Delay(100);                                 // whatever the receive thread did after 1203 is logged by now
+        var stopped = Assert.Single(logs.Events(1203));
+        Assert.Equal(("256", "1"), (stopped.Value("Received"), stopped.Value("HandlerErrors")));
+        Assert.Equal(1203, logs.Collector.GetSnapshot().Last().Id.Id);
+        Assert.Empty(logs.Events(1201).Concat(logs.Events(1202)));
+    }
+
     // Review Focus 5.
     [Fact]
     public void Dispose_Twice_StoppedLoggedOnce_NeverStarted_Silent()

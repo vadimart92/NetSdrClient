@@ -72,6 +72,10 @@ public sealed class NetSdrDataReceiver : IDisposable
     private DataReceiverStatistics _intervalBase;
     private bool _handlerErrorLogged;
 
+    // Set by a Dispose from inside the handler, which runs on the receive thread: the thread logs the totals once the
+    // handler has returned and its error, if any, is counted.
+    private bool _stoppedFromHandler;
+
     // Written only by the receive thread, read by any thread through Statistics.
     private long _received;
     private long _bytes;
@@ -268,7 +272,8 @@ public sealed class NetSdrDataReceiver : IDisposable
 
     /// <summary>
     /// Closes the socket and waits for the receive thread to finish, so no handler call is running when it returns.
-    /// Called from the handler itself, it only closes the socket and the thread ends once the handler returns.
+    /// Called from the handler itself, it only closes the socket: the thread ends once the handler returns, and only
+    /// then logs the totals, so they include that handler call and its error, and nothing is logged after them.
     /// Safe to call more than once; only the call that stops a started receiver logs its totals.
     /// </summary>
     public void Dispose()
@@ -284,25 +289,34 @@ public sealed class NetSdrDataReceiver : IDisposable
 
         _socket.Dispose();
 
-        if (thread is not null && !ReferenceEquals(thread, Thread.CurrentThread))
+        if (thread is not null && ReferenceEquals(thread, Thread.CurrentThread))
         {
-            thread.Join();
+            // From the handler: the receive loop logs the totals once this handler call is over.
+            _stoppedFromHandler |= previous == State.Started;
+            return;
         }
 
+        thread?.Join();
         if (previous == State.Started)
         {
-            long now = _timeProvider.GetTimestamp();
-            DataReceiverStatistics totals = Statistics;
-            DataReceiverLog.ReceiveStopped(
-                _logger,
-                _localEndPoint,
-                _timeProvider.GetElapsedTime(_startedAt, now),
-                totals.Received,
-                totals.Bytes,
-                totals.Lost,
-                totals.Rejected,
-                totals.HandlerErrors);
+            LogStopped();
         }
+    }
+
+    /// <summary>Event 1203 with the totals since <see cref="Start"/>; reads the clock once.</summary>
+    private void LogStopped()
+    {
+        long now = _timeProvider.GetTimestamp();
+        DataReceiverStatistics totals = Statistics;
+        DataReceiverLog.ReceiveStopped(
+            _logger,
+            _localEndPoint,
+            _timeProvider.GetElapsedTime(_startedAt, now),
+            totals.Received,
+            totals.Bytes,
+            totals.Lost,
+            totals.Rejected,
+            totals.HandlerErrors);
     }
 
     private static SampleFormat FormatOf(int datagramLength) => datagramLength switch
@@ -351,6 +365,22 @@ public sealed class NetSdrDataReceiver : IDisposable
             }
 
             Handle(buffer, length, from);
+
+            if (_stoppedFromHandler)
+            {
+                // The handler disposed the receiver. Its datagram and its error are counted now, so the totals are
+                // complete, and nothing is logged after them: no summary, and no further datagram.
+                try
+                {
+                    LogStopped();
+                }
+                catch (Exception)
+                {
+                    // A logging provider failed; an unhandled exception here would end the process.
+                }
+
+                return;
+            }
 
             // The datagram is counted and the handler has returned, so it belongs to the interval being checked.
             if (_summaries && ++_sinceCheck == SummaryCheckInterval)
