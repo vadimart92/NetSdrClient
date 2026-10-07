@@ -2,6 +2,7 @@ using System.Net;
 using NetSdr.Control;
 using NetSdr.Data;
 using NetSdr.Items;
+using NetSdr.Tests.Control;
 using NetSdr.Tests.Data;
 using NetSdr.Testing;
 
@@ -32,5 +33,31 @@ public class EndToEndTests
         Assert.All(infos, i => Assert.Equal(SampleFormat.Int24, i.Format));
         Assert.Equal(Enumerable.Range(0, 10).Select(i => (ushort)i), infos.Select(i => i.Sequence));
         Assert.Equal(0, c.Receiver.Statistics.Lost);
+    }
+
+    [Fact]
+    public async Task EndToEnd_StreamResumesAfterReconnect()
+    {
+        using var c = new PacketCollector();
+        var logs = new FakeLoggerFactory();
+        var options = Resilient.Fast(logs);
+        options.ConnectionRestored = async (ctx, ct) =>
+        {
+            await ctx.Client.SetAsync(DataOutputUdpAddress.For(new IPEndPoint(ctx.Client.LocalEndPoint!.Address, c.EndPoint.Port)), ct);
+            await ctx.Client.SetAsync(ReceiverState.Start(complex: true, bits24: false), ct);
+        };
+        var (server, client) = await Resilient.StartAsync(options);
+        await using (server)
+        await using (client)
+        {
+            await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
+            await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
+            await Eventually.ThatAsync(() => c.Packets.Count >= 10);
+            await server.DisconnectClientAsync();
+            await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
+            await Eventually.ThatAsync(() => c.Packets.Count(p => p.Info.IsCaptureStart) >= 2);
+            Assert.Equal(0, c.Receiver.Statistics.Lost);
+            Assert.Equal(0, c.Receiver.Statistics.HandlerErrors);
+        }
     }
 }

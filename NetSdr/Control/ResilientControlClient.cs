@@ -34,6 +34,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly string _target;
     private readonly Action<Task<ControlItemMessage>, object?> _settle;
 
+    /// <summary>The scope of the running <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback, seen by everything it runs (spec 7.5).</summary>
+    private readonly AsyncLocal<RestoreScope?> _restoreScope = new();
+
     // Guarded by _sync. _state and _link are also read without the lock by IsConnected and the end points.
     private volatile ClientState _state = ClientState.Reconnecting;
     private volatile Link _link = null!;    // published by ConnectCoreAsync before the instance is handed out
@@ -100,10 +103,11 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                     Delay = TimeSpan.FromSeconds(1),
                     MaxDelay = TimeSpan.FromSeconds(30),
                     UseJitter = options.UseJitter,
-                    // Cancellation is the disposal, never a failed attempt. A fatal restore failure joins this condition
-                    // with the ConnectionRestored callback.
+                    // Cancellation is the disposal, never a failed attempt; a reentrant ConnectionRestored callback is
+                    // fatal (spec 7.5), so the client gives up instead of trying again.
                     ShouldHandle = static a => ValueTask.FromResult(
-                        a.Outcome.Exception is not null && !a.Context.CancellationToken.IsCancellationRequested),
+                        a.Outcome.Exception is not (null or FatalRestoreException)
+                        && !a.Context.CancellationToken.IsCancellationRequested),
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
@@ -207,31 +211,44 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
     public Task<T> SetAsync<T>(T item, CancellationToken ct = default) where T : struct, IControlItem<T>
     {
+        ThrowIfReentrant();
         ThrowIfClosed();
-        return DecodeAsync<T>(CommandAsync(RequestType.Set, T.Code, Encode(in item), typeof(T).Name, ct));
+        return DecodeAsync<T>(CommandAsync(RequestType.Set, T.Code, Encode(in item), typeof(T).Name, ct, null));
     }
 
     /// <summary>Requests a control item that needs no key.</summary>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
-    public Task<T> GetAsync<T>(CancellationToken ct = default) where T : struct, IControlItem<T> =>
-        RequestAsync<T>(RequestType.Get, ReadOnlySpan<byte>.Empty, null, ct);
+    public Task<T> GetAsync<T>(CancellationToken ct = default) where T : struct, IControlItem<T>
+    {
+        ThrowIfReentrant();
+        ThrowIfClosed();
+        return RequestAsync<T>(RequestType.Get, ReadOnlySpan<byte>.Empty, null, ct, null);
+    }
 
     /// <summary>Requests a control item identified by <paramref name="key"/>, sent as its raw little-endian bytes (for example a channel number).</summary>
     /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
     public Task<T> GetAsync<T, TKey>(TKey key, CancellationToken ct = default)
-        where T : struct, IControlItem<T> where TKey : unmanaged =>
-        RequestAsync<T>(RequestType.Get, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
+        where T : struct, IControlItem<T> where TKey : unmanaged
+    {
+        ThrowIfReentrant();
+        ThrowIfClosed();
+        return RequestAsync<T>(RequestType.Get, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct, null);
+    }
 
     /// <summary>Requests the range of a control item; the device answers with a <c>RangeResponse</c>.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
     public Task<T> GetRangeAsync<T, TKey>(TKey key, CancellationToken ct = default)
-        where T : struct, IControlItem<T> where TKey : unmanaged =>
-        RequestAsync<T>(RequestType.GetRange, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
+        where T : struct, IControlItem<T> where TKey : unmanaged
+    {
+        ThrowIfReentrant();
+        ThrowIfClosed();
+        return RequestAsync<T>(RequestType.GetRange, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct, null);
+    }
 
     /// <summary>
     /// Sends a request for any item code and returns the device's reply uninterpreted. The reply type is
@@ -245,8 +262,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     public Task<ControlItemMessage> SendAsync(
         RequestType type, ushort code, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
+        ThrowIfReentrant();
         ThrowIfClosed();
-        return CommandAsync(type, code, CopyPayload(type, payload), null, ct);
+        return CommandAsync(type, code, CopyPayload(type, payload), null, ct, null);
     }
 
     /// <summary>Rejects options outside their ranges and returns a copy the client keeps.</summary>
@@ -473,6 +491,23 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
     }
 
+    /// <summary>
+    /// The first of spec 6.5 step 0: a command of this client from inside its own
+    /// <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback would wait for the connection the callback
+    /// is restoring. It is refused synchronously and recorded on the scope, which makes the client give up (spec 7.5).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Called from inside the callback.</exception>
+    private void ThrowIfReentrant()
+    {
+        if (_restoreScope.Value is { Active: true } scope && ReferenceEquals(scope.Owner, this))
+        {
+            var ex = new InvalidOperationException(
+                "Inside ConnectionRestored send requests through context.Client; the ResilientControlClient is waiting for this callback.");
+            scope.Reentered ??= ex;
+            throw ex;
+        }
+    }
+
     /// <summary>Spec 6.5 step 0: the Closed checks, before anything is encoded or queued.</summary>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting.</exception>
@@ -517,13 +552,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         return payload.ToArray();
     }
 
+    /// <summary>The rest of spec 6.5 step 0 for a keyed or keyless request, after the caller's state checks: the size, the copy, the decoding.</summary>
     /// <param name="payloadName">The public parameter the payload comes from, for the size error; <see langword="null"/> when there is none.</param>
-    private Task<T> RequestAsync<T>(RequestType type, ReadOnlySpan<byte> payload, string? payloadName, CancellationToken ct)
+    /// <param name="session">The session of a <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback; <see langword="null"/> for a command of the application.</param>
+    private Task<T> RequestAsync<T>(
+        RequestType type, ReadOnlySpan<byte> payload, string? payloadName, CancellationToken ct, RestoreSession? session)
         where T : struct, IControlItem<T>
     {
-        ThrowIfClosed();
         NetSdrControlClient.ThrowIfPayloadTooLarge(payload.Length, payloadName);
-        return DecodeAsync<T>(CommandAsync(type, T.Code, payload.ToArray(), typeof(T).Name, ct));
+        return DecodeAsync<T>(CommandAsync(type, T.Code, payload.ToArray(), typeof(T).Name, ct, session));
     }
 
     /// <summary>Spec 6.5 step 6: the typed result; a payload that does not read as <typeparamref name="T"/> fails without a retry.</summary>
@@ -535,15 +572,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>The last of spec 6.5 step 0: a token already cancelled sends nothing.</summary>
     /// <param name="item">The item name for the logs; <see langword="null"/> for a raw request.</param>
+    /// <param name="session">The session of a <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback; <see langword="null"/> for a command of the application.</param>
     private Task<ControlItemMessage> CommandAsync(
-        RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item, CancellationToken ct)
+        RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item, CancellationToken ct, RestoreSession? session)
     {
         if (ct.IsCancellationRequested)
         {
             return Task.FromCanceled<ControlItemMessage>(ct);
         }
 
-        return RunAsync(new CommandExecution(this, type, code, payload, item), ct);
+        return RunAsync(new CommandExecution(this, type, code, payload, item) { Session = session }, ct);
     }
 
     /// <summary>Spec 6.5 steps 1-8: the token, the admission, the retry pipeline and the translation of cancellation.</summary>
@@ -557,8 +595,12 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         try
         {
             // Step 2. FIFO: commands are written and complete in the order of the calls, and a retry never overtakes.
-            await _admission.WaitAsync(token).ConfigureAwait(false);
-            admitted = true;
+            // A session's request skips it (spec 6.2): the command waiting for this very restoration may hold it.
+            if (exec.Session is null)
+            {
+                await _admission.WaitAsync(token).ConfigureAwait(false);
+                admitted = true;
+            }
 
             // Step 3.
             context = ResilienceContextPool.Shared.Get(token);
@@ -683,10 +725,29 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Spec 6.5 step 4b: the published connection, once it is alive. Waits through a reconnection on the state-change
-    /// signal; Closed ends the wait with the final exception.
+    /// signal; Closed ends the wait with the final exception. A session's request is bound to its own connection and
+    /// never waits for another: a dead one fails it with <see cref="IOException"/>, an ended session with
+    /// <see cref="InvalidOperationException"/>.
     /// </summary>
     private async ValueTask<Link> WaitForLinkAsync(CommandExecution exec, CancellationToken t)
     {
+        if (exec.Session is { } session)
+        {
+            session.ThrowIfEnded();
+            if (_state == ClientState.Closed)
+            {
+                throw ClosedException();
+            }
+
+            Link bound = session.Link;
+            if (!bound.Client.IsConnected)
+            {
+                throw new IOException($"The connection to {_target} was lost.", LossCauseOf(bound));
+            }
+
+            return bound;
+        }
+
         while (true)
         {
             Task changed;
@@ -1044,8 +1105,11 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         public ReadOnlyMemory<byte> Payload { get; } = payload;
         public string? Item { get; } = item;
 
+        /// <summary>The session of a <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback whose request this is; <see langword="null"/> for a command of the application.</summary>
+        public RestoreSession? Session { get; init; }
+
         /// <summary>The connection a session request is bound to; <see langword="null"/> for a command of the application.</summary>
-        public Link? Bound { get; set; }
+        public Link? Bound => Session?.Link;
 
         /// <summary>The exchange that timed out on a live connection; the next attempt adopts its late reply.</summary>
         public Exchange? Outstanding { get; set; }

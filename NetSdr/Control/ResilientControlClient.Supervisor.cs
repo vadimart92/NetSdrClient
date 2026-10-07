@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Polly;
 
 namespace NetSdr.Control;
@@ -20,13 +21,18 @@ public sealed partial class ResilientControlClient
 
     private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Started by <c>ConnectAsync</c> once the first connection is published; never faults, and <see cref="DisposeAsync"/> waits for it.</summary>
+    /// <summary>
+    /// Started by <c>ConnectAsync</c> once the first connection is published; never faults, and <see cref="DisposeAsync"/>
+    /// waits for it, unless it is called from inside the <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback.
+    /// </summary>
     private Task _supervisor = Task.CompletedTask;
 
     /// <summary>
     /// Closes the connection and ends the client. Requests in flight, queued or made later fail with
     /// <see cref="ObjectDisposedException"/>; <see cref="Completion"/> completes successfully, unless the client had
-    /// already given up, and then <see cref="Unsolicited"/> ends. Idempotent, and never throws.
+    /// already given up, and then <see cref="Unsolicited"/> ends. Idempotent, and never throws. Called from inside the
+    /// <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback it starts the closing and returns without
+    /// waiting for the supervisor, which is waiting for that callback.
     /// </summary>
     public ValueTask DisposeAsync()
     {
@@ -49,12 +55,14 @@ public sealed partial class ResilientControlClient
         }
 
         changed.TrySetResult();
-        return new ValueTask(DisposeCoreAsync(link, restoring));
+        bool fromCallback = _restoreScope.Value is { Active: true } scope && ReferenceEquals(scope.Owner, this);
+        return new ValueTask(DisposeCoreAsync(link, restoring, waitForSupervisor: !fromCallback));
     }
 
     /// <param name="link">The published connection.</param>
     /// <param name="restoring">The connection of the reconnection attempt in progress, if one was.</param>
-    private async Task DisposeCoreAsync(Link link, Link? restoring)
+    /// <param name="waitForSupervisor">Whether step 4 runs: <see langword="false"/> from inside the callback the supervisor is waiting for (spec 7.5).</param>
+    private async Task DisposeCoreAsync(Link link, Link? restoring, bool waitForSupervisor)
     {
         try
         {
@@ -72,7 +80,10 @@ public sealed partial class ResilientControlClient
             }
 
             // Step 4. After this every pump has ended and no timer does anything.
-            await _supervisor.ConfigureAwait(false);
+            if (waitForSupervisor)
+            {
+                await _supervisor.ConfigureAwait(false);
+            }
         }
         catch (Exception)
         {
@@ -239,9 +250,14 @@ public sealed partial class ResilientControlClient
     /// <param name="attempts">How many attempts this loss got.</param>
     private void GiveUp(Exception ex, int attempts)
     {
-        // Step 1. A fatal restore failure unwraps to the reentrancy error here, with the ConnectionRestored callback.
-        Exception cause = ex;
-        var failure = new IOException($"Gave up reconnecting to {_target} after {attempts} attempt(s).", cause);
+        // Steps 1 and 2. A reentrant ConnectionRestored callback is named as the reason, with its own error as the cause.
+        bool reentered = ex is FatalRestoreException;
+        Exception cause = reentered ? ex.InnerException! : ex;
+        var failure = new IOException(
+            reentered
+                ? $"Gave up reconnecting to {_target}: ConnectionRestored called the ResilientControlClient instead of context.Client."
+                : $"Gave up reconnecting to {_target} after {attempts} attempt(s).",
+            cause);
 
         // Step 3.
         TaskCompletionSource changed;
@@ -267,7 +283,9 @@ public sealed partial class ResilientControlClient
 
         try
         {
-            ResilientClientLog.ReconnectGaveUp(_logger, _target, attempts, "attempts exhausted", failure);
+            ResilientClientLog.ReconnectGaveUp(
+                _logger, _target, attempts,
+                reentered ? "ConnectionRestored called the ResilientControlClient" : "attempts exhausted", failure);
         }
         catch (Exception)
         {
@@ -282,9 +300,9 @@ public sealed partial class ResilientControlClient
 
     /// <summary>
     /// Spec 7.4: one attempt of the reconnection pipeline. Keeps the 1 s floor since the previous attempt started,
-    /// opens and verifies a connection, and returns its link when the connection is still alive. On any failure the
-    /// connection of this attempt is closed before the exception reaches the pipeline, which reads the phase it failed
-    /// in from <paramref name="state"/>.
+    /// opens and verifies a connection, runs <see cref="ResilientControlClientOptions.ConnectionRestored"/> on it, and
+    /// returns its link when the connection is still alive. On any failure the connection of this attempt is closed
+    /// before the exception reaches the pipeline, which reads the phase it failed in from <paramref name="state"/>.
     /// </summary>
     private async ValueTask<Link> ReconnectOnceAsync(ResilienceContext context, ReconnectState state)
     {
@@ -305,7 +323,12 @@ public sealed partial class ResilientControlClient
             // Steps 2-5, and step 9 for a failure inside them.
             link = await OpenLinkAsync(phase => state.Phase = phase, ct).ConfigureAwait(false);
 
-            // Step 6, the ConnectionRestored callback, runs here.
+            // Step 6.
+            if (_options.ConnectionRestored is { } restore)
+            {
+                state.Phase = ReconnectPhase.Restore;
+                await RestoreAsync(restore, link, state).ConfigureAwait(false);
+            }
 
             // Step 7.
             if (!link.Client.IsConnected)
@@ -326,6 +349,62 @@ public sealed partial class ResilientControlClient
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Spec 7.4 step 6 and 7.5: runs the <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback on
+    /// the verified connection through a <see cref="RestoreSession"/>, inside a <see cref="RestoreScope"/> that marks
+    /// every command of this client made meanwhile as reentrant. The session ends and the scope closes however the
+    /// callback finishes; a synchronous exception or a <see langword="null"/> task counts as a failed task.
+    /// </summary>
+    /// <exception cref="FatalRestoreException">The callback called this client; thrown even when the callback itself succeeded.</exception>
+    private async Task RestoreAsync(
+        Func<ConnectionRestoredContext, CancellationToken, Task> callback, Link link, ReconnectState state)
+    {
+        var scope = new RestoreScope(this) { Active = true };
+        var session = new RestoreSession(this, link);
+        long startedAt = _time.GetTimestamp();
+        Exception? failure = null;
+        _restoreScope.Value = scope;
+        try
+        {
+            ResilientClientLog.RestoreStarted(_logger, link.Client.LocalEndPoint);
+            Task restored;
+            try
+            {
+                restored = callback(new ConnectionRestoredContext(session, state.Cause, state.LostAt), _lifetime.Token)
+                    ?? Task.FromException(new InvalidOperationException("ConnectionRestored returned null instead of a task."));
+            }
+            catch (Exception ex)
+            {
+                restored = Task.FromException(ex);
+            }
+
+            await restored.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Kept until the scope is closed: a reentrant call outranks whatever the callback failed with.
+            failure = ex;
+        }
+        finally
+        {
+            scope.Active = false;
+            session.End();
+            _restoreScope.Value = null;
+        }
+
+        if (scope.Reentered is { } reentered)
+        {
+            throw new FatalRestoreException(reentered);
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
+
+        ResilientClientLog.RestoreCompleted(_logger, _time.GetElapsedTime(startedAt));
     }
 
     /// <summary>The state of one loss across the attempts of the reconnection pipeline (spec 8).</summary>

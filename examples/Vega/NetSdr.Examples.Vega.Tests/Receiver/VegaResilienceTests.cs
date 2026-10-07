@@ -1,5 +1,7 @@
 using System.Net;
 using NetSdr.Control;
+using NetSdr.Examples.Vega.Items;
+using NetSdr.Framing;
 using NetSdr.Identification;
 using NetSdr.Items;
 using NetSdr.Testing;
@@ -42,5 +44,54 @@ public class VegaResilienceTests
         Assert.Equal(1, emulator.Server.Received.Count(r => r.Code == SerialNumber.Code));
         await device.DisposeAsync();                                           // the device owns the client
         Assert.True(client.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Vega_ReconnectDuringIdentification()
+    {
+        await using var emulator = new VegaEmulator();
+        int asked = 0;
+        emulator.Server.OnRequest<VegaFirmwareInfo>(request =>
+        {
+            if (Interlocked.Increment(ref asked) > 1) return ControlReply.Item(new VegaFirmwareInfo(200));
+            _ = emulator.Server.DisconnectClientAsync();
+            return ControlReply.Silent;
+        });
+        await emulator.StartAsync();
+        var options = Fast();
+        options.ConnectionRestored = (ctx, ct) => ctx.Client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey), ct);  // always: session state
+        var client = await ConnectAsync(emulator, options);
+        await using var device = await Catalog().AttachAsync(client).WaitAsync(Limits.Test);
+        Assert.IsType<VegaV2Receiver>(device);
+        var codes = emulator.Server.Received.Where(r => r.Code != StatusCodes.Code).Select(r => r.Code).ToList();
+        int firstInfo = codes.IndexOf(VegaProtocol.FirmwareInfoCode);
+        int unlockAfterDrop = codes.IndexOf(VegaProtocol.VendorUnlockCode, firstInfo + 1);
+        Assert.True(unlockAfterDrop > firstInfo);
+        Assert.True(codes.IndexOf(VegaProtocol.FirmwareInfoCode, firstInfo + 1) > unlockAfterDrop);
+    }
+
+    [Fact]
+    public async Task Vega_WrapperOverContextClient_StartsStream()
+    {
+        await using var emulator = new VegaEmulator();
+        await emulator.StartAsync();
+        DeviceIdentity? identity = null;
+        bool streamed = false;
+        var options = Fast();
+        options.ConnectionRestored = async (ctx, ct) =>
+        {
+            await ctx.Client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey), ct);
+            if (identity is not { } id) return;
+            await using var wrapper = new VegaV2Receiver(ctx.Client, id);           // disposing it leaves the connection open
+            await wrapper.StartStreamAsync(new IPEndPoint(IPAddress.Loopback, 50_999), 7_100_000, 200_000, ct);
+            streamed = true;
+        };
+        var client = await ConnectAsync(emulator, options);
+        await using var device = await Catalog().AttachAsync(client).WaitAsync(Limits.Test);
+        identity = device.Identity;
+        await emulator.Server.DisconnectClientAsync();
+        await Eventually.ThatAsync(() => streamed && client.IsConnected);
+        Assert.Contains(emulator.Server.Received, r => r.Code == ReceiverState.Code && r.Type == RequestType.Set);
+        await device.GetLabelAsync().WaitAsync(Limits.Test);                        // the connection still serves the device
     }
 }

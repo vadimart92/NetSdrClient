@@ -15,12 +15,14 @@ public class ResilientReconnectTests
     public async Task LostDuringCommand_RetriedAfterRestore()
     {
         var logs = new FakeLoggerFactory();
-        var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs), s => s.OnRequest(AfGain.Code, Resilient.DropOnce(s)));
+        var options = Resilient.Fast(logs);
+        options.ConnectionRestored = (ctx, ct) => ctx.Client.SetAsync(new RfGain(0, -10), ct);
+        var (server, client) = await Resilient.StartAsync(options, s => s.OnRequest(AfGain.Code, Resilient.DropOnce(s)));
         await using (server)
         await using (client)
         {
             Assert.Equal(7, (await client.SetAsync(new AfGain(0, 7)).WaitAsync(Limits.Test)).Level);
-            Assert.Equal(new[] { AfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
+            Assert.Equal(new[] { AfGain.Code, RfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
             Assert.Equal("ConnectionLost", Assert.Single(logs.Events(1100)).Value("Reason"));
             Assert.Single(logs.Events(1105));
         }
@@ -30,7 +32,14 @@ public class ResilientReconnectTests
     public async Task DeviceDroppedRequest_ConnectionReplaced_CommandResent()
     {
         var logs = new FakeLoggerFactory();
-        var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs), s => s.OnRequest(AfGain.Code, Resilient.Once(ControlReply.Silent)));
+        int restored = 0;
+        var options = Resilient.Fast(logs);
+        options.ConnectionRestored = (ctx, ct) =>
+        {
+            Interlocked.Increment(ref restored);
+            return ctx.Client.SetAsync(new RfGain(0, -10), ct);
+        };
+        var (server, client) = await Resilient.StartAsync(options, s => s.OnRequest(AfGain.Code, Resilient.Once(ControlReply.Silent)));
         await using (server)
         await using (client)
         {
@@ -38,7 +47,8 @@ public class ResilientReconnectTests
             Assert.Single(logs.Events(1102));
             Assert.Single(logs.Events(1103));
             Assert.Single(logs.Events(1105));
-            Assert.Equal(new[] { AfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
+            Assert.Equal(1, restored);
+            Assert.Equal(new[] { AfGain.Code, RfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
         }
     }
 
@@ -46,7 +56,11 @@ public class ResilientReconnectTests
     public async Task IdleDrop_ReconnectsProactively()
     {
         var logs = new FakeLoggerFactory();
-        var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs));
+        int restored = 0;
+        ConnectionRestoredContext? seen = null;
+        var options = Resilient.Fast(logs);
+        options.ConnectionRestored = (ctx, _) => { seen = ctx; Interlocked.Increment(ref restored); return Task.CompletedTask; };
+        var (server, client) = await Resilient.StartAsync(options);
         await using (server)
         await using (client)
         {
@@ -57,6 +71,9 @@ public class ResilientReconnectTests
             Assert.NotEqual(oldPort, client.LocalEndPoint!.Port);
             Assert.Equal(LogLevel.Warning, Assert.Single(logs.Events(1103)).Level);
             Assert.Equal((LogLevel.Information, "1"), (logs.Events(1105)[0].Level, logs.Events(1105)[0].Value("Attempts")));
+            Assert.Equal(1, restored);
+            Assert.NotEqual(default, seen!.LostAt);
+            Assert.IsAssignableFrom<IOException>(seen.Cause);
         }
     }
 
