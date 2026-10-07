@@ -2,9 +2,9 @@ using System.Net;
 using NetSdr.Control;
 using NetSdr.Data;
 using NetSdr.Items;
+using NetSdr.Testing;
 using NetSdr.Tests.Control;
 using NetSdr.Tests.Data;
-using NetSdr.Testing;
 
 namespace NetSdr.Tests;
 

@@ -5,8 +5,8 @@ using System.Net.Sockets;
 using NetSdr.Control;
 using NetSdr.Framing;
 using NetSdr.Items;
-using NetSdr.Tests.Items;
 using NetSdr.Testing;
+using NetSdr.Tests.Items;
 using static NetSdr.Tests.Loopback;
 
 namespace NetSdr.Tests.Testing;
@@ -17,7 +17,8 @@ public class TestServerControlTests
     public async Task Set_EchoesAndGetReturnsState()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Equal(-20, (await client.SetAsync(new RfGain(0, -20))).GainDb);
         Assert.Equal(-20, (await client.GetAsync<RfGain, byte>(0)).GainDb);
     }
@@ -26,7 +27,8 @@ public class TestServerControlTests
     public async Task Get_MatchesKeyPerChannel()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await client.SetAsync(new ReceiverFrequency(0, 7_000_000));
         await client.SetAsync(new ReceiverFrequency(2, 14_000_000));
         Assert.Equal(7_000_000UL, (ulong)(await client.GetAsync<ReceiverFrequency, byte>(0)).Hz);
@@ -38,7 +40,8 @@ public class TestServerControlTests
     public async Task UnknownGet_And_GetRange_Nak()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>());
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetRangeAsync<FrequencyRanges, byte>(0));
     }
@@ -52,7 +55,8 @@ public class TestServerControlTests
             s.Preload(new InterfaceVersion(529));
             s.OnRequest<InterfaceVersion>(_ => ControlReply.Item(new InterfaceVersion(900)));
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Equal(0x03524453u, (await client.GetAsync<ProductId>()).Value);
         Assert.Equal(900, (await client.GetAsync<InterfaceVersion>()).Version);
     }
@@ -68,7 +72,8 @@ public class TestServerControlTests
                 ? ControlReply.Echo
                 : ControlReply.Item(new ReceiverFrequency(r.Key<byte>(), 123));
         }));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await client.SetAsync(new ReceiverFrequency(0, 14_010_000));
         var got = await client.GetAsync<ReceiverFrequency, byte>(2);
         Assert.Equal((2, 123UL), (got.Channel, (ulong)got.Hz));
@@ -81,7 +86,8 @@ public class TestServerControlTests
     public async Task RawHandler_Bytes()
     {
         var (server, client) = await StartAsync(s => s.OnRequest(0x0150, _ => ControlReply.Bytes(Hex.Parse("01 2A 00 00 00"))));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var item = await client.GetAsync<MyVendorItem>();
         Assert.Equal((1, 42u), (item.Channel, item.Value));
     }
@@ -90,7 +96,8 @@ public class TestServerControlTests
     public async Task Received_RecordsRequestsInOrder()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<TargetName>());
         await client.SetAsync(new RfGain(0, -10));
         var received = server.Received;
@@ -104,7 +111,8 @@ public class TestServerControlTests
     {
         var (server, client) = await StartAsync(s =>
             s.OnRequest<ProductId>(_ => ControlReply.Item(new ProductId(1)).After(TimeSpan.FromMilliseconds(300))));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var watch = Stopwatch.StartNew();
         await client.GetAsync<ProductId>();
         Assert.True(watch.ElapsedMilliseconds >= 250);
@@ -115,7 +123,8 @@ public class TestServerControlTests
     {
         var (server, client) = await StartAsync(s => s.OnRequest<ProductId>(_ => ControlReply.Silent),
             new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<ProductId>());
         await Assert.ThrowsAsync<TimeoutException>(() => client.Completion.WaitAsync(Limits.Test));
     }
@@ -124,7 +133,8 @@ public class TestServerControlTests
     public async Task SendUnsolicited_ArrivesAtClient()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await server.ClientConnected.WaitAsync(Limits.Test);
         await server.SendUnsolicitedAsync(new AfGain(0, 3));
         await server.SendUnsolicitedAsync(0x0005, Hex.Parse("20"));
@@ -147,7 +157,8 @@ public class TestServerControlTests
                 return ControlReply.Item(new AfGain(r.Key<byte>(), 7));
             });
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Equal(7, (await client.GetAsync<AfGain, byte>(0)).Level);
         Assert.Equal((ushort)0x0005, (await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test)).Code);
     }
@@ -156,7 +167,8 @@ public class TestServerControlTests
     public async Task DisconnectClient_FailsActiveRequest()
     {
         var (server, client) = await StartAsync(s => s.OnRequest<ProductId>(_ => ControlReply.Silent));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var call = client.GetAsync<ProductId>();
         await Eventually.ThatAsync(() => server.Received.Count == 1);
         await server.DisconnectClientAsync();
@@ -179,7 +191,8 @@ public class TestServerControlTests
     public async Task ConnectTwice_Throws()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port)));
     }
@@ -190,7 +203,8 @@ public class TestServerControlTests
         var (server, client) = await StartAsync(s => s.OnRequest<ReceiverFrequency>(r =>
             ControlReply.Item(new ReceiverFrequency(r.Key<byte>(), 1000UL + r.Key<byte>()))
                 .After(TimeSpan.FromMilliseconds(5))));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var calls = Enumerable.Range(0, 10).Select(ch => client.GetAsync<ReceiverFrequency, byte>((byte)ch)).ToArray();
         var results = await Task.WhenAll(calls).WaitAsync(Limits.Test);
         for (var ch = 0; ch < 10; ch++)
@@ -202,7 +216,8 @@ public class TestServerControlTests
     public async Task Get_AnswersNewestPayloadForTheKey()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await client.SetAsync(new RfGain(0, -20));
         await client.SetAsync(new RfGain(1, -30));
         await client.SetAsync(new RfGain(0, -10));
@@ -217,7 +232,8 @@ public class TestServerControlTests
     public async Task State_KeepsSixteenPayloadsPerCode()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         for (byte channel = 0; channel < 17; channel++)
             await client.SetAsync(new ReceiverFrequency(channel, 1000UL + channel));
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ReceiverFrequency, byte>(0));
@@ -232,7 +248,8 @@ public class TestServerControlTests
             r.Type == RequestType.GetRange
                 ? ControlReply.Bytes(Hex.Parse("00 01 A0 86 01 00 00 80 CC 06 02 00 00 00 00 00 00"))
                 : ControlReply.Nak));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var ranges = await client.GetRangeAsync<FrequencyRanges, byte>(0);
         Assert.Equal(new[] { new FrequencyRange(100_000, 34_000_000, 0) }, ranges.Ranges);
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<FrequencyRanges, byte>(0));
@@ -247,7 +264,8 @@ public class TestServerControlTests
             s.OnRequest<MyVendorItem>(_ => ControlReply.Echo);
             s.Preload(new InterfaceVersion(529));
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>());
         // The typed handler cannot read a Set payload that is too short for its item.
         await Assert.ThrowsAsync<NetSdrNakException>(
@@ -261,7 +279,8 @@ public class TestServerControlTests
     {
         var failure = new InvalidOperationException("handler failure");
         var (server, client) = await StartAsync(s => s.OnRequest<ProductId>(_ => throw failure));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Empty(server.HandlerErrors);
 
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>());
@@ -277,7 +296,8 @@ public class TestServerControlTests
     {
         var (server, client) = await StartAsync(s =>
             s.OnRequest(0x0150, _ => ControlReply.Bytes(new byte[FrameHeader.MaxEncodableLength])));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<MyVendorItem>());
     }
 
@@ -285,7 +305,8 @@ public class TestServerControlTests
     public async Task NonControlFramesFromClient_AreIgnored_AndMalformedOnesAreRejected()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var raw = new Socket(SocketType.Stream, ProtocolType.Tcp);
         await raw.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
         // The server serves one client at a time, so the raw socket is served once the client has left.
@@ -345,7 +366,8 @@ public class TestServerControlTests
     {
         var (server, client) = await StartAsync(s => s.OnRequest<ReceiverFrequency>(r =>
             ControlReply.Item(new ReceiverFrequency(r.Key<byte>(), 5000))));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await server.ClientConnected.WaitAsync(Limits.Test);
         var sends = Enumerable.Range(0, 100)
             .Select(i => Task.Run(() => server.SendUnsolicitedAsync(new AfGain(0, (byte)i))))
@@ -364,7 +386,8 @@ public class TestServerControlTests
     public async Task DisconnectClient_ThenNextClientIsServed_AndStateSurvives()
     {
         var (server, client) = await StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await client.SetAsync(new RfGain(0, -5));
         await server.DisconnectClientAsync();
         await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
@@ -381,7 +404,8 @@ public class TestServerControlTests
         for (var i = 0; i < 25; i++)
         {
             var (server, client) = await StartAsync();
-            await using var _ = server; await using var __ = client;
+            await using var _ = server;
+            await using var __ = client;
             await server.DisconnectClientAsync();
             await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
         }

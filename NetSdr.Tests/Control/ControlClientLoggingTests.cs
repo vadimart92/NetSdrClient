@@ -8,12 +8,15 @@ namespace NetSdr.Tests.Control;
 
 public class ControlClientLoggingTests
 {
-    const string Category = "NetSdr.Control.NetSdrControlClient";
-    const string ProductReply = "08 00 09 00 53 44 52 03";
+    private const string Category = "NetSdr.Control.NetSdrControlClient";
+    private const string ProductReply = "08 00 09 00 53 44 52 03";
 
-    static NetSdrControlClientOptions Logged(FakeLoggerFactory logs, bool fault = true, bool supervised = false) => new()
+    private static NetSdrControlClientOptions Logged(FakeLoggerFactory logs, bool fault = true, bool supervised = false) => new()
     {
-        ResponseTimeout = TimeSpan.FromMilliseconds(150), FaultOnTimeout = fault, LoggerFactory = logs, Supervised = supervised,
+        ResponseTimeout = TimeSpan.FromMilliseconds(150),
+        FaultOnTimeout = fault,
+        LoggerFactory = logs,
+        Supervised = supervised,
     };
 
     [Fact]
@@ -92,7 +95,8 @@ public class ControlClientLoggingTests
         }
 
         var (other, closed) = await Loopback.StartAsync(options: Logged(logs, supervised: true));
-        await using (other) await closed.DisposeAsync();                                      // 1001
+        await using (other)
+            await closed.DisposeAsync();                                      // 1001
         foreach (int id in new[] { 1000, 1001, 1002, 1006 })
         {
             Assert.NotEmpty(logs.Events(id));
@@ -263,7 +267,8 @@ public class ControlClientLoggingTests
             public void Log<TState>(
                 LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
             {
-                if (throwsAt.Contains(eventId.Id)) throw new InvalidOperationException($"The logging provider failed at {eventId.Id}.");
+                if (throwsAt.Contains(eventId.Id))
+                    throw new InvalidOperationException($"The logging provider failed at {eventId.Id}.");
             }
         }
     }

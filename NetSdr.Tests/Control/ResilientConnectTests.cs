@@ -9,7 +9,7 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientConnectTests
 {
-    static readonly Dictionary<string, Action<ResilientControlClientOptions>> Invalid = new()
+    private static readonly Dictionary<string, Action<ResilientControlClientOptions>> Invalid = new()
     {
         ["ResponseTimeout 0"] = o => o.ResponseTimeout = TimeSpan.Zero,
         ["ResponseTimeout Infinite"] = o => o.ResponseTimeout = Timeout.InfiniteTimeSpan,
@@ -29,7 +29,8 @@ public class ResilientConnectTests
         get
         {
             var names = new TheoryData<string>();
-            foreach (string name in Invalid.Keys) names.Add(name);
+            foreach (string name in Invalid.Keys)
+                names.Add(name);
             return names;
         }
     }
@@ -52,7 +53,10 @@ public class ResilientConnectTests
             (int)o.CommandTimeout.TotalSeconds, (int)o.HeartbeatInterval.TotalSeconds, (int)o.ConnectTimeout.TotalSeconds));
         Assert.Equal((int.MaxValue, 256, true), (o.ReconnectAttempts, o.UnsolicitedCapacity, o.UseJitter));
         Assert.Same(NullLoggerFactory.Instance, o.LoggerFactory);
-        Assert.Null(o.Rebooter); Assert.Null(o.RecoveryPolicy); Assert.Null(o.ConnectAttempts); Assert.Equal(10, (int)o.RebootTimeout.TotalSeconds);
+        Assert.Null(o.Rebooter);
+        Assert.Null(o.RecoveryPolicy);
+        Assert.Null(o.ConnectAttempts);
+        Assert.Equal(10, (int)o.RebootTimeout.TotalSeconds);
     }
 
     [Fact]

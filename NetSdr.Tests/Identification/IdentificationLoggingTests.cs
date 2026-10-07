@@ -9,15 +9,16 @@ namespace NetSdr.Tests.Identification;
 
 public class IdentificationLoggingTests
 {
-    static IdentificationOptions Logged(FakeLoggerFactory logs, bool standard = true) =>
+    private static IdentificationOptions Logged(FakeLoggerFactory logs, bool standard = true) =>
         new() { IncludeStandardProbes = standard, LoggerFactory = logs };
 
-    static void PreloadAll(NetSdrTestServer s)
+    private static void PreloadAll(NetSdrTestServer s)
     {
         s.Preload(new TargetName("NetSDR"));
         s.Preload(new SerialNumber("PS000123"));
         s.Preload(new InterfaceVersion(529));
-        for (byte id = 0; id <= 3; id++) s.Preload(new FirmwareVersion(id, (ushort)(100 + id)));
+        for (byte id = 0; id <= 3; id++)
+            s.Preload(new FirmwareVersion(id, (ushort)(100 + id)));
         s.Preload(new ProductId(0x12345678));
         s.Preload(new Options(0, 0, 0));
     }

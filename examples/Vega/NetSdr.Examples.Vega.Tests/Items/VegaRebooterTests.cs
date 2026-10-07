@@ -5,28 +5,28 @@ namespace NetSdr.Examples.Vega.Tests.Items;
 
 public class VegaRebooterTests
 {
-    const uint Key = 0xC0DE5EC5;
+    private const uint Key = 0xC0DE5EC5;
 
-    static RebootContext Ctx(IPEndPoint? last = null, string target = "127.0.0.1:50000") => new(target, last, requested: false);
+    private static RebootContext Ctx(IPEndPoint? last = null, string target = "127.0.0.1:50000") => new(target, last, requested: false);
 
-    static async Task<VegaServiceServer> ServeAsync(string replyHex)
+    private static async Task<VegaServiceServer> ServeAsync(string replyHex)
     {
         var server = new VegaServiceServer(_ => Hex.Parse(replyHex));
         await server.StartAsync();
         return server;
     }
 
-    static VegaRebooter Rebooter(int port, string? host = "127.0.0.1", uint key = Key) =>
+    private static VegaRebooter Rebooter(int port, string? host = "127.0.0.1", uint key = Key) =>
         new(new VegaRebooterOptions { Host = host, Port = port, UnlockKey = key });
 
     /// <summary>One soft reboot against a service that answers <paramref name="reply"/>; the exception it ended with, or null.</summary>
-    static async Task<Exception?> RebootAgainstAsync(string reply, RebootKind kind = RebootKind.Soft)
+    private static async Task<Exception?> RebootAgainstAsync(string reply, RebootKind kind = RebootKind.Soft)
     {
         await using var server = await ServeAsync(reply);
         return await Record.ExceptionAsync(() => Rebooter(server.Port).RebootAsync(kind, Ctx(), default).WaitAsync(Limits.Test));
     }
 
-    static async Task AssertRequestAsync(RebootKind kind, string reply, string expectedRequest)
+    private static async Task AssertRequestAsync(RebootKind kind, string reply, string expectedRequest)
     {
         await using var server = await ServeAsync(reply);
         await Rebooter(server.Port).RebootAsync(kind, Ctx(), default).WaitAsync(Limits.Test);
@@ -78,6 +78,8 @@ public class VegaRebooterTests
     public void InvalidOptions_Throw(int port, int softSeconds, int hardSeconds) =>
         Assert.Throws<ArgumentOutOfRangeException>(() => new VegaRebooter(new VegaRebooterOptions
         {
-            Port = port, SoftBootTime = TimeSpan.FromSeconds(softSeconds), HardBootTime = TimeSpan.FromSeconds(hardSeconds),
+            Port = port,
+            SoftBootTime = TimeSpan.FromSeconds(softSeconds),
+            HardBootTime = TimeSpan.FromSeconds(hardSeconds),
         }));
 }

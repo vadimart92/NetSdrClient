@@ -103,7 +103,8 @@ public class ResilientTimeoutTests
             }
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => b.WaitAsync(Limits.Test));
-            if (blocker is not null) await blocker.DisposeAsync().AsTask().WaitAsync(Limits.Test);
+            if (blocker is not null)
+                await blocker.DisposeAsync().AsTask().WaitAsync(Limits.Test);
             await Task.Delay(600);                                                    // A's late reply or the reconnect has come
             Assert.DoesNotContain(server.Received, r => r.Code == InterfaceVersion.Code);
         }
@@ -156,7 +157,8 @@ public class ResilientTimeoutTests
         var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs), s => s.OnRequest(AfGain.Code, request =>
         {
             double roll;
-            lock (random) roll = random.NextDouble();
+            lock (random)
+                roll = random.NextDouble();
             if (roll < 0.1)
             {
                 _ = s.DisconnectClientAsync();

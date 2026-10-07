@@ -12,7 +12,8 @@ public class VegaStreamTests
     public async Task StartStream_DeliversCounterData_StopEndsIt()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
-        await using var _ = emulator; await using var __ = vega;
+        await using var _ = emulator;
+        await using var __ = vega;
         var packets = new ConcurrentQueue<(DataPacketInfo Info, byte[] Samples)>();
         using var receiver = new NetSdrDataReceiver((in DataPacketInfo info, ReadOnlySpan<byte> samples) =>
             packets.Enqueue((info, samples.ToArray())));

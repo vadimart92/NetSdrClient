@@ -7,12 +7,12 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaCatalogTests
 {
-    sealed record GenericDevice(INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    private sealed record GenericDevice(INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Client.DisposeAsync();
     }
 
-    static DeviceCatalog<IAsyncDisposable> Catalog() =>
+    private static DeviceCatalog<IAsyncDisposable> Catalog() =>
         new DeviceCatalog<IAsyncDisposable>(new IdentificationOptions { Probes = { VegaProbes.Identify(VegaEmulator.DefaultKey) } })
             .Register("Vega v2",
                 id => id.ProductId == VegaProtocol.ProductId && id.Get<VegaInfo>().Firmware >= new Version(2, 0),

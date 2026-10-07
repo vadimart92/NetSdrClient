@@ -78,7 +78,7 @@ public class ResilientReconnectTests
     }
 
     // The test server serves one client at a time: a plain client queued behind ours takes the server once ours drops.
-    static async Task<NetSdrControlClient> OccupyAsync(NetSdrTestServer server)
+    private static async Task<NetSdrControlClient> OccupyAsync(NetSdrTestServer server)
     {
         var blocker = new NetSdrControlClient();
         await blocker.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
@@ -140,7 +140,8 @@ public class ResilientReconnectTests
             while (levels.Count < 4)
             {
                 var m = await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
-                if (m.Type == ReplyType.Unsolicited) levels.Add(m.As<AfGain>().Level);
+                if (m.Type == ReplyType.Unsolicited)
+                    levels.Add(m.As<AfGain>().Level);
             }
 
             Assert.Equal(new byte[] { 1, 2, 3, 4 }, levels);
@@ -156,7 +157,8 @@ public class ResilientReconnectTests
         int sets = 0;
         var (server, client) = await Resilient.StartAsync(Resilient.Fast(), s => s.OnRequest(AfGain.Code, request =>
         {
-            if (Interlocked.Increment(ref sets) != 5) return ControlReply.Echo;
+            if (Interlocked.Increment(ref sets) != 5)
+                return ControlReply.Echo;
             _ = s.DisconnectClientAsync();
             return ControlReply.Silent;
         }));
@@ -191,7 +193,8 @@ public class ResilientReconnectTests
             // only allows for a continuation that would leave Advance's thread and start a few 100 ms steps late.
             var starts = connector.AttemptTimes.Skip(1).Take(5).ToArray();
             double[] gaps = [1, 2, 4, 8];
-            for (int i = 1; i < 5; i++) Assert.InRange((starts[i] - starts[i - 1]).TotalSeconds, gaps[i - 1], gaps[i - 1] + 0.3);
+            for (int i = 1; i < 5; i++)
+                Assert.InRange((starts[i] - starts[i - 1]).TotalSeconds, gaps[i - 1], gaps[i - 1] + 0.3);
             Assert.Equal(new[] { 1.0, 2, 4, 8 }, logs.Events(1104).Take(4).Select(r => r.Span("Delay").TotalSeconds));
         }
 

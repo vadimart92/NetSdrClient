@@ -9,8 +9,8 @@ namespace NetSdr.Tests.Control;
 
 public class ControlClientProtocolTests
 {
-    const string Freq14 = "0A 00 20 00 00 90 C6 D5 00 00";
-    const string RangesFrame =
+    private const string Freq14 = "0A 00 20 00 00 90 C6 D5 00 00";
+    private const string RangesFrame =
         "24 40 20 00 00 02 A0 86 01 00 00 80 CC 06 02 00 00 00 00 00 00 " +
         "00 3B 58 08 00 80 D1 F0 08 00 00 68 89 09 00";
 

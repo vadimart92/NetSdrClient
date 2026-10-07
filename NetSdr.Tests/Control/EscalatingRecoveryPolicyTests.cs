@@ -5,7 +5,7 @@ namespace NetSdr.Tests.Control;
 
 public class EscalatingRecoveryPolicyTests
 {
-    static RecoveryContext Ctx(int k, int soft = 0, int hard = 0) =>
+    private static RecoveryContext Ctx(int k, int soft = 0, int hard = 0) =>
         new(k + soft + hard, k, ReconnectPhase.Connect, new IOException("x"), TimeSpan.FromSeconds(k), soft, hard);
 
     [Fact]

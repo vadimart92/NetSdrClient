@@ -24,7 +24,7 @@ public class LoggingOptionsTests
         Assert.ThrowsAsync<ArgumentNullException>(() => CreateAsync(component, nullLoggerFactory: false));
 
     // Exactly one of the two options is null; a synchronous throw is caught by ThrowsAsync like a faulted task.
-    static Task CreateAsync(string component, bool nullLoggerFactory) => component switch
+    private static Task CreateAsync(string component, bool nullLoggerFactory) => component switch
     {
         "NetSdrControlClient" => Run(() => new NetSdrControlClient(nullLoggerFactory
             ? new NetSdrControlClientOptions { LoggerFactory = null! }
@@ -40,7 +40,7 @@ public class LoggingOptionsTests
         _ => throw new ArgumentOutOfRangeException(nameof(component)),
     };
 
-    static Task Run(Func<object> create)
+    private static Task Run(Func<object> create)
     {
         create();
         return Task.CompletedTask;

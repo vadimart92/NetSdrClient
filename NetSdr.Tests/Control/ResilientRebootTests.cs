@@ -8,10 +8,10 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientRebootTests
 {
-    const string Outer = "NetSdr.Control.ResilientControlClient";
+    private const string Outer = "NetSdr.Control.ResilientControlClient";
 
     /// <summary>A server, a client with a FakeRebooter that boots the server through CloseOnAccept for 200 ms, Fast options.</summary>
-    static async Task<(NetSdrTestServer Server, ResilientControlClient Client, FakeRebooter Rebooter)> StartAsync(
+    private static async Task<(NetSdrTestServer Server, ResilientControlClient Client, FakeRebooter Rebooter)> StartAsync(
         FakeLoggerFactory logs, Action<ResilientControlClientOptions>? configure = null, Action<NetSdrTestServer>? setup = null)
     {
         var options = Resilient.Fast(logs);
@@ -165,7 +165,9 @@ public class ResilientRebootTests
         Exception? thrown = null;
         var started = await StartAsync(logs, o => o.ConnectionRestored = (_, _) =>
         {
-            try { _ = client!.RebootAsync(RebootKind.Soft); } catch (InvalidOperationException e) { thrown = e; }
+            try
+            { _ = client!.RebootAsync(RebootKind.Soft); }
+            catch (InvalidOperationException e) { thrown = e; }
             return Task.CompletedTask;
         });
         client = started.Client;
@@ -290,7 +292,7 @@ public class ResilientRebootTests
     }
 
     /// <summary>A seam on fake time whose attempt 1 is answered by StartAsync; later verifications the test answers itself.</summary>
-    static async Task<(ResilientControlClient Client, PipeDevice Device, PipeConnector Connector, FakeRebooter Rebooter, FakeLoggerFactory Logs, FakeTimeProvider Time)>
+    private static async Task<(ResilientControlClient Client, PipeDevice Device, PipeConnector Connector, FakeRebooter Rebooter, FakeLoggerFactory Logs, FakeTimeProvider Time)>
         SeamAsync(Action<ResilientControlClientOptions>? configure = null, Func<int, bool>? accept = null)
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter { BootTime = TimeSpan.Zero });
@@ -303,7 +305,7 @@ public class ResilientRebootTests
         return (client, device, connector, rebooter, logs, time);
     }
 
-    static async Task<PipeDevice> PendingVerifyAsync(PipeConnector connector)
+    private static async Task<PipeDevice> PendingVerifyAsync(PipeConnector connector)
     {
         PipeDevice device = await connector.NextAsync();
         Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync());
@@ -431,7 +433,8 @@ public class ResilientRebootTests
         Assert.Equal(Enumerable.Repeat(RebootKind.Hard, expectedReboots), rebooter.Calls);
         Assert.All(policy.Calls, c => Assert.Equal(0, c.SoftReboots));
         Assert.Equal(1, policy.Calls.SkipWhile(c => c.HardReboots == 0).First().HardReboots);   // Ruling C17: the supervisor's first refusal may reach the policy before the request
-        if (expectedReboots == 2) Assert.Equal(3, policy.Calls.Count(c => c.HardReboots == 1));   // three failures after the manual hard, then the second
+        if (expectedReboots == 2)
+            Assert.Equal(3, policy.Calls.Count(c => c.HardReboots == 1));   // three failures after the manual hard, then the second
         await client.DisposeAsync();
         await Assert.ThrowsAsync<ObjectDisposedException>(() => reboot.WaitAsync(Limits.Test));
     }

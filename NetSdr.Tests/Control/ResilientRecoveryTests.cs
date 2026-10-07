@@ -9,16 +9,16 @@ namespace NetSdr.Tests.Control;
 public class ResilientRecoveryTests
 {
     // A seam that accepts attempt 1 and refuses every later one until `back` says otherwise.
-    static PipeConnector Failing(FakeTimeProvider time, Func<bool>? back = null) => new(time)
+    private static PipeConnector Failing(FakeTimeProvider time, Func<bool>? back = null) => new(time)
     {
         Before = (n, _) => n == 1 || back?.Invoke() == true ? Task.CompletedTask : Resilient.Refused(),
         Serve = d => d.NakEverythingAsync(),
     };
 
-    static readonly TimeSpan Step = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan Step = TimeSpan.FromMilliseconds(100);
 
     // The prologue of NoRebooter_PolicyNeverCalled with a rebooter: connected, then lost one second later.
-    static async Task<(ResilientControlClient Client, PipeDevice Device, PipeConnector Connector)> Start(
+    private static async Task<(ResilientControlClient Client, PipeDevice Device, PipeConnector Connector)> Start(
         FakeLoggerFactory logs, FakeTimeProvider time, FakeRebooter rebooter, IRecoveryPolicy? policy = null, Func<bool>? back = null,
         Func<ConnectionRestoredContext, CancellationToken, Task>? restore = null, Action<ResilientControlClientOptions>? configure = null)
     {
@@ -72,7 +72,8 @@ public class ResilientRecoveryTests
             await time.AdvanceUntilAsync(() => connector.Attempts >= 7, Step);
             double[] starts = connector.AttemptTimes.Skip(1).Take(6).Select(t => (t - lost).TotalSeconds).ToArray();
             double[] expected = [0, 1, 3, 5, 6, 8];                           // soft at 3 s, bootTime 2 s, then 1, 2 s again
-            for (int i = 0; i < 6; i++) Assert.InRange(starts[i], expected[i], expected[i] + 0.3);
+            for (int i = 0; i < 6; i++)
+                Assert.InRange(starts[i], expected[i], expected[i] + 0.3);
             Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
             var escalated = Assert.Single(logs.Events(1114));
             Assert.Equal((LogLevel.Warning, "Soft", "3", "Connect"), (escalated.Level, escalated.Value("Kind"), escalated.Value("FailedAttempts"), escalated.Value("Phase")));
@@ -165,7 +166,7 @@ public class ResilientRecoveryTests
     [Fact]
     public Task BootTimeAboveInt32Milliseconds_TreatedAsFailure() => BootTimeIsFailureAsync(int.MaxValue + 1L);
 
-    async Task BootTimeIsFailureAsync(long milliseconds)
+    private async Task BootTimeIsFailureAsync(long milliseconds)
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         rebooter.BootTimeOf = _ => TimeSpan.FromMilliseconds(milliseconds);

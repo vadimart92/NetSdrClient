@@ -1,6 +1,6 @@
 using NetSdr.Framing;
-using NetSdr.Tests.Items;
 using NetSdr.Testing;
+using NetSdr.Tests.Items;
 
 namespace NetSdr.Tests.Testing;
 

@@ -6,7 +6,8 @@ namespace NetSdr.Examples.Vega.Tests.Items;
 
 public class VegaItemTests
 {
-    [Fact] public void VendorUnlock_Frame() =>
+    [Fact]
+    public void VendorUnlock_Frame() =>
         Assert.Equal(Hex.Parse("08 00 00 80 C5 5E DE C0"), ControlFrames.Request(RequestType.Set, new VendorUnlock(0xC0DE_5EC5)));
 
     [Fact]
@@ -34,10 +35,12 @@ public class VegaItemTests
         Assert.Equal(BoardTemperatureV1.Code, BoardTemperatureV2.Code);
     }
 
-    [Fact] public void VegaFirmwareInfo_Frame() =>
+    [Fact]
+    public void VegaFirmwareInfo_Frame() =>
         Assert.Equal(Hex.Parse("06 00 05 80 C8 00"), ControlFrames.Reply(ReplyType.Response, new VegaFirmwareInfo(200)));
 
-    [Fact] public void OverloadEvent_Frame() =>
+    [Fact]
+    public void OverloadEvent_Frame() =>
         Assert.Equal(Hex.Parse("06 20 04 80 01 03"),
             ControlFrames.Reply(ReplyType.Unsolicited, new OverloadEvent(1, OverloadFlags.Adc | OverloadFlags.Rf)));
 

@@ -9,12 +9,12 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientHeartbeatTests
 {
-    static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
 
-    static int StatusRequests(NetSdrTestServer server) => server.Received.Count(r => r.Code == StatusCodes.Code);
+    private static int StatusRequests(NetSdrTestServer server) => server.Received.Count(r => r.Code == StatusCodes.Code);
 
     /// <summary>Seam options on fake time with the heartbeat of <see cref="Resilient.Fast"/>.</summary>
-    static ResilientControlClientOptions FakeHeartbeat(FakeLoggerFactory logs, TimeProvider time)
+    private static ResilientControlClientOptions FakeHeartbeat(FakeLoggerFactory logs, TimeProvider time)
     {
         var options = Resilient.Seam(logs, time);
         options.HeartbeatInterval = Interval;
@@ -25,17 +25,18 @@ public class ResilientHeartbeatTests
     /// How many times the heartbeat has waited for <see cref="Interval"/> of silence: its delay is the only timer of
     /// that length (the inner response timeout is 150 ms, ConnectTimeout 5 s).
     /// </summary>
-    static int SilenceWaits(CountingTimeProvider time) => time.TimerDueTimes.Count(due => due == Interval);
+    private static int SilenceWaits(CountingTimeProvider time) => time.TimerDueTimes.Count(due => due == Interval);
 
     /// <summary>Records every request the device reads and NAKs the first <paramref name="answered"/> of them; the rest get no reply.</summary>
-    static async Task RecordAndNakAsync(PipeDevice device, ConcurrentQueue<byte[]> requests, int answered = int.MaxValue)
+    private static async Task RecordAndNakAsync(PipeDevice device, ConcurrentQueue<byte[]> requests, int answered = int.MaxValue)
     {
         try
         {
             for (int n = 1; ; n++)
             {
                 requests.Enqueue(await device.ReadRequestAsync());
-                if (n <= answered) await device.SendAsync(Resilient.Nak);
+                if (n <= answered)
+                    await device.SendAsync(Resilient.Nak);
             }
         }
         catch (Exception)
@@ -254,10 +255,13 @@ public class ResilientHeartbeatTests
             Assert.All(from.Events(id), r => Assert.Equal((level, category), (r.Level, r.Category)));
         }
 
-        foreach (int id in new[] { 1100, 1101, 1102, 1103, 1104 }) Expect(logs, id, LogLevel.Warning, Outer);
-        foreach (int id in new[] { 1105, 1109, 1112 }) Expect(logs, id, LogLevel.Information, Outer);
+        foreach (int id in new[] { 1100, 1101, 1102, 1103, 1104 })
+            Expect(logs, id, LogLevel.Warning, Outer);
+        foreach (int id in new[] { 1105, 1109, 1112 })
+            Expect(logs, id, LogLevel.Information, Outer);
         Expect(logs, 1107, LogLevel.Debug, Outer);
-        foreach (int id in new[] { 1000, 1001, 1003, 1004, 1005, 1006 }) Expect(logs, id, LogLevel.Debug, Inner);
+        foreach (int id in new[] { 1000, 1001, 1003, 1004, 1005, 1006 })
+            Expect(logs, id, LogLevel.Debug, Inner);
         Assert.Contains(logs.Events(1003), r => r.Value("Item") == "RfGain");
         Assert.Contains(logs.Events(1004), r => r.Value("Item") == "RfGain");
         Assert.Empty(logs.Events(1010).Concat(logs.Events(1011)).Concat(logs.Events(1106)));

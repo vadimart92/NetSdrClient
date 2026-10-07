@@ -10,7 +10,7 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientLineTests
 {
-    static readonly TimeSpan Late = TimeSpan.FromMilliseconds(250);   // past ResponseTimeout 150 ms, well before the 750 ms deadline
+    private static readonly TimeSpan Late = TimeSpan.FromMilliseconds(250);   // past ResponseTimeout 150 ms, well before the 750 ms deadline
 
     [Fact]
     public async Task BusyDevice_LateReplyAdopted_NoResend()
@@ -128,7 +128,8 @@ public class ResilientLineTests
             await device.SendAsync(Resilient.VersionReply);
             Assert.Equal(529, (await b.WaitAsync(Limits.Test)).Version);
             var codes = new List<ushort>();
-            for (int i = 0; i < 2; i++) codes.Add((await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test)).Code);
+            for (int i = 0; i < 2; i++)
+                codes.Add((await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test)).Code);
             Assert.Equal(new ushort[] { 0x0003, 0x0009 }, codes);         // the foreign frame, then A's real reply
             Assert.False(client.Unsolicited.TryRead(out _));
             Assert.Empty(logs.Events(1100));

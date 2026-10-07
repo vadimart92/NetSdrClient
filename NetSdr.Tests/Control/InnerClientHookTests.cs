@@ -18,7 +18,9 @@ public class InnerClientHookTests
         var time = new FakeTimeProvider();
         await using var device = PipeDevice.Create(new NetSdrControlClientOptions
         {
-            ResponseTimeout = TimeSpan.FromSeconds(2), FaultOnTimeout = false, TimeProvider = time,
+            ResponseTimeout = TimeSpan.FromSeconds(2),
+            FaultOnTimeout = false,
+            TimeProvider = time,
         });
         var call = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
@@ -61,7 +63,8 @@ public class InnerClientHookTests
         await normal.WaitAsync(Limits.Test);
         await device.SendAsync("06 20 48 00 00 09");               // unsolicited
         await device.SendAsync("02 00");                            // NAK with an empty slot
-        for (int i = 0; i < 2; i++) await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+        for (int i = 0; i < 2; i++)
+            await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
         var rejected = client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
         await device.SendAsync("02 00");                            // NAK that answers the request
@@ -100,7 +103,8 @@ public class InnerClientHookTests
     private static async Task<string[]> ScriptAsync(bool observe)
     {
         var client = Inner();
-        if (observe) client.LateReplyObserver = (_, _) => { };
+        if (observe)
+            client.LateReplyObserver = (_, _) => { };
         await using var device = PipeDevice.Attach(client);
         await AbandonAsync<ProductId>(device);
         await device.SendAsync(ProductReply + " 02 00 06 20 48 00 00 09");
