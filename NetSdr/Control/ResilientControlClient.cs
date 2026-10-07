@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly Channel<ControlItemMessage> _unsolicited;
     private readonly ResiliencePipeline _commandPipeline;
     private readonly ResiliencePipeline _reconnect;
+    private readonly ResiliencePipeline _firstConnect;
     private readonly NetSdrControlClientOptions _innerOptions;
     private readonly ResilientControlClientOptions _options;
     private readonly TimeProvider _time;
@@ -33,6 +35,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly Func<NetSdrControlClient, CancellationToken, Task> _connect;
     private readonly string _target;
     private readonly Action<Task<ControlItemMessage>, object?> _settle;
+    private readonly IDeviceRebooter? _rebooter;
+    private readonly IRecoveryPolicy? _policy;       // null exactly when _rebooter is: without a rebooter it is never called
+    private readonly int _connectAttempts;
 
     /// <summary>The scope of the running <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback, seen by everything it runs (spec 7.5).</summary>
     private readonly AsyncLocal<RestoreScope?> _restoreScope = new();
@@ -42,7 +47,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private volatile Link _link = null!;    // published by ConnectCoreAsync before the instance is handed out
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
-    private long _lastAttemptStart;
+    private long? _lastAttemptStart;
 
     /// <summary>The link of the reconnection attempt in progress, from its pump start until it is published or closed; what <see cref="DisposeAsync"/> closes besides <see cref="_link"/>.</summary>
     private Link? _restoring;
@@ -62,6 +67,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         _time = options.TimeProvider;
         _logger = options.LoggerFactory.CreateLogger(typeof(ResilientControlClient).FullName!);
         _settle = (_, state) => Settle((Exchange)state!);
+        _rebooter = options.Rebooter;
+        _policy = _rebooter is null ? null : options.RecoveryPolicy ?? new EscalatingRecoveryPolicy();
+        _connectAttempts = options.ConnectAttempts ?? (_rebooter is null ? 1 : 8);
         _innerOptions = new NetSdrControlClientOptions
         {
             ResponseTimeout = options.ResponseTimeout,          // finite: tells a busy device from a dead connection
@@ -92,28 +100,53 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                 },
             })
             .Build();
-        // Polly needs MaxRetryAttempts >= 1, so with one attempt per loss there is no retry strategy at all.
-        _reconnect = options.ReconnectAttempts == 1
+        _reconnect = BuildAttemptPipeline(
+            options.ReconnectAttempts,
+            (state, delay, failure) => ResilientClientLog.ReconnectAttemptFailed(_logger, state.Attempt, _target, state.Phase, delay, failure));
+        _firstConnect = BuildAttemptPipeline(
+            _connectAttempts,
+            (state, delay, failure) => ResilientClientLog.ConnectAttemptFailed(
+                _logger, state.Attempt, _connectAttempts, _target, state.Phase, delay, failure));
+    }
+
+    /// <summary>
+    /// The attempt series of a loss (<see cref="_reconnect"/>) or of the first connection (<see cref="_firstConnect"/>):
+    /// exponential backoff from 1 s to 30 s, at most <paramref name="attempts"/> attempts across every series, and
+    /// <paramref name="onRetry"/> writing the failure that another attempt follows.
+    /// </summary>
+    private ResiliencePipeline BuildAttemptPipeline(int attempts, Action<ReconnectState, TimeSpan, Exception> onRetry)
+    {
+        // Polly needs MaxRetryAttempts >= 1, so with one attempt there is no retry strategy at all.
+        return attempts == 1
             ? ResiliencePipeline.Empty
-            : new ResiliencePipelineBuilder { TimeProvider = options.TimeProvider }
+            : new ResiliencePipelineBuilder { TimeProvider = _options.TimeProvider }
                 .AddRetry(new RetryStrategyOptions
                 {
-                    MaxRetryAttempts = options.ReconnectAttempts - 1,
+                    MaxRetryAttempts = attempts - 1,
                     BackoffType = DelayBackoffType.Exponential,
                     Delay = TimeSpan.FromSeconds(1),
                     MaxDelay = TimeSpan.FromSeconds(30),
-                    UseJitter = options.UseJitter,
-                    // Cancellation is the disposal, never a failed attempt; a reentrant ConnectionRestored callback is
-                    // fatal (spec 7.5), so the client gives up instead of trying again.
-                    ShouldHandle = static a => ValueTask.FromResult(
-                        a.Outcome.Exception is not (null or FatalRestoreException)
-                        && !a.Context.CancellationToken.IsCancellationRequested),
+                    UseJitter = _options.UseJitter,
+                    // Cancellation is the disposal, a reboot request or the caller's token, never a failed attempt; a
+                    // reentrant ConnectionRestored callback is fatal (spec 7.5), so the client gives up instead of trying
+                    // again; a decision of the recovery policy ends the series (reboot spec 5.3); and the attempt limit
+                    // holds across every series (Ruling 3).
+                    ShouldHandle = a => ValueTask.FromResult(
+                        a.Outcome.Exception is not (null or FatalRestoreException or RebootScheduledException or RecoveryGaveUpException)
+                        && !a.Context.CancellationToken.IsCancellationRequested
+                        && a.Context.Properties.GetValue(ReconnectKey, null!).Attempt < attempts),
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
-                        ReconnectState state = a.Context.Properties.GetValue(ReconnectKey, null!);
-                        ResilientClientLog.ReconnectAttemptFailed(
-                            _logger, state.Attempt, _target, state.Phase, a.RetryDelay, a.Outcome.Exception!);
+                        try
+                        {
+                            onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
+                        }
+                        catch (Exception)
+                        {
+                            // A logging provider failed (reboot spec 8); the series goes on.
+                        }
+
                         return default;
                     },
                 })
@@ -151,17 +184,22 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
-    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
-    /// on failure nothing is left running. The host name is resolved again on every reconnection.
+    /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
+    /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
+    /// failed attempt that another attempt follows writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
+    /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
+    /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
+    /// stops the attempts, the pauses, the reboot and the boot wait, and nothing is left running. The host name is resolved again on every reconnection.
     /// </summary>
     /// <param name="host">Host name or IP address of the device.</param>
     /// <param name="port">TCP port of the control channel; the device listens on 50000 by default.</param>
     /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
     /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
     /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
-    /// <exception cref="SocketException">The TCP connection failed.</exception>
-    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
-    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="SocketException">The TCP connection of the last attempt failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification, of the last attempt.</exception>
+    /// <exception cref="IOException">The connection of the last attempt was lost before it was verified.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public static Task<ResilientControlClient> ConnectAsync(
         string host, int port = 50000, ResilientControlClientOptions? options = null, CancellationToken ct = default)
@@ -172,16 +210,21 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
-    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
-    /// on failure nothing is left running.
+    /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
+    /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
+    /// failed attempt that another attempt follows writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
+    /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
+    /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
+    /// stops the attempts, the pauses, the reboot and the boot wait, and nothing is left running.
     /// </summary>
     /// <param name="endPoint">The control channel of the device.</param>
     /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
     /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
     /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
-    /// <exception cref="SocketException">The TCP connection failed.</exception>
-    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
-    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="SocketException">The TCP connection of the last attempt failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification, of the last attempt.</exception>
+    /// <exception cref="IOException">The connection of the last attempt was lost before it was verified.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public static Task<ResilientControlClient> ConnectAsync(
         IPEndPoint endPoint, ResilientControlClientOptions? options = null, CancellationToken ct = default)
@@ -277,6 +320,55 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         return CommandAsync(type, code, CopyPayload(type, payload), null, ct, null);
     }
 
+    /// <summary>
+    /// Reboots the device through <see cref="ResilientControlClientOptions.Rebooter"/> and completes once the client is
+    /// connected again after the reboot. On a live connection the client ends it itself (no 1103): the request in flight
+    /// is retried after the restore, as after any loss. A request made while another has not started yet merges with it
+    /// (Hard wins); one made while a reboot runs or its boot wait lasts joins that reboot, whatever its kind.
+    /// </summary>
+    /// <param name="kind">How to reboot the device.</param>
+    /// <param name="ct">Cancels only this caller's wait: once accepted, the reboot itself still happens.</param>
+    /// <exception cref="InvalidOperationException">
+    /// Called from inside <see cref="ResilientControlClientOptions.ConnectionRestored"/> (the client gives up), no
+    /// <see cref="ResilientControlClientOptions.Rebooter"/> is configured, or the client gave up reconnecting (the cause
+    /// is the inner exception).
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="TimeoutException">In the task: the transport did not complete within <see cref="ResilientControlClientOptions.RebootTimeout"/>.</exception>
+    /// <exception cref="OperationCanceledException">In the task: <paramref name="ct"/> was cancelled.</exception>
+    /// <remarks>
+    /// The task also fails with whatever the transport threw, with <see cref="ObjectDisposedException"/> when the client
+    /// is disposed meanwhile, and with the give-up failure when the client gives up. A failed reboot leaves the
+    /// connection closed, and the client goes on reconnecting.
+    /// </remarks>
+    public Task RebootAsync(RebootKind kind, CancellationToken ct = default)
+    {
+        ThrowIfReentrant();
+        ThrowIfClosed();
+        if (_rebooter is null)
+        {
+            throw new InvalidOperationException("No Rebooter is configured; set ResilientControlClientOptions.Rebooter.");
+        }
+
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled(ct);
+        }
+
+        Task completion = RegisterRebootRequest(kind);
+        try
+        {
+            ResilientClientLog.RebootRequested(_logger, kind, _target);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed; the request is registered and runs.
+        }
+
+        // Cancelling ct cancels only this caller's task, never the reboot (reboot spec 4.2).
+        return completion.WaitAsync(ct);
+    }
+
     /// <summary>Rejects options outside their ranges and returns a copy the client keeps.</summary>
     private static ResilientControlClientOptions Validated(ResilientControlClientOptions? options)
     {
@@ -305,6 +397,12 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             throw new ArgumentOutOfRangeException(nameof(options), options.UnsolicitedCapacity, "UnsolicitedCapacity must be at least 1.");
         }
 
+        RequireFinite(options.RebootTimeout, nameof(options.RebootTimeout), nameof(options));
+        if (options.ConnectAttempts is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.ConnectAttempts, "ConnectAttempts must be at least 1.");
+        }
+
         return new ResilientControlClientOptions
         {
             ResponseTimeout = options.ResponseTimeout,
@@ -318,6 +416,10 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             LoggerFactory = options.LoggerFactory,
             TimeProvider = options.TimeProvider,
             UseJitter = options.UseJitter,
+            Rebooter = options.Rebooter,
+            RecoveryPolicy = options.RecoveryPolicy,
+            RebootTimeout = options.RebootTimeout,
+            ConnectAttempts = options.ConnectAttempts,
         };
     }
 
@@ -343,14 +445,43 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// The first and only attempt of <c>ConnectAsync</c>: spec 7.4 steps 2-5 with the caller's token, then the
-    /// publication and the start of the supervisor.
+    /// <c>ConnectAsync</c> (reboot spec 4.5): the series of <see cref="ResilientControlClientOptions.ConnectAttempts"/>
+    /// attempts with the caller's token and the reboot steps the recovery policy schedules between them, then the
+    /// publication and the start of the supervisor. A give-up of the policy throws the last failure; there is no
+    /// reboot slot yet, so no manual request takes part.
     /// </summary>
     private async Task<ResilientControlClient> ConnectCoreAsync(CancellationToken ct)
     {
-        // Recorded as for a reconnection attempt, so the first attempt after an early loss keeps the 1 s floor.
-        _lastAttemptStart = _time.GetTimestamp();
-        Link link = await OpenLinkAsync(null, ct).ConfigureAwait(false);
+        // The counters of the first connection; the first loss starts its own.
+        var state = new ReconnectState(null, _time.GetUtcNow(), _time.GetTimestamp());
+        Link link;
+        while (true)
+        {
+            RebootScheduledException scheduled;
+            ResilienceContext context = ResilienceContextPool.Shared.Get(ct);
+            try
+            {
+                context.Properties.Set(ReconnectKey, state);
+                link = await _firstConnect.ExecuteAsync(ConnectOnceAsync, context, state).ConfigureAwait(false);
+                break;
+            }
+            catch (RebootScheduledException ex)
+            {
+                scheduled = ex;
+            }
+            catch (RecoveryGaveUpException ex)
+            {
+                ExceptionDispatchInfo.Throw(ex.InnerException!);
+                throw;      // not reached; Throw does not return, which definite assignment does not know
+            }
+            finally
+            {
+                ResilienceContextPool.Shared.Return(context);
+            }
+
+            await RebootStepAsync(scheduled.Kind, state, null, scheduled.InnerException, ct).ConfigureAwait(false);
+        }
+
         if (!Publish(link))
         {
             // Nobody holds the client yet, so only ConnectAsync itself could have closed it; kept for the invariant.
@@ -405,9 +536,11 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             link.Pump = PumpAsync(link);
 
             // Step 4. From here DisposeAsync sees the link and closes it; a client already closed takes no new link.
+            // The remote end is kept for the next reboot's context (Ruling C23).
             bool closed;
             lock (_sync)
             {
+                _lastRemoteEndPoint = inner.RemoteEndPoint ?? _lastRemoteEndPoint;
                 closed = _state == ClientState.Closed;
                 if (!closed)
                 {
@@ -538,10 +671,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             failure = _failure;
         }
 
-        throw failure is null
-            ? new ObjectDisposedException(nameof(ResilientControlClient))
-            : new InvalidOperationException("The client gave up reconnecting; create a new client.", failure);
+        throw ClosedSyncException(failure);
     }
+
+    /// <summary>
+    /// What a call that starts on a Closed client throws (spec 6.5 step 0, Ruling C12): the disposal, or the give-up
+    /// with <paramref name="failure"/> as the cause. Shared by <see cref="ThrowIfClosed"/> and the reboot slot.
+    /// </summary>
+    private static Exception ClosedSyncException(IOException? failure) => failure is null
+        ? new ObjectDisposedException(nameof(ResilientControlClient))
+        : new InvalidOperationException("The client gave up reconnecting; create a new client.", failure);
 
     /// <summary>Spec 6.5 step 0: the payload of a Set, written into a fresh zeroed buffer.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
@@ -1035,13 +1174,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             ResilientClientLog.ConnectionUnresponsive(
                 _logger, exchange.Type, exchange.Code, _time.GetElapsedTime(exchange.SentAt), link.Client.RemoteEndPoint);
         }
-        finally
+        catch (Exception)
         {
-            // A logging provider that throws must not leave the line held or the connection open. The synchronous
-            // part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
-            _ = link.Client.DisposeAsync();
-            Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
+            // A logging provider failed (reboot spec 8). Not rethrown: this runs on a timer thread, where an
+            // exception would end the process; the connection is closed below all the same.
         }
+
+        // The synchronous part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
+        _ = link.Client.DisposeAsync();
+        Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
     }
 
     /// <summary>

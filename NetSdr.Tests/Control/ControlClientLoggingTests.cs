@@ -246,7 +246,7 @@ public class ControlClientLoggingTests
     }
 
     /// <summary>Loggers enabled at every level that throw on the given event ids and drop every other entry.</summary>
-    private sealed class ThrowingLoggerFactory(params int[] throwsAt) : ILoggerFactory
+    internal sealed class ThrowingLoggerFactory(params int[] throwsAt) : ILoggerFactory
     {
         public ILogger CreateLogger(string categoryName) => new Logger(throwsAt);
 

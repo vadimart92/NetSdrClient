@@ -4,19 +4,6 @@ using NetSdr.Framing;
 
 namespace NetSdr.Control;
 
-/// <summary>The phase a reconnection attempt was in when it failed, as event 1104 reports it.</summary>
-internal enum ReconnectPhase
-{
-    /// <summary>Establishing the TCP connection.</summary>
-    Connect,
-
-    /// <summary>Waiting for the device to answer the verification request.</summary>
-    Verify,
-
-    /// <summary>Running <see cref="ResilientControlClientOptions.ConnectionRestored"/>.</summary>
-    Restore,
-}
-
 /// <summary>What a late reply was, as events 1107 and 1108 report it.</summary>
 internal enum LateOutcome
 {
@@ -91,4 +78,30 @@ internal static partial class ResilientClientLog
     [LoggerMessage(EventId = 1112, EventName = "Disposed", Level = LogLevel.Information,
         Message = "Client for {Target} disposed")]
     public static partial void Disposed(ILogger logger, string target);
+
+    [LoggerMessage(EventId = 1113, EventName = "RebootRequested", Level = LogLevel.Information,
+        Message = "A {Kind} reboot of {Target} was requested")]
+    public static partial void RebootRequested(ILogger logger, RebootKind kind, string target);
+
+    [LoggerMessage(EventId = 1114, EventName = "RebootEscalated", Level = LogLevel.Warning,
+        Message = "Escalating to a {Kind} reboot of {Target} after {FailedAttempts} failed attempt(s), the last in phase {Phase}")]
+    public static partial void RebootEscalated(
+        ILogger logger, RebootKind kind, string target, int failedAttempts, ReconnectPhase phase, Exception exception);
+
+    [LoggerMessage(EventId = 1115, EventName = "RebootFailed", Level = LogLevel.Warning,
+        Message = "The {Kind} reboot of {Target} failed")]
+    public static partial void RebootFailed(ILogger logger, RebootKind kind, string target, Exception exception);
+
+    [LoggerMessage(EventId = 1116, EventName = "RebootAccepted", Level = LogLevel.Information,
+        Message = "{Target} accepted a {Kind} reboot; waiting {BootTime} for it to boot")]
+    public static partial void RebootAccepted(ILogger logger, string target, RebootKind kind, TimeSpan bootTime);
+
+    [LoggerMessage(EventId = 1117, EventName = "RecoveryPolicyFailed", Level = LogLevel.Warning,
+        Message = "The recovery policy failed; continuing with the next attempt")]
+    public static partial void RecoveryPolicyFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 1118, EventName = "ConnectAttemptFailed", Level = LogLevel.Warning,
+        Message = "Connect attempt {Attempt} of {Attempts} to {Target} failed in phase {Phase}; next attempt in {Delay}")]
+    public static partial void ConnectAttemptFailed(
+        ILogger logger, int attempt, int attempts, string target, ReconnectPhase phase, TimeSpan delay, Exception exception);
 }

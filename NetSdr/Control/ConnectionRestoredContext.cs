@@ -3,11 +3,12 @@ namespace NetSdr.Control;
 /// <summary>What <see cref="ResilientControlClientOptions.ConnectionRestored"/> gets to restore the device's session on a new connection.</summary>
 public sealed class ConnectionRestoredContext
 {
-    internal ConnectionRestoredContext(INetSdrControlClient client, Exception cause, DateTimeOffset lostAt)
+    internal ConnectionRestoredContext(INetSdrControlClient client, Exception cause, DateTimeOffset lostAt, RebootKind? afterReboot)
     {
         Client = client;
         Cause = cause;
         LostAt = lostAt;
+        AfterReboot = afterReboot;
     }
 
     /// <summary>
@@ -29,4 +30,10 @@ public sealed class ConnectionRestoredContext
 
     /// <summary>When the loss was noticed; it marks the gap in the I/Q stream for the application.</summary>
     public DateTimeOffset LostAt { get; }
+
+    /// <summary>
+    /// The kind of the last accepted reboot of this loss, or <see langword="null"/> when the device was not rebooted
+    /// during it. A rebooted device has lost its whole state, not only the session of the connection.
+    /// </summary>
+    public RebootKind? AfterReboot { get; }
 }

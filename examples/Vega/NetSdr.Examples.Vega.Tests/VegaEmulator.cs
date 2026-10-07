@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using NetSdr.Control;
 using NetSdr.Examples.Vega.Items;
 using NetSdr.Framing;
 using NetSdr.Items;
@@ -15,10 +17,25 @@ public enum VegaFirmware
     V2,
 }
 
+/// <summary>How a <see cref="VegaEmulator"/> hangs.</summary>
+public enum VegaHang
+{
+    /// <summary>The emulator answers.</summary>
+    None,
+
+    /// <summary>The firmware hangs: no replies and no UDP stream until any accepted reboot.</summary>
+    Firmware,
+
+    /// <summary>The board hangs: no replies, a soft reboot does not cure it, only a hard one.</summary>
+    Board,
+}
+
 /// <summary>
 /// A Vega receiver imitated on a <see cref="NetSdrTestServer"/>: the standard items come from the server's state, the
 /// Vega items from handlers of this class. The handlers run on the connection thread of the server, so the state they
-/// share with the test is guarded by a lock.
+/// share with the test is guarded by a lock. A <see cref="VegaServiceServer"/> on its own loopback port imitates the
+/// service microcontroller: it accepts soft and hard reboots, which drop the client, refuse connections for the boot
+/// time and lock the receiver again.
 /// </summary>
 public sealed class VegaEmulator : IAsyncDisposable
 {
@@ -33,11 +50,15 @@ public sealed class VegaEmulator : IAsyncDisposable
     private readonly Dictionary<TemperatureSensor, double> _temperatures = [];
     private bool _unlocked;
     private string _label = string.Empty;
+    private VegaHang _hang;
+    private bool _booting;
+    private readonly List<(RebootKind Kind, bool KeyValid)> _rebootRequests = [];
 
     public VegaEmulator(uint unlockKey = DefaultKey, VegaFirmware firmware = VegaFirmware.V2)
     {
         _unlockKey = unlockKey;
         Firmware = firmware;
+        Service = new VegaServiceServer(Respond);
 
         Server.Preload(new ProductId(VegaProtocol.ProductId));
 
@@ -79,7 +100,31 @@ public sealed class VegaEmulator : IAsyncDisposable
 
     public int Port => Server.Port;
 
-    /// <summary>Whether a <see cref="VendorUnlock"/> with the right key has been received; it lasts as long as the emulator.</summary>
+    /// <summary>The service microcontroller of the emulator, for the requests it has received.</summary>
+    public VegaServiceServer Service { get; }
+
+    /// <summary>The TCP port of the service protocol.</summary>
+    public int ServicePort => Service.Port;
+
+    /// <summary>How long the receiver refuses connections after an accepted soft reboot.</summary>
+    public TimeSpan SoftBootTime { get; set; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>How long the receiver refuses connections after an accepted hard reboot.</summary>
+    public TimeSpan HardBootTime { get; set; } = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>Every well-formed reboot request the service has received, accepted or not, oldest first.</summary>
+    public IReadOnlyList<(RebootKind Kind, bool KeyValid)> RebootRequests
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return [.. _rebootRequests];
+            }
+        }
+    }
+
+    /// <summary>Whether a <see cref="VendorUnlock"/> with the right key has been received; it lasts until a reboot.</summary>
     public bool IsUnlocked
     {
         get
@@ -91,7 +136,31 @@ public sealed class VegaEmulator : IAsyncDisposable
         }
     }
 
-    public Task StartAsync() => Server.StartAsync();
+    public Task StartAsync() => Task.WhenAll(Server.StartAsync(), Service.StartAsync());
+
+    /// <summary>
+    /// Makes the receiver hang, or stop hanging with <see cref="VegaHang.None"/>. A hang leaves the requests
+    /// unanswered and stops the UDP stream; while the receiver boots its availability is left to the end of the boot.
+    /// </summary>
+    public void Hang(VegaHang kind)
+    {
+        bool booting;
+        lock (_sync)
+        {
+            _hang = kind;
+            booting = _booting;
+        }
+
+        if (!booting)
+        {
+            Server.Availability = kind == VegaHang.None ? ServerAvailability.Normal : ServerAvailability.Silent;
+        }
+
+        if (kind != VegaHang.None)
+        {
+            _ = Server.StopStreamingAsync();
+        }
+    }
 
     /// <summary>Sets the temperature a Get of the sensor answers with.</summary>
     public void SetTemperature(TemperatureSensor sensor, double celsius)
@@ -111,7 +180,101 @@ public sealed class VegaEmulator : IAsyncDisposable
     public Task SendOverloadAsync(byte channel, OverloadFlags flags) =>
         Server.SendUnsolicitedAsync(new OverloadEvent(channel, flags));
 
-    public ValueTask DisposeAsync() => Server.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await Service.DisposeAsync();
+        }
+        finally
+        {
+            await Server.DisposeAsync();
+        }
+    }
+
+    /// <summary>Answers one service request; a malformed one gets no reply and is not recorded.</summary>
+    private ReadOnlyMemory<byte> Respond(ReadOnlyMemory<byte> request)
+    {
+        ReadOnlySpan<byte> bytes = request.Span;
+        if (bytes.Length < 8
+            || bytes[0] != VegaProtocol.ServiceMagic0 || bytes[1] != VegaProtocol.ServiceMagic1 || bytes[2] != VegaProtocol.ServiceVersion
+            || bytes[3] is not (VegaProtocol.SoftRebootCommand or VegaProtocol.HardRebootCommand))
+        {
+            return ReadOnlyMemory<byte>.Empty;
+        }
+
+        byte command = bytes[3];
+        RebootKind kind = command == VegaProtocol.HardRebootCommand ? RebootKind.Hard : RebootKind.Soft;
+        bool keyValid = BinaryPrimitives.ReadUInt32LittleEndian(bytes[4..]) == _unlockKey;
+        byte status;
+        lock (_sync)
+        {
+            _rebootRequests.Add((kind, keyValid));
+            if (_booting)
+            {
+                status = VegaProtocol.ServiceBusy;
+            }
+            else if (!keyValid)
+            {
+                status = VegaProtocol.ServiceBadKey;
+            }
+            else
+            {
+                _booting = true;
+                status = VegaProtocol.ServiceAccepted;
+            }
+        }
+
+        if (status == VegaProtocol.ServiceAccepted)
+        {
+            _ = Task.Run(() => BootAsync(kind));
+        }
+
+        return new byte[] { VegaProtocol.ServiceMagic0, VegaProtocol.ServiceMagic1, command, status };
+    }
+
+    /// <summary>
+    /// One reboot: the client is dropped, connections are refused for the boot time and the receiver is locked again;
+    /// a soft reboot cures a firmware hang, a hard one any hang and also resets the state of the receiver.
+    /// </summary>
+    private async Task BootAsync(RebootKind kind)
+    {
+        try
+        {
+            await Server.DisconnectClientAsync();
+            Server.Availability = ServerAvailability.CloseOnAccept;
+            lock (_sync)
+            {
+                _unlocked = false;
+                if (kind == RebootKind.Hard || _hang == VegaHang.Firmware)
+                {
+                    _hang = VegaHang.None;
+                }
+
+                if (kind == RebootKind.Hard)
+                {
+                    _antennas.Clear();
+                    _label = string.Empty;
+                }
+            }
+
+            if (kind == RebootKind.Hard)
+            {
+                Server.ClearState();
+                Server.Preload(new ProductId(VegaProtocol.ProductId));
+            }
+
+            await Task.Delay(kind == RebootKind.Hard ? HardBootTime : SoftBootTime);
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                Server.Availability = _hang == VegaHang.Board ? ServerAvailability.Silent : ServerAvailability.Normal;
+                _booting = false;
+            }
+        }
+    }
 
     /// <summary>Handles an item that is only served once the receiver is unlocked; before that it is a NAK.</summary>
     private void OnUnlocked<T>(Func<ControlRequest<T>, ControlReply> handler) where T : struct, IControlItem<T> =>

@@ -11,6 +11,9 @@
 - [Стійкість і логування](superpowers/specs/2026-10-07-netsdr-resilience-logging-design.md):
   `ResilientControlClient` з перепідключенням і heartbeat, `INetSdrControlClient`,
   логування всієї бібліотеки.
+- [Перезавантаження пристрою](superpowers/specs/2026-10-07-netsdr-device-reboot-design.md):
+  `IDeviceRebooter`, `IRecoveryPolicy` з драбиною перезавантажень, `ConnectAttempts`,
+  ручне `RebootAsync(kind)`, `VegaRebooter`.
 
 Рівень 4 (код) окремо не малюю. Класові діаграми ключових типів є в специфікаціях, а решту
 швидше прочитати в самому коді.
@@ -124,7 +127,7 @@ flowchart TB
 
     subgraph core["NetSdr"]
         ident["<b>Identification</b><br/>[DeviceCatalog#lt;T#gt;, DeviceIdentity, Probes]<br/>Паспорт зі стандартних і власних проб,<br/>вибір клієнта за предикатами"]
-        resil["<b>Resilience</b><br/>[ResilientControlClient]<br/>Наглядач: перепідключення з backoff,<br/>heartbeat Get 0x0005, ConnectionRestored,<br/>повтори команд через Polly"]
+        resil["<b>Resilience</b><br/>[ResilientControlClient]<br/>Наглядач: перепідключення з backoff,<br/>heartbeat Get 0x0005, ConnectionRestored,<br/>повтори команд через Polly,<br/>драбина перезавантажень: IRecoveryPolicy вирішує,<br/>IDeviceRebooter виконує"]
         control["<b>Control</b><br/>[NetSdrControlClient]<br/>Цикл читання на PipeReader,<br/>один запит у польоті під SemaphoreSlim,<br/>unsolicited в обмеженому Channel"]
         data["<b>Data</b><br/>[NetSdrDataReceiver, DataSequence]<br/>Окремий Thread, ReceiveFrom у буфер 64 КБ,<br/>контроль sequence, виклик callback"]
         items["<b>Items</b><br/>[IControlItem#lt;T#gt;, UInt40, 25 структур]<br/>Команда це struct,<br/>байти кастяться через MemoryMarshal"]
@@ -132,7 +135,8 @@ flowchart TB
     end
 
     app -->|"Register, Default,<br/>ConnectAsync, AttachAsync"| ident
-    app -->|"ConnectAsync, SetAsync,<br/>GetAsync, Unsolicited"| resil
+    app -->|"ConnectAsync, SetAsync,<br/>GetAsync, Unsolicited,<br/>RebootAsync(kind)"| resil
+    resil -->|"OnAttemptFailed, RebootAsync(kind), GetBootTime<br/>[IRecoveryPolicy, IDeviceRebooter застосунку]"| app
     app -->|"SetAsync, GetAsync, Unsolicited"| control
     app -->|"Bind, Start, callback(info, samples)"| data
     app -.->|"власні структури команд"| items
@@ -183,6 +187,7 @@ flowchart TB
 | Читання `Unsolicited` | Будь-який, один читач | Канал обмежений, при переповненні викидається найстаріше |
 | Наглядач `ResilientControlClient` | Задача пулу, одна на клієнт | Єдиний створює, перевіряє і публікує з'єднання. Чекає на `Completion` внутрішнього клієнта, перепідключається з backoff |
 | Heartbeat | Усередині наглядача, затримки через `TimeProvider` | Get 0x0005 лише на вільній лінії, коли від пристрою нічого не чути `HeartbeatInterval`; новий не йде, поки попередній без відповіді |
+| Крок перезавантаження | Наглядач | `IDeviceRebooter.RebootAsync` і `GetBootTime` виконуються в наглядачі поза замком, обмежені `RebootTimeout` і `DisposeAsync`; команди чекають у межах `CommandTimeout`, heartbeat не йде |
 | Callback `ConnectionRestored` | Наглядач, до публікації нового з'єднання | Не виконується паралельно сам із собою чи з heartbeat. Команди застосунку чекають, запити йдуть через `context.Client`; виклик самого `ResilientControlClient` звідси фатальний |
 | Перекачування `Unsolicited` у `ResilientControlClient` | Задача пулу на кожне з'єднання | Один канал на весь час життя клієнта, повідомлення в порядку з'єднань |
 | Callback `DataPacketHandler` | Виділений потік прийому UDP | Довга робота тут означає втрати в сокеті; span дійсний лише всередині виклику |
@@ -240,12 +245,14 @@ flowchart TB
         base["<b>VegaReceiverBase</b><br/>Антени, мітка, потік, події,<br/>статичний ConnectAsync"]
         v1["<b>VegaV1Receiver</b><br/>Температура у форматі v1"]
         v2["<b>VegaV2Receiver</b><br/>Температура у форматі v2"]
+        rebooter["<b>VegaRebooter</b><br/>[IDeviceRebooter]<br/>TCP 50001, 8 байт запиту,<br/>4 байти відповіді"]
     end
 
     subgraph core["NetSdr"]
         cat["<b>DeviceCatalog#lt;VegaReceiverBase#gt;</b>"]
         ctl["<b>INetSdrControlClient</b><br/>NetSdrControlClient або<br/>ResilientControlClient"]
         icontrol["<b>IControlItem#lt;T#gt;</b>"]
+        idev["<b>IDeviceRebooter</b>"]
     end
 
     base -->|"ConnectAsync будує каталог"| cat
@@ -257,11 +264,12 @@ flowchart TB
     probe -->|"SetAsync, GetAsync"| ctl
     base -->|"команди і Unsolicited"| ctl
     vitems -.->|"реалізують"| icontrol
+    rebooter -.->|"реалізує"| idev
 
     classDef component fill:#85BBF0,stroke:#5D82A8,color:#000
     classDef framework fill:#438DD5,stroke:#2E6295,color:#fff
-    class vitems,probe,base,v1,v2 component
-    class cat,ctl,icontrol framework
+    class vitems,probe,base,v1,v2,rebooter component
+    class cat,ctl,icontrol,idev framework
 ```
 
 - Версія прошивки визначається власною командою після розблокування: NAK на 0x8005
@@ -339,6 +347,12 @@ sequenceDiagram
         Sup->>CC: новий NetSdrControlClient, ConnectAsync
         CC->>Rx: TCP 50000, перевірка Get 0x0005
     end
+    opt політика вирішила Reboot(kind) після невдалої спроби
+        Sup->>App: IDeviceRebooter.RebootAsync(kind)
+        App->>Rx: сервісний канал, наприклад TCP 50001
+        Note over Sup: Warning 1114, потім Information 1116 і очікування GetBootTime(kind)
+        Sup->>CC: нова серія спроб, паузи знову з 1 с
+    end
     Sup->>App: ConnectionRestored(context, ct)
     App->>CC: context.Client: VendorUnlock, частоти, 0x00C5, ReceiverState.Start
     App-->>Sup: callback завершився
@@ -355,3 +369,6 @@ sequenceDiagram
 - `NetSdrDataReceiver` не змінюється і тримає свій порт. Пристрій після `ReceiverState.Start`
   починає sequence з 0, тому простій не потрапляє в `Lost`. Розрив застосунок позначає за
   `context.LostAt`.
+- Ручне `RebootAsync(kind)` іде тим самим шляхом, але без Warning 1103 і 1114, а колбек
+  бачить `context.AfterReboot`. Деталі в спеці
+  [перезавантаження пристрою](superpowers/specs/2026-10-07-netsdr-device-reboot-design.md).
