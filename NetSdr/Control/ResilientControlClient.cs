@@ -49,9 +49,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>The failure the client gave up with; <see langword="null"/> while it has not, and after a plain disposal.</summary>
     private IOException? _failure;
-#pragma warning disable CS0414 // Read by the CommandTimeout translation (spec 6.5 step 7), which a later task adds.
+
+    /// <summary>Why the last published connection was lost: the cause a command that times out while reconnecting reports.</summary>
     private Exception? _lastLoss;
-#pragma warning restore CS0414
 
     private ResilientControlClient(
         Func<NetSdrControlClient, CancellationToken, Task> connect, string target, ResilientControlClientOptions options)
@@ -209,6 +209,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>; the cause of the delay, when known, is the inner exception.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled; a request already written stays on the line, and its late reply never answers another.</exception>
     public Task<T> SetAsync<T>(T item, CancellationToken ct = default) where T : struct, IControlItem<T>
     {
         ThrowIfReentrant();
@@ -219,6 +221,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// <summary>Requests a control item that needs no key.</summary>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>; the cause of the delay, when known, is the inner exception.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled; a request already written stays on the line, and its late reply never answers another.</exception>
     public Task<T> GetAsync<T>(CancellationToken ct = default) where T : struct, IControlItem<T>
     {
         ThrowIfReentrant();
@@ -230,6 +234,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>; the cause of the delay, when known, is the inner exception.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled; a request already written stays on the line, and its late reply never answers another.</exception>
     public Task<T> GetAsync<T, TKey>(TKey key, CancellationToken ct = default)
         where T : struct, IControlItem<T> where TKey : unmanaged
     {
@@ -242,6 +248,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>; the cause of the delay, when known, is the inner exception.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled; a request already written stays on the line, and its late reply never answers another.</exception>
     public Task<T> GetRangeAsync<T, TKey>(TKey key, CancellationToken ct = default)
         where T : struct, IControlItem<T> where TKey : unmanaged
     {
@@ -259,6 +267,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// </exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
     /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>; the cause of the delay, when known, is the inner exception.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled; a request already written stays on the line, and its late reply never answers another.</exception>
     public Task<ControlItemMessage> SendAsync(
         RequestType type, ushort code, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
@@ -585,10 +595,18 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>Spec 6.5 steps 1-8: the token, the admission, the retry pipeline and the translation of cancellation.</summary>
+    /// <exception cref="TimeoutException">The command did not complete within <see cref="ResilientControlClientOptions.CommandTimeout"/>.</exception>
     private async Task<ControlItemMessage> RunAsync(CommandExecution exec, CancellationToken ct)
     {
-        // Step 1. The CommandTimeout deadline joins the link later.
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        // Step 1. The deadline covers the admission, every attempt and the waits for a connection, on the client's
+        // clock (CancelAfter on the linked source would follow the system clock). Infinite means no deadline at all.
+        TimeSpan commandTimeout = _options.CommandTimeout;
+        using CancellationTokenSource? deadline = commandTimeout == Timeout.InfiniteTimeSpan
+            ? null
+            : new CancellationTokenSource(commandTimeout, _time);
+        using CancellationTokenSource linked = deadline is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token, _lifetime.Token);
         CancellationToken token = linked.Token;
         ResilienceContext? context = null;
         bool admitted = false;
@@ -609,15 +627,22 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                 .ExecuteAsync(static (c, e) => e.Owner.AttemptAsync(c, e), context, exec)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline is { IsCancellationRequested: true })
         {
-            // Step 7. The caller sees OperationCanceledException only for its own token; the end of the client's
-            // life becomes the disposal or the failure it gave up with.
+            // Step 7. The caller sees OperationCanceledException only for its own token. The deadline covers the
+            // time in the queue, behind an unanswered request and waiting for a reconnection alike; the cause is the
+            // failure of the last retried attempt, or else why the connection was lost.
+            throw new TimeoutException(
+                $"{exec.Type} of item 0x{exec.Code:X4} did not complete within {commandTimeout}.", exec.LastError ?? LastLoss());
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && _lifetime.IsCancellationRequested)
+        {
+            // Step 7. The end of the client's life becomes the disposal or the failure it gave up with.
             throw ClosedException();
         }
         finally
         {
-            // Step 8.
+            // Step 8. The two token sources are disposed by their using declarations.
             if (context is not null)
             {
                 ResilienceContextPool.Shared.Return(context);
@@ -627,6 +652,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             {
                 _admission.Release();
             }
+        }
+    }
+
+    /// <summary>Why the last published connection was lost, when one was.</summary>
+    private Exception? LastLoss()
+    {
+        lock (_sync)
+        {
+            return _lastLoss;
         }
     }
 
@@ -671,7 +705,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         catch (OperationCanceledException) when (t.IsCancellationRequested)
         {
             // A handover: the request stays on the wire and holds Wire until Settle or the observer resolves it, so
-            // its late reply can never answer a later request.
+            // its late reply can never answer a later request. Never retried: the token is cancelled.
+            _ = DrainAsync(exchange);
             throw;
         }
         catch (Exception ex) when (!link.Client.IsConnected)
@@ -694,12 +729,48 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         // the line stays unanswered until the real reply or the deadline.
     }
 
+    /// <summary>
+    /// Spec 6.5 step 4e: follows the request of a caller that stopped waiting for it, and writes event 1108 when the
+    /// device answers it after all. A lost request is nothing to report: the loss of the connection is. Nobody awaits
+    /// this, so a logging provider that throws is not reported either.
+    /// </summary>
+    private async Task DrainAsync(Exchange exchange)
+    {
+        Resolution resolution = await exchange.Late.Task.ConfigureAwait(false);
+        if (resolution.Outcome is not (Outcome.Reply or Outcome.Nak))
+        {
+            return;
+        }
+
+        try
+        {
+            ResilientClientLog.LateReplyDrained(
+                _logger, resolution.Outcome == Outcome.Nak ? LateOutcome.Nak : LateOutcome.Reply,
+                exchange.Type, exchange.Code, LateOwner.CancelledCaller);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed; the exchange is already resolved and the line is free.
+        }
+    }
+
     /// <summary>Spec 6.5 step 4a: the outcome of the exchange the previous attempt left unanswered.</summary>
     /// <exception cref="NetSdrNakException">The device answered the request late with a NAK.</exception>
     /// <exception cref="IOException">The connection was lost before the request was answered; retried on the next connection.</exception>
     private async ValueTask<ControlItemMessage> AdoptLateReplyAsync(CommandExecution exec, Exchange outstanding, CancellationToken t)
     {
-        Resolution late = await outstanding.Late.Task.WaitAsync(t).ConfigureAwait(false);
+        Resolution late;
+        try
+        {
+            late = await outstanding.Late.Task.WaitAsync(t).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (t.IsCancellationRequested)
+        {
+            // The caller stopped waiting for a request that is still on the line: the same handover as in step 4e.
+            _ = DrainAsync(outstanding);
+            throw;
+        }
+
         switch (late.Outcome)
         {
             case Outcome.Reply:
