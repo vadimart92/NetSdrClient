@@ -7,8 +7,8 @@ namespace NetSdr.Examples.Vega;
 /// <summary>The client of a Vega receiver with firmware v2, whose board temperature is a <see cref="BoardTemperatureV2"/>.</summary>
 public sealed class VegaV2Receiver : VegaReceiverBase
 {
-    /// <inheritdoc cref="VegaReceiverBase(NetSdrControlClient, DeviceIdentity)"/>
-    public VegaV2Receiver(NetSdrControlClient control, DeviceIdentity identity)
+    /// <inheritdoc cref="VegaReceiverBase(INetSdrControlClient, DeviceIdentity)"/>
+    public VegaV2Receiver(INetSdrControlClient control, DeviceIdentity identity)
         : base(control, identity)
     {
     }

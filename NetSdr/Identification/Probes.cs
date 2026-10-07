@@ -36,13 +36,13 @@ public static class Probes
         };
 
     /// <summary>Gets <typeparamref name="T"/>; a NAK gives <see langword="null"/> and marks the item code unsupported.</summary>
-    internal static Task<T?> TryGetAsync<T>(NetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
+    internal static Task<T?> TryGetAsync<T>(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
         where T : struct, IControlItem<T> =>
         NakToUnsupportedAsync(client.GetAsync<T>(ct), builder, T.Code);
 
     /// <summary>Gets <typeparamref name="T"/> for <paramref name="key"/>; a NAK gives <see langword="null"/> and marks the item code unsupported.</summary>
     internal static Task<T?> TryGetAsync<T, TKey>(
-        NetSdrControlClient client, DeviceIdentityBuilder builder, TKey key, CancellationToken ct)
+        INetSdrControlClient client, DeviceIdentityBuilder builder, TKey key, CancellationToken ct)
         where T : struct, IControlItem<T> where TKey : unmanaged =>
         NakToUnsupportedAsync(client.GetAsync<T, TKey>(key, ct), builder, T.Code);
 
@@ -76,7 +76,7 @@ internal static class StandardProbes
     // A component is reported as its ID byte and a 16-bit version.
     private const int FirmwareEntrySize = sizeof(byte) + sizeof(ushort);
 
-    internal static async Task RunAsync(NetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
+    internal static async Task RunAsync(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
     {
         if (await Probes.TryGetAsync<TargetName>(client, builder, ct).ConfigureAwait(false) is { } name)
         {
@@ -108,7 +108,7 @@ internal static class StandardProbes
 
     // Item 0x0004 is asked for one component at a time. A device may know some components and not others, so
     // the code is unsupported only when it refused all of them.
-    private static async Task ReadFirmwareAsync(NetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
+    private static async Task ReadFirmwareAsync(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
     {
         int rejected = 0;
         for (byte id = BootId; id <= FpgaId; id++)

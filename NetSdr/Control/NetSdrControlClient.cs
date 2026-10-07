@@ -16,7 +16,7 @@ namespace NetSdr.Control;
 /// transaction identifiers; concurrent calls queue in arrival order. Frames the device sends on its own
 /// accord arrive on <see cref="Unsolicited"/>.
 /// </summary>
-public sealed class NetSdrControlClient : IAsyncDisposable
+public sealed class NetSdrControlClient : INetSdrControlClient
 {
     private const int CodeSize = 2;
     private const int FramePrefixSize = FrameHeader.Size + CodeSize;

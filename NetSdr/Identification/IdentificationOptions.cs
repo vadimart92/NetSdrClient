@@ -9,7 +9,7 @@ namespace NetSdr.Identification;
 /// <param name="client">The connected client; requests go through it one at a time, with its response timeout.</param>
 /// <param name="builder">The identity collected so far.</param>
 /// <param name="ct">Cancels the identification.</param>
-public delegate Task ProbeAsync(NetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct);
+public delegate Task ProbeAsync(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct);
 
 /// <summary>Settings of <see cref="DeviceIdentity.ReadAsync"/>.</summary>
 public sealed class IdentificationOptions

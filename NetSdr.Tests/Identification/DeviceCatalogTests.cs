@@ -3,12 +3,13 @@ using NetSdr.Control;
 using NetSdr.Identification;
 using NetSdr.Items;
 using NetSdr.Testing;
+using NetSdr.Tests.Control;
 
 namespace NetSdr.Tests.Identification;
 
 public class DeviceCatalogTests
 {
-    sealed record Dev(string Kind, NetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    sealed record Dev(string Kind, INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Client.DisposeAsync();
     }
@@ -221,5 +222,18 @@ public class DeviceCatalogTests
         var codes = server.Received.Select(r => r.Code).ToArray();
         Assert.Equal(new ushort[] { 0x000A, 0x0038 }, codes[^2..]);
         Assert.Equal(-10, device.Identity.Get<RfGain>().GainDb);
+    }
+
+    [Fact]
+    public async Task AttachAsync_HandsTheGivenClientToTheFactory()
+    {
+        var (server, client) = await Loopback.StartAsync();
+        await using (server)
+        await using (client)
+        {
+            var forwarding = new ForwardingClient(client);
+            var dev = await new DeviceCatalog<Dev>().Default((c, id) => new Dev("any", c, id)).AttachAsync(forwarding);
+            Assert.Same(forwarding, dev.Client);
+        }
     }
 }

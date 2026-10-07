@@ -9,7 +9,7 @@ using NetSdr.Items;
 namespace NetSdr.Examples.Vega;
 
 /// <summary>
-/// A typed client of a Vega receiver, over a <see cref="NetSdrControlClient"/>. What is the same in every firmware
+/// A typed client of a Vega receiver, over an <see cref="INetSdrControlClient"/>. What is the same in every firmware
 /// is here; what the firmware versions do differently is in <see cref="VegaV1Receiver"/> and <see cref="VegaV2Receiver"/>.
 /// </summary>
 public abstract class VegaReceiverBase : IAsyncDisposable
@@ -17,7 +17,7 @@ public abstract class VegaReceiverBase : IAsyncDisposable
     /// <summary>Wraps a connected client whose device was identified as a Vega receiver. The receiver owns the client from now on.</summary>
     /// <param name="control">The connected client; <see cref="DisposeAsync"/> closes it.</param>
     /// <param name="identity">What identification learned about the device.</param>
-    protected VegaReceiverBase(NetSdrControlClient control, DeviceIdentity identity)
+    protected VegaReceiverBase(INetSdrControlClient control, DeviceIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(control);
         ArgumentNullException.ThrowIfNull(identity);
@@ -27,7 +27,7 @@ public abstract class VegaReceiverBase : IAsyncDisposable
     }
 
     /// <summary>The underlying client, for the standard NetSDR items.</summary>
-    public NetSdrControlClient Control { get; }
+    public INetSdrControlClient Control { get; }
 
     /// <summary>What was learned about the device when it was connected.</summary>
     public DeviceIdentity Identity { get; }
@@ -128,7 +128,7 @@ public abstract class VegaReceiverBase : IAsyncDisposable
     /// client is closed or fails. Messages that are not events of this class, or whose payload cannot be read, are skipped.
     /// </summary>
     /// <remarks>
-    /// The events come from <see cref="NetSdrControlClient.Unsolicited"/>, which has one reader, so only one enumeration
+    /// The events come from <see cref="INetSdrControlClient.Unsolicited"/>, which has one reader, so only one enumeration
     /// at a time is supported.
     /// </remarks>
     /// <param name="ct">Stops the enumeration; it then throws <see cref="OperationCanceledException"/>.</param>

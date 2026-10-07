@@ -12,7 +12,7 @@ namespace NetSdr.Identification;
 /// needs no cast.
 /// </typeparam>
 /// <remarks>
-/// <see cref="Register(string, Func{DeviceIdentity, bool}, Func{NetSdrControlClient, DeviceIdentity, TDevice})"/> and
+/// <see cref="Register(string, Func{DeviceIdentity, bool}, Func{INetSdrControlClient, DeviceIdentity, TDevice})"/> and
 /// <c>Default</c> are meant for the start of the application and are not thread safe: do not call them while
 /// <see cref="ConnectAsync(string, int, CancellationToken)"/> or <see cref="AttachAsync"/> is running. Those two can be
 /// called concurrently, each call has its own client. The catalog holds on to nothing after a device was created.
@@ -22,7 +22,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     private readonly IdentificationOptions? _identification;
     private readonly NetSdrControlClientOptions? _clientOptions;
     private readonly List<Registration> _registrations = new();
-    private Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>>? _default;
+    private Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>>? _default;
 
     /// <param name="identification">
     /// What to read from the device before matching; <see langword="null"/> reads the standard items only. The probes
@@ -50,7 +50,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// <param name="matches">Decides from the whole identity, including the facts of probes. An exception it throws is not caught.</param>
     /// <param name="create">Creates the device; from then on the device owns the client. It must not return <see langword="null"/>.</param>
     public DeviceCatalog<TDevice> Register(
-        string name, Func<DeviceIdentity, bool> matches, Func<NetSdrControlClient, DeviceIdentity, TDevice> create)
+        string name, Func<DeviceIdentity, bool> matches, Func<INetSdrControlClient, DeviceIdentity, TDevice> create)
     {
         ArgumentNullException.ThrowIfNull(create);
         return Register(name, matches, (client, identity, _) => Task.FromResult(create(client, identity)));
@@ -63,11 +63,11 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// Creates the device; it gets the token of the <c>ConnectAsync</c> or <c>AttachAsync</c> call. It must not return
     /// a <see langword="null"/> device.
     /// </param>
-    /// <inheritdoc cref="Register(string, Func{DeviceIdentity, bool}, Func{NetSdrControlClient, DeviceIdentity, TDevice})"/>
+    /// <inheritdoc cref="Register(string, Func{DeviceIdentity, bool}, Func{INetSdrControlClient, DeviceIdentity, TDevice})"/>
     public DeviceCatalog<TDevice> Register(
         string name,
         Func<DeviceIdentity, bool> matches,
-        Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync)
+        Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(matches);
@@ -81,16 +81,16 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// Sets what is created for a device no registration matches. There is one default: setting it again replaces the
     /// previous one. It takes no part in the matching and is not among the candidates.
     /// </summary>
-    public DeviceCatalog<TDevice> Default(Func<NetSdrControlClient, DeviceIdentity, TDevice> create)
+    public DeviceCatalog<TDevice> Default(Func<INetSdrControlClient, DeviceIdentity, TDevice> create)
     {
         ArgumentNullException.ThrowIfNull(create);
         return Default((client, identity, _) => Task.FromResult(create(client, identity)));
     }
 
     /// <summary>Sets the default that is created asynchronously; it gets the token of the <c>ConnectAsync</c> or <c>AttachAsync</c> call.</summary>
-    /// <inheritdoc cref="Default(Func{NetSdrControlClient, DeviceIdentity, TDevice})"/>
+    /// <inheritdoc cref="Default(Func{INetSdrControlClient, DeviceIdentity, TDevice})"/>
     public DeviceCatalog<TDevice> Default(
-        Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync)
+        Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync)
     {
         ArgumentNullException.ThrowIfNull(createAsync);
 
@@ -127,7 +127,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// </summary>
     /// <exception cref="DeviceNotRecognizedException">No registration matches and there is no default.</exception>
     /// <exception cref="InvalidOperationException">The factory that was chosen returned <see langword="null"/>; the message names it. The client stays open.</exception>
-    public Task<TDevice> AttachAsync(NetSdrControlClient client, CancellationToken ct = default)
+    public Task<TDevice> AttachAsync(INetSdrControlClient client, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
         return CreateAsync(client, ct);
@@ -148,7 +148,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         }
     }
 
-    private async Task<TDevice> CreateAsync(NetSdrControlClient client, CancellationToken ct)
+    private async Task<TDevice> CreateAsync(INetSdrControlClient client, CancellationToken ct)
     {
         DeviceIdentity identity = await DeviceIdentity.ReadAsync(client, _identification, ct).ConfigureAwait(false);
 
@@ -176,5 +176,5 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     private readonly record struct Registration(
         string Name,
         Func<DeviceIdentity, bool> Matches,
-        Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> CreateAsync);
+        Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> CreateAsync);
 }

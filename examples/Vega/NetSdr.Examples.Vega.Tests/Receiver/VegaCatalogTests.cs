@@ -7,7 +7,7 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaCatalogTests
 {
-    sealed record GenericDevice(NetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    sealed record GenericDevice(INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Client.DisposeAsync();
     }

@@ -2,6 +2,7 @@ using NetSdr.Control;
 using NetSdr.Identification;
 using NetSdr.Items;
 using NetSdr.Testing;
+using NetSdr.Tests.Control;
 
 namespace NetSdr.Tests.Identification;
 
@@ -185,5 +186,19 @@ public class DeviceIdentityTests
         await using var _ = server; await using var __ = client;
         await DeviceIdentity.ReadAsync(client);
         Assert.Equal(7u, (await client.GetAsync<ProductId>()).Value);
+    }
+
+    [Fact]
+    public async Task ReadAsync_WorksThroughAnyINetSdrControlClient()
+    {
+        var (server, client) = await Loopback.StartAsync(s => s.Preload(new InterfaceVersion(529)));
+        await using (server)
+        await using (client)
+        {
+            var forwarding = new ForwardingClient(client);
+            var identity = await DeviceIdentity.ReadAsync(forwarding);
+            Assert.Equal(new Version(5, 29), identity.InterfaceVersion);
+            Assert.Equal(9, forwarding.Requests);   // six standard items, 0x0004 four times
+        }
     }
 }

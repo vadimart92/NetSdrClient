@@ -105,7 +105,7 @@ public sealed record DeviceIdentity
     /// is thrown to the caller.
     /// </remarks>
     public static async Task<DeviceIdentity> ReadAsync(
-        NetSdrControlClient client, IdentificationOptions? options = null, CancellationToken ct = default)
+        INetSdrControlClient client, IdentificationOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
 
