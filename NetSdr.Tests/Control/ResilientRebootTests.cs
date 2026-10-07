@@ -481,6 +481,40 @@ public class ResilientRebootTests
         }
     }
 
+    // A transport that closes the client it reboots the device of is application misuse, but it must not hold anything:
+    // the disposal cancels the lifetime, which ends the supervisor's wait for the transport, so the disposal can finish.
+    [Fact]
+    public async Task RebootAsync_TransportDisposesTheClient_DoesNotDeadlock()
+    {
+        var logs = new FakeLoggerFactory();
+        var (server, client, rebooter) = await StartAsync(logs);
+        await using (server)
+        {
+            rebooter.OnReboot = (_, _, _) => client.DisposeAsync().AsTask();
+            var caller = client.RebootAsync(RebootKind.Soft);
+            await client.Completion.WaitAsync(Limits.Test);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => caller.WaitAsync(Limits.Test));
+            Assert.Empty(logs.Events(1106));
+        }
+    }
+
+    // A transport that sends a command through the client waits for a reconnection that only the end of the reboot
+    // step can start. The RebootTimeout ends that wait: the reboot fails, the client reconnects.
+    [Fact]
+    public async Task RebootAsync_TransportCallsTheClient_EndsByRebootTimeout()
+    {
+        var logs = new FakeLoggerFactory();
+        var (server, client, rebooter) = await StartAsync(logs, o => o.RebootTimeout = TimeSpan.FromMilliseconds(300));
+        await using (server)
+        await using (client)
+        {
+            rebooter.OnReboot = (_, _, _) => client.GetAsync<InterfaceVersion>();
+            await Assert.ThrowsAsync<TimeoutException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
+            await Eventually.ThatAsync(() => client.IsConnected, Limits.Test);
+            Assert.Single(logs.Events(1115));
+        }
+    }
+
     // Final F6 (reboot spec 8): a logging provider that throws at the reboot events changes nothing. The policy lets
     // the first reconnection attempt fail (1104), then reboots (1114).
     [Fact]

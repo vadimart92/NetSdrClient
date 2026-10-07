@@ -391,14 +391,14 @@ public sealed partial class ResilientControlClient
         // The turn ends when the exchange is resolved, or at once when stop is cancelled (reboot spec 4.2 row 1, 5.4):
         // a manual reboot of a device that does not answer is not held up by the heartbeat's late-reply deadline. The
         // exchange then runs on by itself and never throws; the supervisor's MarkLost resolves it as Lost, which frees Wire.
-        await FollowHeartbeatAsync(link, exchange).WaitAsync(stop).ConfigureAwait(false);
+        await FollowHeartbeatAsync(link, exchange, stop).WaitAsync(stop).ConfigureAwait(false);
     }
 
     /// <summary>
     /// The outcome of one heartbeat exchange: waits for the request and then for the resolution of the exchange, and
     /// writes 1102 and 1108 as they apply. Never throws, so it can be left running when the turn stops waiting for it.
     /// </summary>
-    private async Task FollowHeartbeatAsync(Link link, Exchange exchange)
+    private async Task FollowHeartbeatAsync(Link link, Exchange exchange, CancellationToken stop)
     {
         try
         {
@@ -408,9 +408,14 @@ public sealed partial class ResilientControlClient
         catch (TimeoutException) when (link.Client.IsConnected)
         {
             // Unanswered on a live connection: the late reply resolves the exchange, or Expire closes the connection.
+            // Once the turn is stopped (a reboot request woke the supervisor) the connection is being retired on purpose,
+            // so a miss that falls in that window is no news (reboot spec 4.2 row 1: no loss is reported).
             try
             {
-                ResilientClientLog.HeartbeatMissed(_logger, _options.ResponseTimeout, _options.LateReplyTimeout);
+                if (!stop.IsCancellationRequested)
+                {
+                    ResilientClientLog.HeartbeatMissed(_logger, _options.ResponseTimeout, _options.LateReplyTimeout);
+                }
             }
             catch (Exception)
             {
