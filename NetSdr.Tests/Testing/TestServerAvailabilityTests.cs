@@ -7,13 +7,14 @@ namespace NetSdr.Tests.Testing;
 
 public class TestServerAvailabilityTests
 {
-    static NetSdrControlClientOptions Quick() => new() { ResponseTimeout = TimeSpan.FromMilliseconds(200), FaultOnTimeout = false };
+    private static NetSdrControlClientOptions Quick() => new() { ResponseTimeout = TimeSpan.FromMilliseconds(200), FaultOnTimeout = false };
 
     [Fact]
     public async Task CloseOnAccept_NewConnectionClosed_CurrentKept()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         server.Availability = ServerAvailability.CloseOnAccept;
         Assert.Equal(7, (await client.SetAsync(new AfGain(0, 7)).WaitAsync(Limits.Test)).Level);     // the current client is served
         await client.DisposeAsync();                                                                 // the server moves on to the next socket
@@ -28,7 +29,8 @@ public class TestServerAvailabilityTests
     public async Task Silent_RequestsRecorded_NoReplies()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new InterfaceVersion(529)), Quick());
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         server.Availability = ServerAvailability.Silent;                                             // acts on the current connection
         await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
         Assert.Equal(InterfaceVersion.Code, Assert.Single(server.Received).Code);
@@ -40,7 +42,8 @@ public class TestServerAvailabilityTests
     public async Task BackToNormal_ServesAgain()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new InterfaceVersion(529)), Quick());
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Equal(ServerAvailability.Normal, server.Availability);
         server.Availability = ServerAvailability.Silent;
         await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
@@ -52,7 +55,8 @@ public class TestServerAvailabilityTests
     public async Task ClearState_RemovesPreloads()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new InterfaceVersion(529)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await client.SetAsync(new AfGain(0, 7));
         server.ClearState();
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));

@@ -8,14 +8,15 @@ namespace NetSdr.Tests.Data;
 
 public class DataReceiverLoggingTests
 {
-    const string ReceiveThread = "NetSdr data receiver";
+    private const string ReceiveThread = "NetSdr data receiver";
 
-    static void Send(IPEndPoint target, ushort first, int count)
+    private static void Send(IPEndPoint target, ushort first, int count)
     {
-        for (int i = 0; i < count; i++) UdpTestSender.Send(target, UdpTestSender.Datagram((ushort)(first + i), 1028));
+        for (int i = 0; i < count; i++)
+            UdpTestSender.Send(target, UdpTestSender.Datagram((ushort)(first + i), 1028));
     }
 
-    static Task ReceivedAsync(NetSdrDataReceiver receiver, long count) =>
+    private static Task ReceivedAsync(NetSdrDataReceiver receiver, long count) =>
         Eventually.ThatAsync(() => receiver.Statistics.Received == count);
 
     /// <summary>
@@ -23,10 +24,10 @@ public class DataReceiverLoggingTests
     /// The counters grow before the check of their datagram, so fake time moved as soon as they show it could still
     /// change the outcome of that check.
     /// </summary>
-    static Task CheckedAsync(CountingTimeProvider clock, int checks) =>
+    private static Task CheckedAsync(CountingTimeProvider clock, int checks) =>
         Eventually.ThatAsync(() => clock.TimestampReaders.Count(n => n == ReceiveThread) == checks);
 
-    static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples) { }
+    private static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples) { }
 
     [Fact]
     public async Task Summary_CleanInterval_Debug1201()
@@ -70,7 +71,8 @@ public class DataReceiverLoggingTests
         var clock = new CountingTimeProvider(time);
         using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         Send(c.EndPoint, 1, 200);
-        for (int i = 0; i < 56; i++) UdpTestSender.Send(c.EndPoint, UdpTestSender.Datagram(1, 1028, type: 5));
+        for (int i = 0; i < 56; i++)
+            UdpTestSender.Send(c.EndPoint, UdpTestSender.Datagram(1, 1028, type: 5));
         await CheckedAsync(clock, 1);
         Assert.Equal((200, 56), (c.Receiver.Statistics.Received, c.Receiver.Statistics.Rejected));
         time.Advance(TimeSpan.FromSeconds(10));
@@ -98,7 +100,9 @@ public class DataReceiverLoggingTests
         var clock = new CountingTimeProvider(new FakeTimeProvider());
         var c = new PacketCollector(new DataReceiverOptions
         {
-            LoggerFactory = logs, TimeProvider = clock, StatisticsLogInterval = Timeout.InfiniteTimeSpan,
+            LoggerFactory = logs,
+            TimeProvider = clock,
+            StatisticsLogInterval = Timeout.InfiniteTimeSpan,
         });
         Send(c.EndPoint, 1, 1024);
         await ReceivedAsync(c.Receiver, 1024);
@@ -188,7 +192,8 @@ public class DataReceiverLoggingTests
         int calls = 0;
         using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time }, onPacket: r =>
         {
-            if (Interlocked.Increment(ref calls) < 256) return;
+            if (Interlocked.Increment(ref calls) < 256)
+                return;
             r.Dispose();                                       // on the 256th datagram, whose summary is due
             throw new InvalidOperationException("handler");
         });

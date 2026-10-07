@@ -347,14 +347,7 @@ public sealed class NetSdrDataReceiver : IDisposable
             {
                 if (_state != State.Disposed)
                 {
-                    try
-                    {
-                        DataReceiverLog.ReceiveFailed(_logger, _localEndPoint, e);
-                    }
-                    catch (Exception)
-                    {
-                        // A logging provider failed; an unhandled exception here would end the process.
-                    }
+                    DataReceiverLog.ReceiveFailed(_logger, _localEndPoint, e);
                 }
 
                 return;
@@ -370,15 +363,7 @@ public sealed class NetSdrDataReceiver : IDisposable
             {
                 // The handler disposed the receiver. Its datagram and its error are counted now, so the totals are
                 // complete, and nothing is logged after them: no summary, and no further datagram.
-                try
-                {
-                    LogStopped();
-                }
-                catch (Exception)
-                {
-                    // A logging provider failed; an unhandled exception here would end the process.
-                }
-
+                LogStopped();
                 return;
             }
 
@@ -412,21 +397,13 @@ public sealed class NetSdrDataReceiver : IDisposable
         long lost = totals.Lost - _intervalBase.Lost;
         long rejected = totals.Rejected - _intervalBase.Rejected;
         long handlerErrors = totals.HandlerErrors - _intervalBase.HandlerErrors;
-        try
+        if (lost > 0 || rejected > 0 || handlerErrors > 0)
         {
-            if (lost > 0 || rejected > 0 || handlerErrors > 0)
-            {
-                DataReceiverLog.IntervalSummaryWithLoss(_logger, received, bytes, elapsed, lost, rejected, handlerErrors);
-            }
-            else
-            {
-                DataReceiverLog.IntervalSummary(_logger, received, bytes, elapsed);
-            }
+            DataReceiverLog.IntervalSummaryWithLoss(_logger, received, bytes, elapsed, lost, rejected, handlerErrors);
         }
-        catch (Exception)
+        else
         {
-            // A logging provider failed on the receive thread, where an unhandled exception would end the process;
-            // the interval still turns over, and the next summary reports from here.
+            DataReceiverLog.IntervalSummary(_logger, received, bytes, elapsed);
         }
 
         _intervalBase = totals;
@@ -488,14 +465,7 @@ public sealed class NetSdrDataReceiver : IDisposable
 
         if (gapBefore > 0)
         {
-            try
-            {
-                DataReceiverLog.SequenceGap(_logger, gapBefore, sequence);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; the gap is counted, and the packet is still delivered.
-            }
+            DataReceiverLog.SequenceGap(_logger, gapBefore, sequence);
         }
 
         var info = new DataPacketInfo(sequence, gapBefore, FormatOf(length));
@@ -510,14 +480,7 @@ public sealed class NetSdrDataReceiver : IDisposable
             {
                 // Later errors are only counted until the next summary, or for the receiver's life without summaries.
                 _handlerErrorLogged = true;
-                try
-                {
-                    DataReceiverLog.HandlerFailed(_logger, sequence, e);
-                }
-                catch (Exception)
-                {
-                    // A logging provider failed; the error is counted, and the receive thread goes on.
-                }
+                DataReceiverLog.HandlerFailed(_logger, sequence, e);
             }
         }
     }

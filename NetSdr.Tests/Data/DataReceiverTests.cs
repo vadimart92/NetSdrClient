@@ -8,12 +8,13 @@ namespace NetSdr.Tests.Data;
 
 public class DataReceiverTests
 {
-    static void Send(PacketCollector c, params byte[][] datagrams)
+    private static void Send(PacketCollector c, params byte[][] datagrams)
     {
-        foreach (var d in datagrams) UdpTestSender.Send(c.EndPoint, d);
+        foreach (var d in datagrams)
+            UdpTestSender.Send(c.EndPoint, d);
     }
 
-    static DataPacketInfo[] Infos(PacketCollector c) => c.Packets.Select(p => p.Info).ToArray();
+    private static DataPacketInfo[] Infos(PacketCollector c) => c.Packets.Select(p => p.Info).ToArray();
 
     [Fact]
     public void Bind_Port0_AssignsPort()
@@ -24,8 +25,10 @@ public class DataReceiverTests
     }
 
     [Theory]
-    [InlineData(1028, SampleFormat.Int16)] [InlineData(516, SampleFormat.Int16)]
-    [InlineData(1444, SampleFormat.Int24)] [InlineData(388, SampleFormat.Int24)]
+    [InlineData(1028, SampleFormat.Int16)]
+    [InlineData(516, SampleFormat.Int16)]
+    [InlineData(1444, SampleFormat.Int24)]
+    [InlineData(388, SampleFormat.Int24)]
     [InlineData(104, SampleFormat.Unknown)]
     public async Task Format_FromDatagramLength(int length, SampleFormat format)
     {

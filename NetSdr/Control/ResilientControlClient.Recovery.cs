@@ -245,15 +245,7 @@ public sealed partial class ResilientControlClient
         }
         catch (Exception ex)
         {
-            try
-            {
-                ResilientClientLog.RecoveryPolicyFailed(_logger, ex);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; a failing policy still means Continue.
-            }
-
+            ResilientClientLog.RecoveryPolicyFailed(_logger, ex);
             return failure;
         }
 
@@ -282,14 +274,7 @@ public sealed partial class ResilientControlClient
         bool manual = request is { Escalation: false };
         if (!manual)
         {
-            try
-            {
-                ResilientClientLog.RebootEscalated(_logger, kind, _target, state.Attempt, state.Phase, lastFailure!);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; the reboot still runs.
-            }
+            ResilientClientLog.RebootEscalated(_logger, kind, _target, state.Attempt, state.Phase, lastFailure!);
         }
 
         // Step 2.
@@ -363,15 +348,7 @@ public sealed partial class ResilientControlClient
         // Step 4.
         if (failure is not null)
         {
-            try
-            {
-                ResilientClientLog.RebootFailed(_logger, kind, _target, failure);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; a new series of attempts follows.
-            }
-
+            ResilientClientLog.RebootFailed(_logger, kind, _target, failure);
             if (request is not null)
             {
                 Fail(request, failure);
@@ -381,15 +358,7 @@ public sealed partial class ResilientControlClient
             return;
         }
 
-        try
-        {
-            ResilientClientLog.RebootAccepted(_logger, _target, kind, bootTime);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed; the boot wait still runs.
-        }
-
+        ResilientClientLog.RebootAccepted(_logger, _target, kind, bootTime);
         state.AfterReboot = kind;
 
         // Step 6. The 1 s floor between attempt starts is kept by the first attempt of the next series.

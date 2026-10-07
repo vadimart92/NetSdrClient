@@ -5,14 +5,15 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaEventTests
 {
-    static async Task<List<VegaEvent>> TakeAsync(VegaReceiverBase vega, int count)
+    private static async Task<List<VegaEvent>> TakeAsync(VegaReceiverBase vega, int count)
     {
         using var cts = new CancellationTokenSource(Limits.Test);
         var events = new List<VegaEvent>();
         await foreach (var e in vega.ReadEventsAsync(cts.Token))
         {
             events.Add(e);
-            if (events.Count == count) break;
+            if (events.Count == count)
+                break;
         }
         return events;
     }
@@ -23,7 +24,8 @@ public class VegaEventTests
     public async Task Events_ParsedPerFirmware_InOrder(VegaFirmware firmware)
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
-        await using var _ = emulator; await using var __ = vega;
+        await using var _ = emulator;
+        await using var __ = vega;
         await emulator.SendTemperatureAsync(TemperatureSensor.Board, 36.6);
         await emulator.SendOverloadAsync(1, OverloadFlags.Rf);
         byte? status = firmware == VegaFirmware.V2 ? (byte)0 : null;
@@ -36,7 +38,8 @@ public class VegaEventTests
     public async Task EventDuringActiveRequest_DoesNotBreakIt()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
-        await using var _ = emulator; await using var __ = vega;
+        await using var _ = emulator;
+        await using var __ = vega;
         emulator.Server.OnRequest<BoardTemperatureV2>(r =>
         {
             emulator.SendOverloadAsync(0, OverloadFlags.Adc).GetAwaiter().GetResult();
@@ -50,7 +53,8 @@ public class VegaEventTests
     public async Task MalformedAndUnknown_AreSkipped()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
-        await using var _ = emulator; await using var __ = vega;
+        await using var _ = emulator;
+        await using var __ = vega;
         await emulator.Server.SendUnsolicitedAsync(VegaProtocol.BoardTemperatureCode, new byte[] { 1 });
         await emulator.Server.SendUnsolicitedAsync(0x9999, new byte[] { 1, 2 });
         await emulator.SendOverloadAsync(2, OverloadFlags.Adc);

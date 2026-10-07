@@ -1,0 +1,467 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-07T22:19:24.2187206+00:00",
+  "updatedAt": "2026-10-07T22:26:51.6066344+00:00",
+  "description": "Initial baseline created by 'slopwatch init' on 2026-10-07 22:19:24 UTC",
+  "entries": [
+    {
+      "hash": "b2fc865e624bd426",
+      "ruleId": "SW003",
+      "filePath": "examples/Vega/NetSdr.Examples.Vega.Tests/VegaServiceServer.cs",
+      "lineNumber": 113,
+      "codeSnippet": "catch (Exception) when (token.IsCancellationRequested)\n        {\n            // The server is being disposed.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2208835+00:00"
+    },
+    {
+      "hash": "5f9400c68a35ff00",
+      "ruleId": "SW003",
+      "filePath": "examples/Vega/NetSdr.Examples.Vega.Tests/VegaServiceServer.cs",
+      "lineNumber": 133,
+      "codeSnippet": "catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)\n        {\n            // The client left before the reply, or the server is being disposed.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2209541+00:00"
+    },
+    {
+      "hash": "ed411716da71f5bc",
+      "ruleId": "SW004",
+      "filePath": "examples/Vega/NetSdr.Examples.Vega.Tests/Receiver/VegaStreamTests.cs",
+      "lineNumber": 32,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2209582+00:00"
+    },
+    {
+      "hash": "d08ea9a4ec4c50a8",
+      "ruleId": "SW004",
+      "filePath": "examples/Vega/NetSdr.Examples.Vega.Tests/Receiver/VegaStreamTests.cs",
+      "lineNumber": 34,
+      "codeSnippet": "Task.Delay(300)",
+      "message": "Test uses Task.Delay(300) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2209603+00:00"
+    },
+    {
+      "hash": "16fe71b3cb3204ee",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
+      "lineNumber": 648,
+      "codeSnippet": "catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)\n        {\n            // The client was disposed or has faulted, and has already shut itself down.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2209775+00:00"
+    },
+    {
+      "hash": "f14ea2575324a34a",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
+      "lineNumber": 662,
+      "codeSnippet": "catch (Exception)\n            {\n                // The client is shutting down; a failure to release the reader has nobody to report to.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2209793+00:00"
+    },
+    {
+      "hash": "d71b412faca84d53",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
+      "lineNumber": 967,
+      "codeSnippet": "catch (Exception)\n        {\n            // The connection is being dropped; a failure to close it has nobody to report to.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2209835+00:00"
+    },
+    {
+      "hash": "d674e2d9b3bd214f",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.cs",
+      "lineNumber": 621,
+      "codeSnippet": "catch (NetSdrNakException)\n        {\n            // The device is there and answers; it just has no status codes to report.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2209895+00:00"
+    },
+    {
+      "hash": "cb930d287715fa52",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
+      "lineNumber": 109,
+      "codeSnippet": "catch (ObjectDisposedException)\n            {\n                // Ruling C8: TakeRebootRequest replaced and disposed this wake meanwhile, so the request is already taken.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210033+00:00"
+    },
+    {
+      "hash": "b3835987cef0371c",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 98,
+      "codeSnippet": "catch (Exception)\n        {\n            // The inner clients' disposal, the pumps and the supervisor never throw; nothing else is left to clean up.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210123+00:00"
+    },
+    {
+      "hash": "9425f880b89c2283",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 272,
+      "codeSnippet": "catch (Exception ex) when (\n                ex is not (RecoveryGaveUpException or FatalRestoreException)\n                && wake.IsCancellationRequested && !_lifetime.IsCancellationRequested)\n            {\n                // The wake (Ruling C9): whatever the series ended with while a request woke it, the next turn takes\n    // ...",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210227+00:00"
+    },
+    {
+      "hash": "baa7e8e49104084d",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 341,
+      "codeSnippet": "catch (Exception)\n        {\n            // The fault is the loss; SuperviseAsync takes it from Completion.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210271+00:00"
+    },
+    {
+      "hash": "e337af95fc1e5021",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 425,
+      "codeSnippet": "catch (Exception)\n        {\n            // A NAK proves the device alive. A foreign reply leaves the exchange unanswered with the same deadline.\n            // Anything else is a dead connection, which Completion reports.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210308+00:00"
+    },
+    {
+      "hash": "cf18fc32ddb4fd6b",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Testing/NetSdrTestServer.cs",
+      "lineNumber": 260,
+      "codeSnippet": "catch (Exception) when (token.IsCancellationRequested)\n        {\n            // The server is being disposed.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210533+00:00"
+    },
+    {
+      "hash": "fbd05db190e7c0dd",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Testing/NetSdrTestServer.cs",
+      "lineNumber": 292,
+      "codeSnippet": "catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)\n        {\n            // The client left, was disconnected or the server is shutting down.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210551+00:00"
+    },
+    {
+      "hash": "87547206f2110516",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Testing/NetSdrTestServer.cs",
+      "lineNumber": 621,
+      "codeSnippet": "catch (ObjectDisposedException)\n            {\n                // Already disposed, so already closed.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210567+00:00"
+    },
+    {
+      "hash": "a268ef8ecb60d6bf",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Testing/NetSdrTestServer.Streaming.cs",
+      "lineNumber": 238,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested)\n        {\n            // Stopped.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210587+00:00"
+    },
+    {
+      "hash": "f5c105415e74b576",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Testing/NetSdrTestServer.Streaming.cs",
+      "lineNumber": 387,
+      "codeSnippet": "catch (SocketException)\n                {\n                    // UDP does not promise delivery: a receiver that is gone (ICMP port unreachable) is not an error.\n                }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210608+00:00"
+    },
+    {
+      "hash": "10613bfb610528b4",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ControlClientLifecycleTests.cs",
+      "lineNumber": 434,
+      "codeSnippet": "Thread.SpinWait(1)",
+      "message": "Test uses SpinWait which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210629+00:00"
+    },
+    {
+      "hash": "d2af7d4f8014af43",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/InnerClientHookTests.cs",
+      "lineNumber": 27,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210648+00:00"
+    },
+    {
+      "hash": "62ff073229f04a71",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/InterfaceParityTests.cs",
+      "lineNumber": 69,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210676+00:00"
+    },
+    {
+      "hash": "6ba43cc2f0173d4e",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Tests/Control/Resilient.cs",
+      "lineNumber": 105,
+      "codeSnippet": "catch (Exception)\n        {\n            // The pipe is gone; the device has nothing left to answer.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210702+00:00"
+    },
+    {
+      "hash": "788fa6285d95f9c8",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientConnectTests.cs",
+      "lineNumber": 69,
+      "codeSnippet": "Task.Delay(1200)",
+      "message": "Test uses Task.Delay(1200) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210717+00:00"
+    },
+    {
+      "hash": "9e42fa5ebfdb8008",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientConnectTests.cs",
+      "lineNumber": 74,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, ct)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210731+00:00"
+    },
+    {
+      "hash": "af2de3b257ffd500",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientFirstConnectTests.cs",
+      "lineNumber": 130,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210747+00:00"
+    },
+    {
+      "hash": "37049dc978412fe5",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Tests/Control/ResilientHeartbeatTests.cs",
+      "lineNumber": 42,
+      "codeSnippet": "catch (Exception)\n        {\n            // The pipe is gone.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210765+00:00"
+    },
+    {
+      "hash": "92b273d27c1433c5",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientHeartbeatTests.cs",
+      "lineNumber": 85,
+      "codeSnippet": "Task.Delay(50)",
+      "message": "Test uses Task.Delay(50) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210784+00:00"
+    },
+    {
+      "hash": "415d1804b928db4f",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientHeartbeatTests.cs",
+      "lineNumber": 141,
+      "codeSnippet": "Task.Delay(500)",
+      "message": "Test uses Task.Delay(500) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210797+00:00"
+    },
+    {
+      "hash": "2421dd69c56551e2",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientLineTests.cs",
+      "lineNumber": 101,
+      "codeSnippet": "Task.Delay(300)",
+      "message": "Test uses Task.Delay(300) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210823+00:00"
+    },
+    {
+      "hash": "53aa4fe007397357",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRebootTests.cs",
+      "lineNumber": 196,
+      "codeSnippet": "Task.Delay(300)",
+      "message": "Test uses Task.Delay(300) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210849+00:00"
+    },
+    {
+      "hash": "0062ded055341da5",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRebootTests.cs",
+      "lineNumber": 345,
+      "codeSnippet": "Task.Delay(200)",
+      "message": "Test uses Task.Delay(200) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210867+00:00"
+    },
+    {
+      "hash": "bfb717be599bed67",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRebootTests.cs",
+      "lineNumber": 410,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.221088+00:00"
+    },
+    {
+      "hash": "e87b822fa1b8e55f",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientReconnectTests.cs",
+      "lineNumber": 209,
+      "codeSnippet": "Task.Delay(20)",
+      "message": "Test uses Task.Delay(20) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210893+00:00"
+    },
+    {
+      "hash": "1a828aff38b3ae28",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientReconnectTests.cs",
+      "lineNumber": 219,
+      "codeSnippet": "Task.Delay(5)",
+      "message": "Test uses Task.Delay(5) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210907+00:00"
+    },
+    {
+      "hash": "1d3c1d3a8e66efd6",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRecoveryTests.cs",
+      "lineNumber": 136,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, ct)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210924+00:00"
+    },
+    {
+      "hash": "b3872fd7302ac514",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Tests/Control/ResilientRestoreTests.cs",
+      "lineNumber": 138,
+      "codeSnippet": "catch (InvalidOperationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.2210938+00:00"
+    },
+    {
+      "hash": "e19f66bb3d1520de",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRestoreTests.cs",
+      "lineNumber": 245,
+      "codeSnippet": "Task.Delay(300)",
+      "message": "Test uses Task.Delay(300) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210956+00:00"
+    },
+    {
+      "hash": "1e8016c55aacf894",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientRestoreTests.cs",
+      "lineNumber": 264,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, ct)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2210969+00:00"
+    },
+    {
+      "hash": "0fae742343d770c6",
+      "ruleId": "SW003",
+      "filePath": "NetSdr.Tests/Control/ResilientTimeoutTests.cs",
+      "lineNumber": 184,
+      "codeSnippet": "catch (Exception e) when (e is IOException or TimeoutException)\n                    {\n                        // Four attempts were not enough across the drops; the spec allows it.\n                    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:19:24.221099+00:00"
+    },
+    {
+      "hash": "bccbb97ecf70dc56",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientTimeoutTests.cs",
+      "lineNumber": 101,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211003+00:00"
+    },
+    {
+      "hash": "1d5632d9236bf6a3",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientTimeoutTests.cs",
+      "lineNumber": 108,
+      "codeSnippet": "Task.Delay(600)",
+      "message": "Test uses Task.Delay(600) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211015+00:00"
+    },
+    {
+      "hash": "ae01ac0d55412151",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientTimeoutTests.cs",
+      "lineNumber": 173,
+      "codeSnippet": "Enumerable.Range(0, 4).Select(caller => Task.Run(async () =>\n            {\n                for (int i = 0; i < 50; i++)                                          // 200 calls over 4 callers\n                {\n                    byte level = (byte)(caller * 50 + i);\n                    var call = client.SetAsync(new AfGain(0, level));\n                    Assert.Same(call, await Task.WhenAny(call, Task.Delay(Limits.Test)));\n                    try\n                    {\n                        Assert.Equal(level, (await call).Level);                      // never somebody else's echo\n                    }\n                    catch (Exception e) when (e is IOException or TimeoutException)\n                    {\n                        // Four attempts were not enough across the drops; the spec allows it.\n                    }\n                }\n            })).ToArray()",
+      "message": "Test uses Task.Delay(?) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211067+00:00"
+    },
+    {
+      "hash": "3e6dd93ed4c3eb28",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Control/ResilientTimeoutTests.cs",
+      "lineNumber": 179,
+      "codeSnippet": "Task.Delay(Limits.Test)",
+      "message": "Test uses Task.Delay(Limits.Test) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211081+00:00"
+    },
+    {
+      "hash": "bcba8ed5ed7524de",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Data/DataReceiverTests.cs",
+      "lineNumber": 258,
+      "codeSnippet": "Task.Delay(200)",
+      "message": "Test uses Task.Delay(200) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211101+00:00"
+    },
+    {
+      "hash": "714fdd2d005b622a",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Identification/DeviceCatalogTests.cs",
+      "lineNumber": 196,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, ct)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211117+00:00"
+    },
+    {
+      "hash": "202a99c468fa89c2",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Testing/TestServerStreamingTests.cs",
+      "lineNumber": 112,
+      "codeSnippet": "Task.Delay(100)",
+      "message": "Test uses Task.Delay(100) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211135+00:00"
+    },
+    {
+      "hash": "f2567d8c869f4206",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Testing/TestServerStreamingTests.cs",
+      "lineNumber": 114,
+      "codeSnippet": "Task.Delay(300)",
+      "message": "Test uses Task.Delay(300) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211151+00:00"
+    },
+    {
+      "hash": "3e3aba8fae401b42",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Testing/TestServerStreamingTests.cs",
+      "lineNumber": 163,
+      "codeSnippet": "Task.Delay(500)",
+      "message": "Test uses Task.Delay(500) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211183+00:00"
+    },
+    {
+      "hash": "b3103d86d2fad37d",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Testing/TestServerStreamingTests.cs",
+      "lineNumber": 320,
+      "codeSnippet": "Task.Delay(200)",
+      "message": "Test uses Task.Delay(200) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211212+00:00"
+    },
+    {
+      "hash": "835687384dbbc4c7",
+      "ruleId": "SW004",
+      "filePath": "NetSdr.Tests/Testing/TestServerStreamingTests.cs",
+      "lineNumber": 538,
+      "codeSnippet": "Task.Delay(400)",
+      "message": "Test uses Task.Delay(400) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-10-07T22:19:24.2211271+00:00"
+    },
+    {
+      "hash": "af35d9e62c33eaf4",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 293,
+      "codeSnippet": "catch (Exception) when (stop.IsCancellationRequested)\n        {\n            // The disposal, or a give-up, cancelled a wait: the heartbeat stops, the end of the connection is still\n            // awaited below, and the exchange on the line is resolved by Settle, the observer, Expire or the end of\n            // the inner client, as any other. Anything else that escapes is a failure of the heartbeat itself, which\n    // ...",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:26:51.6065377+00:00"
+    }
+  ]
+}

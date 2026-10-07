@@ -9,12 +9,12 @@ namespace NetSdr.Tests.Identification;
 
 public class DeviceCatalogTests
 {
-    sealed record Dev(string Kind, INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
+    private sealed record Dev(string Kind, INetSdrControlClient Client, DeviceIdentity Identity) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Client.DisposeAsync();
     }
 
-    static async Task<NetSdrTestServer> ServerAsync(Action<NetSdrTestServer>? setup = null)
+    private static async Task<NetSdrTestServer> ServerAsync(Action<NetSdrTestServer>? setup = null)
     {
         var server = new NetSdrTestServer();
         setup?.Invoke(server);
@@ -22,7 +22,7 @@ public class DeviceCatalogTests
         return server;
     }
 
-    static IPEndPoint At(NetSdrTestServer server) => new(IPAddress.Loopback, server.Port);
+    private static IPEndPoint At(NetSdrTestServer server) => new(IPAddress.Loopback, server.Port);
 
     [Fact]
     public async Task FirstMatchWins()
@@ -94,7 +94,8 @@ public class DeviceCatalogTests
     public async Task Attach_NoMatch_KeepsClientOpen()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(9)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var catalog = new DeviceCatalog<Dev>().Register("x", _ => false, (c, id) => new Dev("x", c, id));
         await Assert.ThrowsAsync<DeviceNotRecognizedException>(() => catalog.AttachAsync(client));
         Assert.Equal(9u, (await client.GetAsync<ProductId>()).Value);
@@ -104,7 +105,8 @@ public class DeviceCatalogTests
     public async Task Attach_PredicateOrFactoryThrows_KeepsClientOpen()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(9)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var badPredicate = new DeviceCatalog<Dev>().Register("p", id => id.Get<Version>().Major > 1, (c, id) => new Dev("p", c, id));
         await Assert.ThrowsAsync<KeyNotFoundException>(() => badPredicate.AttachAsync(client));
         var badFactory = new DeviceCatalog<Dev>().Register("f", _ => true, (c, id) => throw new InvalidOperationException("boom"));
@@ -116,7 +118,8 @@ public class DeviceCatalogTests
     public async Task Attach_Match_HandsTheClientToTheFactory()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var catalog = new DeviceCatalog<Dev>().Register("any", _ => true, (c, id) => new Dev("any", c, id));
         var device = await catalog.AttachAsync(client);
         Assert.Same(client, device.Client);
@@ -142,14 +145,15 @@ public class DeviceCatalogTests
     public async Task FactoryReturnsNull_Attach_ThrowsAndKeepsClientOpen(bool viaDefault, string expectedName)
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(9)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var catalog = NullFactoryCatalog(viaDefault);
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.AttachAsync(client));
         Assert.Contains(expectedName, ex.Message);
         Assert.Equal(9u, (await client.GetAsync<ProductId>()).Value);
     }
 
-    static DeviceCatalog<Dev> NullFactoryCatalog(bool viaDefault) => viaDefault
+    private static DeviceCatalog<Dev> NullFactoryCatalog(bool viaDefault) => viaDefault
         ? new DeviceCatalog<Dev>().Default((c, id) => null!)
         : new DeviceCatalog<Dev>().Register("null maker", _ => true, (c, id) => null!);
 
@@ -207,7 +211,8 @@ public class DeviceCatalogTests
         await using var second = await ServerAsync(s => s.Preload(new ProductId(2)));
         var catalog = new DeviceCatalog<Dev>().Register("any", _ => true, (c, id) => new Dev("any", c, id));
         var devices = await Task.WhenAll(catalog.ConnectAsync(At(first)), catalog.ConnectAsync(At(second))).WaitAsync(Limits.Test);
-        await using var a = devices[0]; await using var b = devices[1];
+        await using var a = devices[0];
+        await using var b = devices[1];
         Assert.Equal((1u, 2u), (a.Identity.ProductId!.Value, b.Identity.ProductId!.Value));
         Assert.NotSame(a.Client, b.Client);
     }

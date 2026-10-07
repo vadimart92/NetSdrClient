@@ -44,7 +44,7 @@ public enum RecoveryActionKind
 /// <summary>The decision of an <see cref="IRecoveryPolicy"/> after a failed attempt.</summary>
 public readonly struct RecoveryAction : IEquatable<RecoveryAction>
 {
-    RecoveryAction(RecoveryActionKind kind, RebootKind rebootKind)
+    private RecoveryAction(RecoveryActionKind kind, RebootKind rebootKind)
     {
         Kind = kind;
         RebootKind = rebootKind;

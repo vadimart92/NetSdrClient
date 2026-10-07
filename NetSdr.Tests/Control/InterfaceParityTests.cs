@@ -8,7 +8,7 @@ namespace NetSdr.Tests.Control;
 
 public class InterfaceParityTests
 {
-    static async Task<(NetSdrTestServer Server, INetSdrControlClient Client)> StartAsync(bool resilient, Action<NetSdrTestServer>? setup = null)
+    private static async Task<(NetSdrTestServer Server, INetSdrControlClient Client)> StartAsync(bool resilient, Action<NetSdrTestServer>? setup = null)
     {
         if (resilient)
         {
@@ -43,7 +43,8 @@ public class InterfaceParityTests
             Assert.Equal(ProductId.Code, (await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>())).Code);
             await server.SendUnsolicitedAsync(new AfGain(0, 9));
             ControlItemMessage pushed;
-            do pushed = await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
+            do
+                pushed = await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
             while (pushed.Type != ReplyType.Unsolicited);
             Assert.Equal(AfGain.Code, pushed.Code);
             Assert.True(client.IsConnected);

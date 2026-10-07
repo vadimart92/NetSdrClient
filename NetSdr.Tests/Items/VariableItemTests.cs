@@ -16,7 +16,8 @@ public class VariableItemTests
         Assert.Throws<ArgumentException>(() => ItemCodec.Write(new TargetName("Вега")));
     }
 
-    [Fact] public void SerialNumber_MT123456() =>
+    [Fact]
+    public void SerialNumber_MT123456() =>
         Assert.Equal("MT123456",
             ControlFrames.Decode<SerialNumber>(Hex.Parse("0D 00 02 00 4D 54 31 32 33 34 35 36 00")).Value);
 
@@ -37,7 +38,7 @@ public class VariableItemTests
         Assert.Equal(Hex.Parse("05 00 0C 00 02"), ControlFrames.Request(RequestType.Set, new FpgaConfiguration(2)));
     }
 
-    const string RangesFrame =
+    private const string RangesFrame =
         "24 40 20 00 00 02 A0 86 01 00 00 80 CC 06 02 00 00 00 00 00 00 " +
         "00 3B 58 08 00 80 D1 F0 08 00 00 68 89 09 00";
 

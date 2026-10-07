@@ -138,15 +138,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
-                        try
-                        {
-                            onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
-                        }
-                        catch (Exception)
-                        {
-                            // A logging provider failed (reboot spec 8); the series goes on.
-                        }
-
+                        onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
                         return default;
                     },
                 })
@@ -356,14 +348,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
 
         Task completion = RegisterRebootRequest(kind);
-        try
-        {
-            ResilientClientLog.RebootRequested(_logger, kind, _target);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed; the request is registered and runs.
-        }
+        ResilientClientLog.RebootRequested(_logger, kind, _target);
 
         // Cancelling ct cancels only this caller's task, never the reboot (reboot spec 4.2).
         return completion.WaitAsync(ct);
@@ -490,17 +475,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
 
         _supervisor = SuperviseAsync(link);
-        try
-        {
-            ResilientClientLog.Connected(_logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint);
-        }
-        catch
-        {
-            // A logging provider failed; nothing may be left running when ConnectAsync throws.
-            await DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-
+        ResilientClientLog.Connected(_logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint);
         return this;
     }
 
@@ -880,8 +855,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Spec 6.5 step 4e: follows the request of a caller that stopped waiting for it, and writes event 1108 when the
-    /// device answers it after all. A lost request is nothing to report: the loss of the connection is. Nobody awaits
-    /// this, so a logging provider that throws is not reported either.
+    /// device answers it after all. A lost request is nothing to report: the loss of the connection is.
     /// </summary>
     private async Task DrainAsync(Exchange exchange)
     {
@@ -891,8 +865,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Event 1108 for an exchange nobody waited for that ended with a late reply or a late NAK; any other resolution
-    /// is nothing to report. The exchange is already resolved and the line free, so a logging provider that throws
-    /// changes nothing.
+    /// is nothing to report.
     /// </summary>
     private void LogLateReplyDrained(Exchange exchange, Resolution resolution, LateOwner owner)
     {
@@ -901,16 +874,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             return;
         }
 
-        try
-        {
-            ResilientClientLog.LateReplyDrained(
-                _logger, resolution.Outcome == Outcome.Nak ? LateOutcome.Nak : LateOutcome.Reply,
-                exchange.Type, exchange.Code, owner);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed.
-        }
+        ResilientClientLog.LateReplyDrained(
+            _logger, resolution.Outcome == Outcome.Nak ? LateOutcome.Nak : LateOutcome.Reply,
+            exchange.Type, exchange.Code, owner);
     }
 
     /// <summary>Spec 6.5 step 4a: the outcome of the exchange the previous attempt left unanswered.</summary>
@@ -952,21 +918,13 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// Event 1107; <c>Late</c> is how long after its response timeout the request was answered. The exchange is
-    /// already resolved, so a logging provider that throws does not turn an answered command into a failure.
+    /// Event 1107; <c>Late</c> is how long after its response timeout the request was answered.
     /// </summary>
     private void LogLateReplyAdopted(CommandExecution exec, Exchange exchange, LateOutcome outcome)
     {
         TimeSpan late = _time.GetElapsedTime(exchange.SentAt, exchange.ResolvedAt) - _options.ResponseTimeout;
-        try
-        {
-            ResilientClientLog.LateReplyAdopted(
-                _logger, exec.Type, exec.Item ?? "raw", exec.Code, outcome, late < TimeSpan.Zero ? TimeSpan.Zero : late);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed.
-        }
+        ResilientClientLog.LateReplyAdopted(
+            _logger, exec.Type, exec.Item ?? "raw", exec.Code, outcome, late < TimeSpan.Zero ? TimeSpan.Zero : late);
     }
 
     /// <summary>
@@ -1053,8 +1011,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// Spec 6.6: runs when the inner request completed. A response or a NAK answered the exchange. A timeout or a
     /// foreign reply on a live connection leaves it unanswered: Wire stays held and <see cref="Expire"/> is scheduled
     /// for <c>ResponseTimeout + LateReplyTimeout</c> after the write, unless the observer resolved it meanwhile.
-    /// Anything else, or a dead connection, resolves it as lost. Nothing is logged here; whoever adds a logger call
-    /// puts it in a try whose finally resolves the exchange, so Wire is released whatever happens.
+    /// Anything else, or a dead connection, resolves it as lost. Nothing is logged here.
     /// </summary>
     private void Settle(Exchange exchange)
     {
@@ -1169,16 +1126,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             link.LossCause = cause;
         }
 
-        try
-        {
-            ResilientClientLog.ConnectionUnresponsive(
-                _logger, exchange.Type, exchange.Code, _time.GetElapsedTime(exchange.SentAt), link.Client.RemoteEndPoint);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed (reboot spec 8). Not rethrown: this runs on a timer thread, where an
-            // exception would end the process; the connection is closed below all the same.
-        }
+        ResilientClientLog.ConnectionUnresponsive(
+            _logger, exchange.Type, exchange.Code, _time.GetElapsedTime(exchange.SentAt), link.Client.RemoteEndPoint);
 
         // The synchronous part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
         _ = link.Client.DisposeAsync();

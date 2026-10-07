@@ -9,9 +9,9 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientFirstConnectTests
 {
-    static readonly TimeSpan Step = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan Step = TimeSpan.FromMilliseconds(100);
 
-    static Task<ResilientControlClient> Connect(PipeConnector connector, ResilientControlClientOptions options, CancellationToken ct = default) =>
+    private static Task<ResilientControlClient> Connect(PipeConnector connector, ResilientControlClientOptions options, CancellationToken ct = default) =>
         ResilientControlClient.ConnectAsync(connector.ConnectAsync, "pipe", options, ct);
 
     [Theory]
@@ -57,7 +57,8 @@ public class ResilientFirstConnectTests
         double[] starts = refused.AttemptTimes.Select(t => (t - start).TotalSeconds).ToArray();
         double[] expected = [0, 1, 3];
         Assert.Equal(3, starts.Length);
-        for (int i = 0; i < 3; i++) Assert.InRange(starts[i], expected[i], expected[i] + 0.3);
+        for (int i = 0; i < 3; i++)
+            Assert.InRange(starts[i], expected[i], expected[i] + 0.3);
         Assert.Equal(new (string?, string?, string?, double)[] { ("1", "3", "Connect", 1.0), ("2", "3", "Connect", 2.0) },
             logs.Events(1118).Select(r => (r.Value("Attempt"), r.Value("Attempts"), r.Value("Phase"), r.Span("Delay").TotalSeconds)));
         Assert.All(logs.Events(1118), r => Assert.Equal((LogLevel.Warning, "pipe"), (r.Level, r.Value("Target"))));

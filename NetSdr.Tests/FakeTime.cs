@@ -17,7 +17,8 @@ internal static class FakeTime
         var clock = Stopwatch.StartNew();
         while (!condition())
         {
-            if (clock.Elapsed > Limits.Test) throw new TimeoutException($"The condition was not met within {Limits.Test} of real time.");
+            if (clock.Elapsed > Limits.Test)
+                throw new TimeoutException($"The condition was not met within {Limits.Test} of real time.");
             time.Advance(step);
             await Task.Delay(1);
         }

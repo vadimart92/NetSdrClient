@@ -82,7 +82,8 @@ internal static class Resilient
         int seen = 0;
         return request =>
         {
-            if (Interlocked.Increment(ref seen) > 1) return then ?? ControlReply.Echo;
+            if (Interlocked.Increment(ref seen) > 1)
+                return then ?? ControlReply.Echo;
             _ = server.DisconnectClientAsync();
             return ControlReply.Silent;
         };
@@ -129,9 +130,11 @@ internal sealed class PipeConnector(TimeProvider? time = null)
     {
         int attempt = Interlocked.Increment(ref _attempts);
         AttemptTimes.Enqueue((time ?? TimeProvider.System).GetUtcNow());
-        if (Before is { } before) await before(attempt, ct);
+        if (Before is { } before)
+            await before(attempt, ct);
         var device = PipeDevice.Attach(inner);
-        if (Serve is { } serve) _ = Task.Run(() => serve(device));
+        if (Serve is { } serve)
+            _ = Task.Run(() => serve(device));
         _devices.Writer.TryWrite(device);
     }
 

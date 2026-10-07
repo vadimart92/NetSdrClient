@@ -8,8 +8,8 @@ namespace NetSdr.Tests.Identification;
 
 public class DeviceIdentityTests
 {
-    sealed record TestFact(int Value);
-    sealed record OtherFact(string Value);
+    private sealed record TestFact(int Value);
+    private sealed record OtherFact(string Value);
 
     [Fact]
     public async Task FullDevice_FillsEveryField()
@@ -26,7 +26,8 @@ public class DeviceIdentityTests
             s.Preload(new ProductId(0x03524453));
             s.Preload(new Options(Options.ReflockBoard, 0, 0));
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
         Assert.Equal(("NetSDR", "MT123456", KnownModel.NetSdr), (id.Name, id.SerialNumber, id.Model));
         Assert.Equal(new Version(5, 29), id.InterfaceVersion);
@@ -43,7 +44,8 @@ public class DeviceIdentityTests
     public async Task BareDevice_AllNull_SixCodesUnsupported()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
         Assert.Null(id.Name);
         Assert.Null(id.FirmwareVersion);
@@ -57,7 +59,8 @@ public class DeviceIdentityTests
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<FirmwareVersion>(r =>
             r.Key<byte>() == 2 ? ControlReply.Nak : ControlReply.Item(new FirmwareVersion(r.Key<byte>(), 100))));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
         Assert.Null(id.HardwareVersion);
         Assert.Equal(new Version(1, 0), id.FirmwareVersion);
@@ -71,7 +74,8 @@ public class DeviceIdentityTests
             r.Payload.Span[0] == 0
                 ? ControlReply.Bytes(ReadOnlyMemory<byte>.Empty)
                 : ControlReply.Bytes(new byte[] { r.Payload.Span[0], 100, 0 })));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
         Assert.Null(id.BootVersion);
         Assert.Equal(new Version(1, 0), id.FirmwareVersion);
@@ -82,7 +86,8 @@ public class DeviceIdentityTests
     public async Task ItemProbe_StoresFact_NakMarksUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new RfGain(0, -10)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var options = new IdentificationOptions
         {
             IncludeStandardProbes = false,
@@ -100,7 +105,8 @@ public class DeviceIdentityTests
     public async Task DelegateProbe_SeesStandardFields()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(0x41474556)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         uint? seen = null;
         var options = new IdentificationOptions { Probes = { (c, b, ct) => { seen = b.Current.ProductId; return Task.CompletedTask; } } };
         await DeviceIdentity.ReadAsync(client, options);
@@ -111,7 +117,8 @@ public class DeviceIdentityTests
     public async Task Facts_KeyedByType_LaterSetReplaces()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         var options = new IdentificationOptions
         {
             IncludeStandardProbes = false,
@@ -133,7 +140,8 @@ public class DeviceIdentityTests
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<TargetName>(_ => ControlReply.Silent),
             new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await Assert.ThrowsAsync<TimeoutException>(() => DeviceIdentity.ReadAsync(client));
     }
 
@@ -141,7 +149,8 @@ public class DeviceIdentityTests
     public async Task StandardProbes_AskInOrder_FirmwareOncePerComponent()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await DeviceIdentity.ReadAsync(client);
         Assert.Equal(
             new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0004, 0x0004, 0x0004, 0x0009, 0x000A },
@@ -155,7 +164,8 @@ public class DeviceIdentityTests
     public async Task UnreadableReply_IsAnErrorNotUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest(0x0009, _ => ControlReply.Bytes(new byte[] { 1 })));
-        await using var __ = server; await using var ___ = client;
+        await using var __ = server;
+        await using var ___ = client;
         await Assert.ThrowsAsync<NetSdrProtocolException>(() => DeviceIdentity.ReadAsync(client));
     }
 
@@ -183,7 +193,8 @@ public class DeviceIdentityTests
     public async Task ReadAsync_LeavesClientOpen()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(7)));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         await DeviceIdentity.ReadAsync(client);
         Assert.Equal(7u, (await client.GetAsync<ProductId>()).Value);
     }

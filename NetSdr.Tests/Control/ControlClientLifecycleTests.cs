@@ -3,23 +3,23 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using NetSdr.Control;
-using NetSdr.Testing;
 using NetSdr.Framing;
 using NetSdr.Items;
+using NetSdr.Testing;
 
 namespace NetSdr.Tests.Control;
 
 public class ControlClientLifecycleTests
 {
-    static NetSdrControlClientOptions Fast(bool fault = true) =>
+    private static NetSdrControlClientOptions Fast(bool fault = true) =>
         new() { ResponseTimeout = TimeSpan.FromMilliseconds(150), FaultOnTimeout = fault };
 
     // For tests where a request must time out and later ones must still be answered within the window.
-    static NetSdrControlClientOptions Patient() =>
+    private static NetSdrControlClientOptions Patient() =>
         new() { ResponseTimeout = TimeSpan.FromMilliseconds(400), FaultOnTimeout = false };
 
-    const string ProductReply = "08 00 09 00 53 44 52 03";
-    const string VersionReply = "06 00 03 00 11 02";
+    private const string ProductReply = "08 00 09 00 53 44 52 03";
+    private const string VersionReply = "06 00 03 00 11 02";
 
     [Fact]
     public async Task Timeout_WithFaultOnTimeout_FaultsClient()
@@ -494,7 +494,8 @@ public class ControlClientLifecycleTests
     public async Task EndPoints_AfterConnect_AreTheTcpSocketEndPoints()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
         Assert.NotEqual(server.Port, client.LocalEndPoint.Port);
         Assert.Equal(new IPEndPoint(IPAddress.Loopback, server.Port), client.RemoteEndPoint);

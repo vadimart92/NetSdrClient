@@ -17,7 +17,8 @@ public class VegaConnectTests
     public async Task Connect_PicksClientByFirmware(VegaFirmware firmware, Type receiverType, int major)
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
-        await using var _ = emulator; await using var __ = vega;
+        await using var _ = emulator;
+        await using var __ = vega;
         Assert.IsType(receiverType, vega);
         Assert.Equal(new Version(major, 0), vega.Identity.Get<VegaInfo>().Firmware);
         Assert.True(emulator.IsUnlocked);
@@ -75,7 +76,7 @@ public class VegaConnectTests
         Assert.Contains("NetSdr.Identification.DeviceCatalog", logs.Categories);
     }
 
-    sealed class CategoryRecorder : ILoggerFactory
+    private sealed class CategoryRecorder : ILoggerFactory
     {
         public ConcurrentBag<string> Categories { get; } = [];
         public ILogger CreateLogger(string categoryName) { Categories.Add(categoryName); return NullLogger.Instance; }

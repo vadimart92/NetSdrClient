@@ -11,7 +11,7 @@ public class VegaRecoveryTests
     // No FakeLogger here: the Vega test project has no logging test package, so the log events of these paths are pinned
     // by ResilientRecoveryTests and ResilientRebootTests; these tests check the emulator and the client state, and
     // WrongServiceKey_RebootFails_1115 records its 1115 through a small RecordingLoggerFactory.
-    static ResilientControlClientOptions Recovering(VegaEmulator emulator, uint serviceKey = VegaEmulator.DefaultKey) => new()
+    private static ResilientControlClientOptions Recovering(VegaEmulator emulator, uint serviceKey = VegaEmulator.DefaultKey) => new()
     {
         ResponseTimeout = TimeSpan.FromMilliseconds(100),
         LateReplyTimeout = TimeSpan.FromMilliseconds(200),
@@ -20,14 +20,16 @@ public class VegaRecoveryTests
         RebootTimeout = TimeSpan.FromSeconds(2),
         Rebooter = new VegaRebooter(new VegaRebooterOptions
         {
-            Port = emulator.ServicePort, UnlockKey = serviceKey,
-            SoftBootTime = TimeSpan.FromMilliseconds(300), HardBootTime = TimeSpan.FromMilliseconds(500),   // longer than the emulator's 200 / 400 ms
+            Port = emulator.ServicePort,
+            UnlockKey = serviceKey,
+            SoftBootTime = TimeSpan.FromMilliseconds(300),
+            HardBootTime = TimeSpan.FromMilliseconds(500),   // longer than the emulator's 200 / 400 ms
         }),
         RecoveryPolicy = new EscalatingRecoveryPolicy { SoftRebootAfter = 1, HardRebootAfter = 1 },
         ConnectionRestored = (ctx, ct) => ctx.Client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey), ct),
     };
 
-    static async Task<ResilientControlClient> ConnectAsync(VegaEmulator emulator, ResilientControlClientOptions options)
+    private static async Task<ResilientControlClient> ConnectAsync(VegaEmulator emulator, ResilientControlClientOptions options)
     {
         var client = await ResilientControlClient.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), options).WaitAsync(Limits.Test);
         await client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey)).WaitAsync(Limits.Test);

@@ -10,21 +10,21 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaResilienceTests
 {
-    static ResilientControlClientOptions Fast() => new()
+    private static ResilientControlClientOptions Fast() => new()
     {
         ResponseTimeout = TimeSpan.FromMilliseconds(150),
         LateReplyTimeout = TimeSpan.FromMilliseconds(600),
         HeartbeatInterval = TimeSpan.FromMilliseconds(100),
     };
 
-    static DeviceCatalog<VegaReceiverBase> Catalog() =>
+    private static DeviceCatalog<VegaReceiverBase> Catalog() =>
         new DeviceCatalog<VegaReceiverBase>(new IdentificationOptions { Probes = { VegaProbes.Identify(VegaEmulator.DefaultKey) } })
             .Register("Vega v2",
                 id => id.ProductId == VegaProtocol.ProductId && id.Get<VegaInfo>().Firmware >= new Version(2, 0),
                 (c, id) => new VegaV2Receiver(c, id))
             .Register("Vega v1", id => id.ProductId == VegaProtocol.ProductId, (c, id) => new VegaV1Receiver(c, id));
 
-    static Task<ResilientControlClient> ConnectAsync(VegaEmulator emulator, ResilientControlClientOptions options) =>
+    private static Task<ResilientControlClient> ConnectAsync(VegaEmulator emulator, ResilientControlClientOptions options) =>
         ResilientControlClient.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), options).WaitAsync(Limits.Test);
 
     [Fact]
@@ -53,7 +53,8 @@ public class VegaResilienceTests
         int asked = 0;
         emulator.Server.OnRequest<VegaFirmwareInfo>(request =>
         {
-            if (Interlocked.Increment(ref asked) > 1) return ControlReply.Item(new VegaFirmwareInfo(200));
+            if (Interlocked.Increment(ref asked) > 1)
+                return ControlReply.Item(new VegaFirmwareInfo(200));
             _ = emulator.Server.DisconnectClientAsync();
             return ControlReply.Silent;
         });
@@ -81,7 +82,8 @@ public class VegaResilienceTests
         options.ConnectionRestored = async (ctx, ct) =>
         {
             await ctx.Client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey), ct);
-            if (identity is not { } id) return;
+            if (identity is not { } id)
+                return;
             await using var wrapper = new VegaV2Receiver(ctx.Client, id);           // disposing it leaves the connection open
             await wrapper.StartStreamAsync(new IPEndPoint(IPAddress.Loopback, 50_999), 7_100_000, 200_000, ct);
             streamed = true;

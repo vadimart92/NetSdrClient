@@ -8,9 +8,9 @@ namespace NetSdr.Control;
 /// </summary>
 public sealed class EscalatingRecoveryPolicy : IRecoveryPolicy
 {
-    readonly int _softRebootAfter = 3;
-    readonly int _hardRebootAfter = 3;
-    readonly int _maxRebootsPerLoss = 2;
+    private readonly int _softRebootAfter = 3;
+    private readonly int _hardRebootAfter = 3;
+    private readonly int _maxRebootsPerLoss = 2;
 
     /// <summary>Failed attempts of a loss without any reboot before a soft reboot. At least 1; 3 by default.</summary>
     public int SoftRebootAfter

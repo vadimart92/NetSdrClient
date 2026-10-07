@@ -15,7 +15,8 @@ internal sealed class FakeLoggerFactory(LogLevel minimum = LogLevel.Trace) : ILo
     public ILogger CreateLogger(string categoryName)
     {
         var logger = new FakeLogger(Collector, categoryName);
-        for (var level = LogLevel.Trace; level < minimum; level++) logger.ControlLevel(level, false);
+        for (var level = LogLevel.Trace; level < minimum; level++)
+            logger.ControlLevel(level, false);
         return logger;
     }
 

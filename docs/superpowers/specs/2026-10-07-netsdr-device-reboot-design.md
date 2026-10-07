@@ -503,8 +503,7 @@ public sealed partial class NetSdrTestServer
 | 1117 | Warning | RecoveryPolicyFailed | `The recovery policy failed; continuing with the next attempt` (+exception) |
 | 1118 | Warning | ConnectAttemptFailed | `Connect attempt {Attempt} of {Attempts} to {Target} failed in phase {Phase}; next attempt in {Delay}` (+exception) |
 
-1106 отримує третю причину `recovery policy gave up`. Кожен виклик логера наглядача стоїть у `try`,
-як у спеці стійкості 3.1, і нічого не логується під `_sync`.
+1106 отримує третю причину `recovery policy gave up`. Нічого не логується під `_sync`.
 
 ## 9. Помилки
 

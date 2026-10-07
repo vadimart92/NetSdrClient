@@ -8,14 +8,14 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientRestoreTests
 {
-    static ResilientControlClientOptions Restoring(FakeLoggerFactory logs, Func<ConnectionRestoredContext, CancellationToken, Task> callback)
+    private static ResilientControlClientOptions Restoring(FakeLoggerFactory logs, Func<ConnectionRestoredContext, CancellationToken, Task> callback)
     {
         var options = Resilient.Fast(logs);
         options.ConnectionRestored = callback;
         return options;
     }
 
-    static async Task DropAndRestoreAsync(NetSdrTestServer server, FakeLoggerFactory logs)
+    private static async Task DropAndRestoreAsync(NetSdrTestServer server, FakeLoggerFactory logs)
     {
         await server.DisconnectClientAsync();
         await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
@@ -86,7 +86,8 @@ public class ResilientRestoreTests
             var options = Resilient.Seam(logs, time);
             options.ResponseTimeout = TimeSpan.FromHours(1);   // 5 s fake-time steps must not time out a request the pipe NAKs in real time
             options.ConnectionRestored = (ctx, ct) => ctx.Client.SetAsync(new AfGain(0, 5), ct);
-            if (attempts is { } n) options.ReconnectAttempts = n;
+            if (attempts is { } n)
+                options.ReconnectAttempts = n;
             var (client, device) = await connector.StartAsync(options);
             await using (client)
             {
@@ -107,7 +108,8 @@ public class ResilientRestoreTests
         Exception? thrown = null;
         var started = await Resilient.StartAsync(Restoring(logs, (ctx, ct) =>
         {
-            try { _ = client!.GetAsync<InterfaceVersion>(ct); }
+            try
+            { _ = client!.GetAsync<InterfaceVersion>(ct); }
             catch (InvalidOperationException e) { thrown = e; throw; }   // thrown synchronously
             return Task.CompletedTask;
         }));
@@ -131,7 +133,8 @@ public class ResilientRestoreTests
         ResilientControlClient? client = null;
         var started = await Resilient.StartAsync(Restoring(logs, (ctx, ct) =>
         {
-            try { _ = client!.GetAsync<InterfaceVersion>(ct); }
+            try
+            { _ = client!.GetAsync<InterfaceVersion>(ct); }
             catch (InvalidOperationException) { }                       // swallowed: the client still gives up
             return Task.CompletedTask;
         }));
@@ -206,7 +209,8 @@ public class ResilientRestoreTests
         Exception? first = null;
         var (server, client) = await Resilient.StartAsync(Restoring(logs, async (ctx, ct) =>
         {
-            try { await ctx.Client.SetAsync(new AfGain(0, 5), ct); }
+            try
+            { await ctx.Client.SetAsync(new AfGain(0, 5), ct); }
             catch (Exception e) { first ??= e; throw; }
         }), s => s.OnRequest(AfGain.Code, Resilient.DropOnce(s)));
         await using (server)
@@ -256,8 +260,12 @@ public class ResilientRestoreTests
         var (server, client) = await Resilient.StartAsync(Restoring(logs, async (ctx, ct) =>
         {
             inCallback.TrySetResult();
-            try { await Task.Delay(Timeout.Infinite, ct); } catch (OperationCanceledException) { tokenCancelled = true; }
-            try { await ctx.Client.GetAsync<InterfaceVersion>(); } catch (Exception e) { afterDispose = e; }
+            try
+            { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { tokenCancelled = true; }
+            try
+            { await ctx.Client.GetAsync<InterfaceVersion>(); }
+            catch (Exception e) { afterDispose = e; }
         }));
         await using (server)
         {

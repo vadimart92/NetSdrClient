@@ -103,21 +103,13 @@ public sealed partial class ResilientControlClient
         {
             // Step 5. Completion first, so whoever sees Unsolicited end finds its outcome already there. A give-up failure is kept.
             _completion.TrySetResult();
-            try
-            {
-                // Step 6.
-                ResilientClientLog.Disposed(_logger, _target);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; the disposal still completes.
-            }
-            finally
-            {
-                // Step 7.
-                _unsolicited.Writer.TryComplete();
-                _disposal.TrySetResult();
-            }
+
+            // Step 6.
+            ResilientClientLog.Disposed(_logger, _target);
+
+            // Step 7.
+            _unsolicited.Writer.TryComplete();
+            _disposal.TrySetResult();
         }
     }
 
@@ -164,14 +156,7 @@ public sealed partial class ResilientControlClient
 
                 if (!woken)
                 {
-                    try
-                    {
-                        ResilientClientLog.ConnectionLost(_logger, link.Client.RemoteEndPoint, cause);
-                    }
-                    catch (Exception)
-                    {
-                        // A logging provider failed; the loss is marked, and the reconnection goes on.
-                    }
+                    ResilientClientLog.ConnectionLost(_logger, link.Client.RemoteEndPoint, cause);
                 }
 
                 // The old connection is fully drained before the next one is made (spec 6.10 invariant 10).
@@ -189,16 +174,9 @@ public sealed partial class ResilientControlClient
                     return;
                 }
 
-                try
-                {
-                    ResilientClientLog.Reconnected(
-                        _logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint, state.Attempt,
-                        _time.GetElapsedTime(state.LostTimestamp, _time.GetTimestamp()));
-                }
-                catch (Exception)
-                {
-                    // A logging provider failed; the connection is published and watched, not given up on.
-                }
+                ResilientClientLog.Reconnected(
+                    _logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint, state.Attempt,
+                    _time.GetElapsedTime(state.LostTimestamp, _time.GetTimestamp()));
 
                 // The callers of the manual reboots of this loss are connected again (reboot spec 4.2), after
                 // 1105 is written, so a caller that resumes finds the reconnection logged.
@@ -226,14 +204,7 @@ public sealed partial class ResilientControlClient
             // After a failure of the heartbeat loop the watched connection is still open, and the Closed client never
             // uses it again: it is closed now rather than at DisposeAsync. After a failed reconnection it is the lost
             // connection, already closed, and closing it again does nothing.
-            try
-            {
-                await CloseLinkAsync(link).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // The inner client's disposal failed (a logging provider); the supervisor never throws.
-            }
+            await CloseLinkAsync(link).ConfigureAwait(false);
         }
     }
 
@@ -323,8 +294,8 @@ public sealed partial class ResilientControlClient
         {
             // The disposal, or a give-up, cancelled a wait: the heartbeat stops, the end of the connection is still
             // awaited below, and the exchange on the line is resolved by Settle, the observer, Expire or the end of
-            // the inner client, as any other. Every logger call of a turn is guarded, so anything else that escapes
-            // is a failure of the heartbeat itself, which the supervisor reports by giving up instead of hiding it.
+            // the inner client, as any other. Anything else that escapes is a failure of the heartbeat itself, which
+            // the supervisor reports by giving up instead of hiding it.
             // A cancelled wake is not a failure of the heartbeat either.
         }
 
@@ -410,16 +381,9 @@ public sealed partial class ResilientControlClient
             // Unanswered on a live connection: the late reply resolves the exchange, or Expire closes the connection.
             // Once the turn is stopped (a reboot request woke the supervisor) the connection is being retired on purpose,
             // so a miss that falls in that window is no news (reboot spec 4.2 row 1: no loss is reported).
-            try
+            if (!stop.IsCancellationRequested)
             {
-                if (!stop.IsCancellationRequested)
-                {
-                    ResilientClientLog.HeartbeatMissed(_logger, _options.ResponseTimeout, _options.LateReplyTimeout);
-                }
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; the heartbeat still waits for the outcome of its request.
+                ResilientClientLog.HeartbeatMissed(_logger, _options.ResponseTimeout, _options.LateReplyTimeout);
             }
         }
         catch (Exception)
@@ -547,25 +511,15 @@ public sealed partial class ResilientControlClient
             _ = _completion.Task.Exception;
         }
 
-        try
-        {
-            ResilientClientLog.ReconnectGaveUp(
-                _logger, _target, attempts,
-                reentered ? "ConnectionRestored called the ResilientControlClient"
-                    : watching ? "heartbeat failed"
-                    : policyGaveUp ? "recovery policy gave up"
-                    : "attempts exhausted",
-                failure);
-        }
-        catch (Exception)
-        {
-            // A logging provider failed; the supervisor never throws, and the client still closes.
-        }
-        finally
-        {
-            _lifetime.Cancel();
-            _unsolicited.Writer.TryComplete();
-        }
+        ResilientClientLog.ReconnectGaveUp(
+            _logger, _target, attempts,
+            reentered ? "ConnectionRestored called the ResilientControlClient"
+                : watching ? "heartbeat failed"
+                : policyGaveUp ? "recovery policy gave up"
+                : "attempts exhausted",
+            failure);
+        _lifetime.Cancel();
+        _unsolicited.Writer.TryComplete();
     }
 
     /// <summary>
@@ -646,14 +600,7 @@ public sealed partial class ResilientControlClient
         _restoreScope.Value = scope;
         try
         {
-            try
-            {
-                ResilientClientLog.RestoreStarted(_logger, link.Client.LocalEndPoint);
-            }
-            catch (Exception)
-            {
-                // A logging provider failed; the callback still runs.
-            }
+            ResilientClientLog.RestoreStarted(_logger, link.Client.LocalEndPoint);
 
             Task restored;
             try
@@ -690,13 +637,6 @@ public sealed partial class ResilientControlClient
             ExceptionDispatchInfo.Throw(failure);
         }
 
-        try
-        {
-            ResilientClientLog.RestoreCompleted(_logger, _time.GetElapsedTime(startedAt));
-        }
-        catch (Exception)
-        {
-            // A logging provider failed; the callback succeeded, and the connection is published.
-        }
+        ResilientClientLog.RestoreCompleted(_logger, _time.GetElapsedTime(startedAt));
     }
 }

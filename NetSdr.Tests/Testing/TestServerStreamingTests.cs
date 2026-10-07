@@ -5,14 +5,14 @@ using System.Runtime.InteropServices;
 using NetSdr.Data;
 using NetSdr.Framing;
 using NetSdr.Items;
-using NetSdr.Tests.Data;
 using NetSdr.Testing;
+using NetSdr.Tests.Data;
 
 namespace NetSdr.Tests.Testing;
 
 public class TestServerStreamingTests
 {
-    static short[] Shorts(byte[] samples) => MemoryMarshal.Cast<byte, short>(samples).ToArray();
+    private static short[] Shorts(byte[] samples) => MemoryMarshal.Cast<byte, short>(samples).ToArray();
 
     [Fact]
     public async Task ManualStream_Int16_CounterData()
@@ -86,7 +86,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_PacketSizeFromState(bool bits24, byte size, int datagramLength)
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new DataOutputPacketSize(size));
         await client.SetAsync(new OutputSampleRate(0, 100_000));
@@ -101,7 +102,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_StopEndsStream()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -117,7 +119,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_ZeroIp_UsesClientAddress()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new DataOutputUdpAddress(0, (ushort)c.EndPoint.Port));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -128,7 +131,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_ExplicitOptionsWin()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Stream.PayloadSize = 200);
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -140,7 +144,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_Disabled_NoData()
     {
         var (server, client) = await Loopback.StartAsync(s => s.AutoStream = false);
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -409,7 +414,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_StopsWhenClientDisconnects()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -456,7 +462,8 @@ public class TestServerStreamingTests
             Interlocked.Increment(ref calls);
             return false;
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -471,7 +478,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_StateIsStored_AndAnswersGet()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: true));
@@ -484,7 +492,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_SecondRun_RestartsTheCapture()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -503,7 +512,8 @@ public class TestServerStreamingTests
             s.Stream.Format = SampleFormat.Int24;
             s.Stream.SampleRate = 2_560;   // 240 samples a packet: about 10 packets a second
         });
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new OutputSampleRate(0, 1_000_000));
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
@@ -518,7 +528,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_SampleRateFromState_PacesThePackets()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(new OutputSampleRate(0, 2_560));   // 256 samples a packet: 10 packets a second
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
@@ -575,7 +586,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_UnusableTarget_IsNaked_AndNothingStarts()
     {
         var (server, client) = await Loopback.StartAsync();
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(new IPEndPoint(IPAddress.Parse("192.0.2.1"), 5000)));
         await Assert.ThrowsAsync<NetSdrNakException>(() => client.SetAsync(ReceiverState.Start(complex: true, bits24: false)));
@@ -594,7 +606,8 @@ public class TestServerStreamingTests
     public async Task AutoStream_HandlerForReceiverState_TakesOver()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<ReceiverState>(_ => ControlReply.Echo));
-        await using var _ = server; await using var __ = client;
+        await using var _ = server;
+        await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
@@ -606,7 +619,7 @@ public class TestServerStreamingTests
     }
 
     // The stream has stopped when no packet arrives after the ones already on their way have been delivered.
-    static async Task AssertNoMorePacketsAsync(PacketCollector c)
+    private static async Task AssertNoMorePacketsAsync(PacketCollector c)
     {
         await Task.Delay(100);
         var count = c.Packets.Count;
