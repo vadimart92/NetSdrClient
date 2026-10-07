@@ -1011,8 +1011,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// Spec 6.6: runs when the inner request completed. A response or a NAK answered the exchange. A timeout or a
     /// foreign reply on a live connection leaves it unanswered: Wire stays held and <see cref="Expire"/> is scheduled
     /// for <c>ResponseTimeout + LateReplyTimeout</c> after the write, unless the observer resolved it meanwhile.
-    /// Anything else, or a dead connection, resolves it as lost. Nothing is logged here; whoever adds a logger call
-    /// puts it in a try whose finally resolves the exchange, so Wire is released whatever happens.
+    /// Anything else, or a dead connection, resolves it as lost. Nothing is logged here.
     /// </summary>
     private void Settle(Exchange exchange)
     {

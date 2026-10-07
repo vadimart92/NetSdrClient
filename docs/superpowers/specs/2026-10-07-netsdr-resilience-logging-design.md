@@ -222,9 +222,8 @@ examples/Vega/
 - Hex кадру будується лише всередині `if (logger.IsEnabled(LogLevel.Trace))`: інакше
   `Convert.ToHexString` виділив би пам'ять ще до перевірки рівня в згенерованому методі.
 - У стійкому клієнті немає виклику логера між захопленням Wire (`Wire.WaitAsync` або
-  `Wire.Wait(0)`) і передачею його обміну в `StartExchange`. У `Settle`, спостерігачі і
-  `Expire` кожен виклик логера стоїть у `try`, чий `finally` виконує `Resolve` і закриття.
-  Тож провайдер, що кидає, не залишить лінію зайнятою.
+  `Wire.Wait(0)`) і передачею його обміну в `StartExchange`.
+- Бібліотека не захищає виклики логера: `ILogger` не має кидати (контракт `Microsoft.Extensions.Logging`).
 - Тривалість для простого клієнта, приймача і стійкого клієнта міряється їхнім внутрішнім
   `TimeProvider`, для ідентифікації через `TimeProvider.System`.
 
@@ -281,12 +280,6 @@ examples/Vega/
   1109 і 1105 замість 1000, 1112 замість 1001, 1103 замість 1002, 1100, 1101 і 1104 замість
   1006. Без зниження кожне перепідключення давало б Error у категорії простого клієнта.
   Чужа відповідь (1007) лишається Warning, бо стійкий клієнт її окремо не звітує.
-- Провайдер логування, що кидає. Виклики 1000, 1001, 1002, 1003, 1006, 1008 і 1010 стоять у `try`,
-  а виняток провайдера ковтається: підключення, закриття, записаний запит, таймаут, скасування
-  і збій доходять до викликача так само, як без логування, а записаний запит лишається запитом у
-  польоті до своєї відповіді. У циклі читання виняток провайдера, як і будь-який інший
-  виняток циклу, переводить клієнт у збій; 1004, 1005 і 1007 стоять у `try`, чий `finally`
-  спершу завершує запит.
 
 ### 3.3. `ResilientControlClient`, 1100-1199
 
@@ -1075,10 +1068,10 @@ e. `await e.Request.WaitAsync(t)`:
 **`Expire(e)`.** Якщо `e` досі `Unanswered`, а його Link живий:
 1. `link.LossCause = TimeoutException("No reply to {type} 0x{code:X4} within
    {ResponseTimeout + LateReplyTimeout}.")`.
-2. Warning 1102 у `try`.
-3. У `finally`: почати `link.Client.DisposeAsync()`. Його синхронна частина одразу робить
+2. Warning 1102.
+3. Почати `link.Client.DisposeAsync()`. Його синхронна частина одразу робить
    `IsConnected = false`.
-4. У тому ж `finally`: `Resolve(e, Lost)`.
+4. `Resolve(e, Lost)`.
 
 Після розв'язання обміну або в стані Closed `Expire` нічого не робить. Таймер звільняється
 при розв'язанні.
@@ -1276,7 +1269,7 @@ SuperviseAsync(Link link):
   catch (Exception) when (_lifetime.IsCancellationRequested) { }   // DisposeAsync, ніколи не відмова
   catch (Exception ex) {                                           // pipeline здався, повторний вхід, збій heartbeat
     GiveUp(ex, state?.Attempt ?? 0, watching);
-    try { await CloseLinkAsync(link); } catch { }                  // наглядач ніколи не кидає
+    await CloseLinkAsync(link);
   }
 ```
 

@@ -739,16 +739,10 @@ public sealed class NetSdrControlClient : INetSdrControlClient
             return;
         }
 
-        try
-        {
-            ControlClientLog.NakReceived(
-                _logger, rejected.RequestType, rejected.Item, rejected.Code,
-                _timeProvider.GetElapsedTime(rejected.WriteStartedAt));
-        }
-        finally
-        {
-            rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
-        }
+        ControlClientLog.NakReceived(
+            _logger, rejected.RequestType, rejected.Item, rejected.Code,
+            _timeProvider.GetElapsedTime(rejected.WriteStartedAt));
+        rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
     }
 
     private void HandleReply(ReplyType type, ushort code, ReadOnlySequence<byte> payload)
@@ -800,32 +794,19 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
         if (answers)
         {
-            try
-            {
-                ControlClientLog.ReplyReceived(
-                    _logger, type, pending.Item, code, _timeProvider.GetElapsedTime(pending.WriteStartedAt),
-                    (int)payload.Length);
-            }
-            finally
-            {
-                CompletePending(pending, payload);
-            }
-
+            ControlClientLog.ReplyReceived(
+                _logger, type, pending.Item, code, _timeProvider.GetElapsedTime(pending.WriteStartedAt),
+                (int)payload.Length);
+            CompletePending(pending, payload);
             return;
         }
 
-        try
-        {
-            ControlClientLog.ForeignReply(_logger, pending.ExpectedType, pending.Code, type, code);
+        ControlClientLog.ForeignReply(_logger, pending.ExpectedType, pending.Code, type, code);
 
-            // The foreign frame is readable from Unsolicited before the caller learns its request failed.
-            Publish(type, code, payload, PublishReason.Foreign);
-        }
-        finally
-        {
-            pending.Fail(new NetSdrProtocolException(
-                $"Expected {pending.ExpectedType} for item 0x{pending.Code:X4} but received {type} for item 0x{code:X4}."));
-        }
+        // The foreign frame is readable from Unsolicited before the caller learns its request failed.
+        Publish(type, code, payload, PublishReason.Foreign);
+        pending.Fail(new NetSdrProtocolException(
+            $"Expected {pending.ExpectedType} for item 0x{pending.Code:X4} but received {type} for item 0x{code:X4}."));
     }
 
     /// <summary>Reads the reply straight from the pipe buffer, copying only when the payload spans several segments.</summary>
