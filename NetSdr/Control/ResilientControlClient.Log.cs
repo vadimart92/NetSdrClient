@@ -4,19 +4,6 @@ using NetSdr.Framing;
 
 namespace NetSdr.Control;
 
-/// <summary>The phase a reconnection attempt was in when it failed, as event 1104 reports it.</summary>
-internal enum ReconnectPhase
-{
-    /// <summary>Establishing the TCP connection.</summary>
-    Connect,
-
-    /// <summary>Waiting for the device to answer the verification request.</summary>
-    Verify,
-
-    /// <summary>Running <see cref="ResilientControlClientOptions.ConnectionRestored"/>.</summary>
-    Restore,
-}
-
 /// <summary>What a late reply was, as events 1107 and 1108 report it.</summary>
 internal enum LateOutcome
 {
