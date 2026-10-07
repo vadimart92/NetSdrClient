@@ -1,0 +1,852 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
+using NetSdr.Framing;
+using NetSdr.Items;
+using Polly;
+using Polly.Retry;
+
+namespace NetSdr.Control;
+
+/// <summary>
+/// A control client that survives the loss of its connection: it reconnects with a backoff, restores the device's
+/// session through <see cref="ResilientControlClientOptions.ConnectionRestored"/>, retries the commands the loss
+/// interrupted, waits for the late reply of a request a busy device answered after its timeout instead of sending
+/// it again, and keeps <see cref="Unsolicited"/> and <see cref="Completion"/> across connections.
+/// One connection exists at a time; one command of the application runs at a time, in the order of the calls.
+/// </summary>
+public sealed partial class ResilientControlClient : INetSdrControlClient
+{
+    private readonly Lock _sync = new();
+    private readonly SemaphoreSlim _admission = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Channel<ControlItemMessage> _unsolicited;
+    private readonly ResiliencePipeline _commandPipeline;
+    private readonly NetSdrControlClientOptions _innerOptions;
+    private readonly ResilientControlClientOptions _options;
+    private readonly TimeProvider _time;
+    private readonly ILogger _logger;
+    private readonly Func<NetSdrControlClient, CancellationToken, Task> _connect;
+    private readonly string _target;
+    private readonly Action<Task<ControlItemMessage>, object?> _settle;
+
+    // Guarded by _sync. _state and _link are also read without the lock by IsConnected and the end points.
+    private volatile ClientState _state = ClientState.Reconnecting;
+    private volatile Link _link = null!;    // published by ConnectCoreAsync before the instance is handed out
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool _disposed;
+    private long _lastAttemptStart;
+#pragma warning disable CS0169, CS0414, CS0649 // Written by the supervisor, which loss handling and reconnection add.
+    private Link? _restoring;
+    private IOException? _failure;
+    private Exception? _lastLoss;
+#pragma warning restore CS0169, CS0414, CS0649
+
+    private ResilientControlClient(
+        Func<NetSdrControlClient, CancellationToken, Task> connect, string target, ResilientControlClientOptions options)
+    {
+        _connect = connect;
+        _target = target;
+        _options = options;
+        _time = options.TimeProvider;
+        _logger = options.LoggerFactory.CreateLogger(typeof(ResilientControlClient).FullName!);
+        _settle = (_, state) => Settle((Exchange)state!);
+        _innerOptions = new NetSdrControlClientOptions
+        {
+            ResponseTimeout = options.ResponseTimeout,          // finite: tells a busy device from a dead connection
+            UnsolicitedCapacity = options.UnsolicitedCapacity,  // the pump drains the channel continuously
+            FaultOnTimeout = false,
+            LoggerFactory = options.LoggerFactory,
+            TimeProvider = options.TimeProvider,                // ResponseTimeout on the same clock
+            Supervised = true,                                  // levels of spec 3.2
+        };
+        _unsolicited = Channel.CreateBounded<ControlItemMessage>(new BoundedChannelOptions(options.UnsolicitedCapacity)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+        _commandPipeline = new ResiliencePipelineBuilder { TimeProvider = options.TimeProvider }
+            .AddRetry(new RetryStrategyOptions
+            {
+                MaxRetryAttempts = 3,                      // 4 attempts; CommandTimeout bounds them further
+                Delay = TimeSpan.Zero,
+                BackoffType = DelayBackoffType.Constant,
+                UseJitter = false,
+                ShouldHandle = static a => ValueTask.FromResult(ShouldRetryCommand(a.Context, a.Outcome.Exception)),
+                OnRetry = static a =>
+                {
+                    CommandExecution exec = a.Context.Properties.GetValue(CommandExecution.ExecKey, null!);
+                    exec.LastError = a.Outcome.Exception;
+                    exec.Owner.LogCommandRetrying(exec, a.AttemptNumber + 1, a.Outcome.Exception!);
+                    return default;
+                },
+            })
+            .Build();
+    }
+
+    /// <summary>
+    /// Everything the device sends other than a reply to a request, from every connection in turn: <c>Unsolicited</c>
+    /// frames, data items, acknowledgements, late replies and responses nobody waits for. A lost connection does not
+    /// end it; it completes without error after <see cref="DisposeAsync"/> or when the client gave up reconnecting,
+    /// and only after <see cref="Completion"/> has its outcome.
+    /// </summary>
+    public ChannelReader<ControlItemMessage> Unsolicited => _unsolicited.Reader;
+
+    /// <summary>
+    /// Completes successfully after <see cref="DisposeAsync"/>, and with the <see cref="IOException"/> of the last
+    /// attempt when the client gave up reconnecting. A lost connection does not complete it.
+    /// </summary>
+    public Task Completion => _completion.Task;
+
+    /// <summary>
+    /// Whether the published connection is alive: <see langword="false"/> while reconnecting, while
+    /// <see cref="ResilientControlClientOptions.ConnectionRestored"/> runs and after the client is closed.
+    /// </summary>
+    public bool IsConnected => _state == ClientState.Connected && _link.Client.IsConnected;
+
+    /// <summary>
+    /// The local end of the last published connection; while reconnecting that of the lost one. The port is new on
+    /// every reconnection, so a data stream is addressed from <see cref="ConnectionRestoredContext.Client"/>.
+    /// </summary>
+    public IPEndPoint? LocalEndPoint => _link.Client.LocalEndPoint;
+
+    /// <summary>The device's end of the last published connection; while reconnecting that of the lost one.</summary>
+    public IPEndPoint? RemoteEndPoint => _link.Client.RemoteEndPoint;
+
+    /// <summary>
+    /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
+    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
+    /// on failure nothing is left running. The host name is resolved again on every reconnection.
+    /// </summary>
+    /// <param name="host">Host name or IP address of the device.</param>
+    /// <param name="port">TCP port of the control channel; the device listens on 50000 by default.</param>
+    /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
+    /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
+    /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
+    /// <exception cref="SocketException">The TCP connection failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
+    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public static Task<ResilientControlClient> ConnectAsync(
+        string host, int port = 50000, ResilientControlClientOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        return ConnectAsync((inner, t) => inner.ConnectAsync(host, port, t), $"{host}:{port}", options, ct);
+    }
+
+    /// <summary>
+    /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
+    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
+    /// on failure nothing is left running.
+    /// </summary>
+    /// <param name="endPoint">The control channel of the device.</param>
+    /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
+    /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
+    /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
+    /// <exception cref="SocketException">The TCP connection failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
+    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public static Task<ResilientControlClient> ConnectAsync(
+        IPEndPoint endPoint, ResilientControlClientOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(endPoint);
+        return ConnectAsync((inner, t) => inner.ConnectAsync(endPoint, t), endPoint.ToString(), options, ct);
+    }
+
+    /// <summary>
+    /// The connect seam of the tests: <paramref name="connect"/> attaches every new inner client, for example to a
+    /// <c>PipeDevice</c>, or throws right away.
+    /// </summary>
+    /// <param name="target">What the logs and the error messages call the device.</param>
+    internal static Task<ResilientControlClient> ConnectAsync(
+        Func<NetSdrControlClient, CancellationToken, Task> connect, string target,
+        ResilientControlClientOptions? options, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connect);
+        ArgumentNullException.ThrowIfNull(target);
+        var client = new ResilientControlClient(connect, target, Validated(options));
+        return client.ConnectCoreAsync(ct);
+    }
+
+    /// <summary>Sets a control item and returns the item the device echoes back.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    public Task<T> SetAsync<T>(T item, CancellationToken ct = default) where T : struct, IControlItem<T>
+    {
+        ThrowIfClosed();
+        return DecodeAsync<T>(CommandAsync(RequestType.Set, T.Code, Encode(in item), typeof(T).Name, ct));
+    }
+
+    /// <summary>Requests a control item that needs no key.</summary>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    public Task<T> GetAsync<T>(CancellationToken ct = default) where T : struct, IControlItem<T> =>
+        RequestAsync<T>(RequestType.Get, ReadOnlySpan<byte>.Empty, null, ct);
+
+    /// <summary>Requests a control item identified by <paramref name="key"/>, sent as its raw little-endian bytes (for example a channel number).</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    public Task<T> GetAsync<T, TKey>(TKey key, CancellationToken ct = default)
+        where T : struct, IControlItem<T> where TKey : unmanaged =>
+        RequestAsync<T>(RequestType.Get, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
+
+    /// <summary>Requests the range of a control item; the device answers with a <c>RangeResponse</c>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The key does not fit in one frame.</exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    public Task<T> GetRangeAsync<T, TKey>(TKey key, CancellationToken ct = default)
+        where T : struct, IControlItem<T> where TKey : unmanaged =>
+        RequestAsync<T>(RequestType.GetRange, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), nameof(key), ct);
+
+    /// <summary>
+    /// Sends a request for any item code and returns the device's reply uninterpreted. The reply type is
+    /// <c>RangeResponse</c> for <see cref="RequestType.GetRange"/> and <c>Response</c> otherwise.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="type"/> is not <c>Set</c>, <c>Get</c> or <c>GetRange</c>, or the payload does not fit in one frame.
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting; the cause is the inner exception.</exception>
+    public Task<ControlItemMessage> SendAsync(
+        RequestType type, ushort code, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    {
+        ThrowIfClosed();
+        return CommandAsync(type, code, CopyPayload(type, payload), null, ct);
+    }
+
+    /// <summary>Rejects options outside their ranges and returns a copy the client keeps.</summary>
+    private static ResilientControlClientOptions Validated(ResilientControlClientOptions? options)
+    {
+        options ??= new ResilientControlClientOptions();
+        ArgumentNullException.ThrowIfNull(options.LoggerFactory, nameof(options));
+        ArgumentNullException.ThrowIfNull(options.TimeProvider, nameof(options));
+        RequireFinite(options.ResponseTimeout, nameof(options.ResponseTimeout), nameof(options));
+        RequireFinite(options.LateReplyTimeout, nameof(options.LateReplyTimeout), nameof(options));
+        TimeSpan unanswered = options.ResponseTimeout + options.LateReplyTimeout;
+        if (unanswered.TotalMilliseconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), unanswered, "ResponseTimeout + LateReplyTimeout must be at most Int32.MaxValue milliseconds.");
+        }
+
+        RequireFiniteOrInfinite(options.CommandTimeout, nameof(options.CommandTimeout), nameof(options));
+        RequireFiniteOrInfinite(options.HeartbeatInterval, nameof(options.HeartbeatInterval), nameof(options));
+        RequireFiniteOrInfinite(options.ConnectTimeout, nameof(options.ConnectTimeout), nameof(options));
+        if (options.ReconnectAttempts < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.ReconnectAttempts, "ReconnectAttempts must be at least 1.");
+        }
+
+        if (options.UnsolicitedCapacity < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.UnsolicitedCapacity, "UnsolicitedCapacity must be at least 1.");
+        }
+
+        return new ResilientControlClientOptions
+        {
+            ResponseTimeout = options.ResponseTimeout,
+            LateReplyTimeout = options.LateReplyTimeout,
+            CommandTimeout = options.CommandTimeout,
+            HeartbeatInterval = options.HeartbeatInterval,
+            ConnectTimeout = options.ConnectTimeout,
+            ReconnectAttempts = options.ReconnectAttempts,
+            UnsolicitedCapacity = options.UnsolicitedCapacity,
+            ConnectionRestored = options.ConnectionRestored,
+            LoggerFactory = options.LoggerFactory,
+            TimeProvider = options.TimeProvider,
+            UseJitter = options.UseJitter,
+        };
+    }
+
+    /// <param name="name">The option, named in the error.</param>
+    /// <param name="paramName">The parameter the options came in.</param>
+    private static void RequireFinite(TimeSpan value, string name, string paramName)
+    {
+        if (value <= TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName, value, $"{name} must be positive and at most Int32.MaxValue milliseconds.");
+        }
+    }
+
+    /// <inheritdoc cref="RequireFinite"/>
+    private static void RequireFiniteOrInfinite(TimeSpan value, string name, string paramName)
+    {
+        if (value != Timeout.InfiniteTimeSpan && (value <= TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName, value, $"{name} must be positive (at most Int32.MaxValue milliseconds) or Timeout.InfiniteTimeSpan.");
+        }
+    }
+
+    /// <summary>The first and only attempt of <c>ConnectAsync</c>: spec 7.4 steps 2-5 with the caller's token, then the publication.</summary>
+    private async Task<ResilientControlClient> ConnectCoreAsync(CancellationToken ct)
+    {
+        // Recorded as for a reconnection attempt, so the first attempt after an early loss keeps the 1 s floor.
+        _lastAttemptStart = _time.GetTimestamp();
+        Link link = await OpenLinkAsync(null, ct).ConfigureAwait(false);
+        Publish(link);
+        try
+        {
+            ResilientClientLog.Connected(_logger, link.Client.RemoteEndPoint, link.Client.LocalEndPoint);
+        }
+        catch
+        {
+            // A logging provider failed; nothing may be left running when ConnectAsync throws.
+            await DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
+        return this;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="link"/> the connection commands use (spec 6.1 <c>Publish</c>). The supervisor adds the
+    /// Closed branch, which closes the link instead.
+    /// </summary>
+    private void Publish(Link link)
+    {
+        TaskCompletionSource changed;
+        lock (_sync)
+        {
+            _restoring = null;
+            _link = link;
+            _state = ClientState.Connected;
+            changed = SwapChanged();
+        }
+
+        changed.TrySetResult();
+    }
+
+    /// <summary>Replaces the state-change signal; the caller completes the returned one outside the lock. Call under <see cref="_sync"/>.</summary>
+    private TaskCompletionSource SwapChanged()
+    {
+        TaskCompletionSource changed = _changed;
+        _changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        return changed;
+    }
+
+    /// <summary>
+    /// Spec 7.4 steps 2-5 and 9: a new inner client, the TCP connection within
+    /// <see cref="ResilientControlClientOptions.ConnectTimeout"/>, the pump, and the verification request. On any
+    /// failure the inner client is closed and its pump awaited before the exception leaves.
+    /// </summary>
+    /// <param name="phase">Told the phase the attempt enters, for event 1104.</param>
+    private async Task<Link> OpenLinkAsync(Action<ReconnectPhase>? phase, CancellationToken ct)
+    {
+        var inner = new NetSdrControlClient(_innerOptions);
+        var link = new Link(inner);
+        try
+        {
+            phase?.Invoke(ReconnectPhase.Connect);
+            await ConnectInnerAsync(inner, ct).ConfigureAwait(false);
+            link.Pump = PumpAsync(link);
+            phase?.Invoke(ReconnectPhase.Verify);
+            await VerifyAsync(link, ct).ConfigureAwait(false);
+            return link;
+        }
+        catch
+        {
+            await inner.DisposeAsync().ConfigureAwait(false);
+            await link.Pump.ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>.</exception>
+    private async Task ConnectInnerAsync(NetSdrControlClient inner, CancellationToken ct)
+    {
+        TimeSpan connectTimeout = _options.ConnectTimeout;
+        if (connectTimeout == Timeout.InfiniteTimeSpan)
+        {
+            await _connect(inner, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // Created with the client's clock and then linked; CancelAfter on the linked source would follow the system clock.
+        using var timer = new CancellationTokenSource(connectTimeout, _time);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timer.Token);
+        try
+        {
+            await _connect(inner, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timer.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"No TCP connection to {_target} within {connectTimeout}.");
+        }
+    }
+
+    /// <summary>
+    /// Proves the device serves this connection with a <c>Get</c> of the status codes: a response or a NAK passes, a
+    /// timeout or a loss fails the attempt. Finds a one-client device that still holds a half-open old connection.
+    /// </summary>
+    private async Task VerifyAsync(Link link, CancellationToken ct)
+    {
+        await link.Wire.WaitAsync(ct).ConfigureAwait(false);
+        Exchange exchange = StartExchange(link, RequestType.Get, StatusCodes.Code, ReadOnlyMemory<byte>.Empty, nameof(StatusCodes));
+        try
+        {
+            await exchange.Request.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (NetSdrNakException)
+        {
+            // The device is there and answers; it just has no status codes to report.
+        }
+    }
+
+    /// <summary>Spec 6.8: moves everything the inner client publishes to <see cref="Unsolicited"/> until the inner client ends its channel.</summary>
+    private async Task PumpAsync(Link link)
+    {
+        await foreach (ControlItemMessage message in link.Client.Unsolicited.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+        {
+            link.Heard(_time);
+            _unsolicited.Writer.TryWrite(message);
+        }
+    }
+
+    /// <summary>Spec 6.5 step 0: the Closed checks, before anything is encoded or queued.</summary>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">The client gave up reconnecting.</exception>
+    private void ThrowIfClosed()
+    {
+        if (_state != ClientState.Closed)
+        {
+            return;
+        }
+
+        IOException? failure;
+        lock (_sync)
+        {
+            failure = _failure;
+        }
+
+        throw failure is null
+            ? new ObjectDisposedException(nameof(ResilientControlClient))
+            : new InvalidOperationException("The client gave up reconnecting; create a new client.", failure);
+    }
+
+    /// <summary>Spec 6.5 step 0: the payload of a Set, written into a fresh zeroed buffer.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
+    private static byte[] Encode<T>(in T item) where T : struct, IControlItem<T>
+    {
+        int size = T.GetSize(in item);
+        NetSdrControlClient.ThrowIfPayloadTooLarge(size, nameof(item));
+        var payload = new byte[size];
+        T.Write(in item, payload);
+        return payload;
+    }
+
+    /// <summary>Spec 6.5 step 0 for <see cref="SendAsync"/>: the type first, then the size, then a copy of the payload.</summary>
+    private static byte[] CopyPayload(RequestType type, ReadOnlyMemory<byte> payload)
+    {
+        if (type is not (RequestType.Set or RequestType.Get or RequestType.GetRange))
+        {
+            throw new ArgumentOutOfRangeException(nameof(type), type, "Only Set, Get and GetRange requests can be sent.");
+        }
+
+        NetSdrControlClient.ThrowIfPayloadTooLarge(payload.Length, nameof(payload));
+        return payload.ToArray();
+    }
+
+    /// <param name="payloadName">The public parameter the payload comes from, for the size error; <see langword="null"/> when there is none.</param>
+    private Task<T> RequestAsync<T>(RequestType type, ReadOnlySpan<byte> payload, string? payloadName, CancellationToken ct)
+        where T : struct, IControlItem<T>
+    {
+        ThrowIfClosed();
+        NetSdrControlClient.ThrowIfPayloadTooLarge(payload.Length, payloadName);
+        return DecodeAsync<T>(CommandAsync(type, T.Code, payload.ToArray(), typeof(T).Name, ct));
+    }
+
+    /// <summary>Spec 6.5 step 6: the typed result; a payload that does not read as <typeparamref name="T"/> fails without a retry.</summary>
+    private static async Task<T> DecodeAsync<T>(Task<ControlItemMessage> reply) where T : struct, IControlItem<T>
+    {
+        ControlItemMessage message = await reply.ConfigureAwait(false);
+        return ControlItemMessage.ReadItem<T>(message.Payload.Span);
+    }
+
+    /// <summary>The last of spec 6.5 step 0: a token already cancelled sends nothing.</summary>
+    /// <param name="item">The item name for the logs; <see langword="null"/> for a raw request.</param>
+    private Task<ControlItemMessage> CommandAsync(
+        RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled<ControlItemMessage>(ct);
+        }
+
+        return RunAsync(new CommandExecution(this, type, code, payload, item), ct);
+    }
+
+    /// <summary>Spec 6.5 steps 1-8: the token, the admission, the retry pipeline and the translation of cancellation.</summary>
+    private async Task<ControlItemMessage> RunAsync(CommandExecution exec, CancellationToken ct)
+    {
+        // Step 1. The CommandTimeout deadline joins the link later.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        CancellationToken token = linked.Token;
+        ResilienceContext? context = null;
+        bool admitted = false;
+        try
+        {
+            // Step 2. FIFO: commands are written and complete in the order of the calls, and a retry never overtakes.
+            await _admission.WaitAsync(token).ConfigureAwait(false);
+            admitted = true;
+
+            // Step 3.
+            context = ResilienceContextPool.Shared.Get(token);
+            context.Properties.Set(CommandExecution.ExecKey, exec);
+            return await _commandPipeline
+                .ExecuteAsync(static (c, e) => e.Owner.AttemptAsync(c, e), context, exec)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // Step 7. The caller sees OperationCanceledException only for its own token; the end of the client's
+            // life becomes the disposal or the failure it gave up with.
+            throw ClosedException();
+        }
+        finally
+        {
+            // Step 8.
+            if (context is not null)
+            {
+                ResilienceContextPool.Shared.Return(context);
+            }
+
+            if (admitted)
+            {
+                _admission.Release();
+            }
+        }
+    }
+
+    /// <summary>Spec 6.5 step 4: one attempt of a command, on whichever connection is published when it runs.</summary>
+    private async ValueTask<ControlItemMessage> AttemptAsync(ResilienceContext context, CommandExecution exec)
+    {
+        CancellationToken t = context.CancellationToken;
+
+        // Step 4a, the adoption of a late reply, joins with the line discipline.
+
+        // Step 4b.
+        Link link = await WaitForLinkAsync(exec, t).ConfigureAwait(false);
+
+        // Step 4c. Wire is held while an earlier exchange is in flight or unanswered, so getting it means the line is clean.
+        await link.Wire.WaitAsync(t).ConfigureAwait(false);
+        if (!link.Client.IsConnected)
+        {
+            link.Wire.Release();
+            throw new IOException($"The connection to {_target} was lost.", LossCauseOf(link));
+        }
+
+        // Step 4d. From here Wire belongs to the exchange.
+        Exchange exchange = StartExchange(link, exec.Type, exec.Code, exec.Payload, exec.Item);
+
+        // Step 4e.
+        try
+        {
+            return await exchange.Request.WaitAsync(t).ConfigureAwait(false);
+        }
+        catch (NetSdrNakException)
+        {
+            // Never retried.
+            throw;
+        }
+        catch (OperationCanceledException) when (t.IsCancellationRequested)
+        {
+            // A handover: the request stays on the wire and holds Wire until Settle or the observer resolves it, so
+            // its late reply can never answer a later request.
+            throw;
+        }
+        catch (Exception ex) when (!link.Client.IsConnected)
+        {
+            if (_state == ClientState.Closed)
+            {
+                throw ClosedException();
+            }
+
+            throw new IOException($"The connection to {_target} was lost.", ex);
+        }
+        catch (TimeoutException)
+        {
+            // A busy device: the next attempt adopts the late reply instead of sending the request again.
+            exec.Outstanding = exchange;
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Spec 6.5 step 4b: the published connection, once it is alive. Waits through a reconnection on the state-change
+    /// signal; Closed ends the wait with the final exception.
+    /// </summary>
+    private async ValueTask<Link> WaitForLinkAsync(CommandExecution exec, CancellationToken t)
+    {
+        while (true)
+        {
+            Task changed;
+            bool closed;
+            lock (_sync)
+            {
+                if (_state == ClientState.Connected && _link.Client.IsConnected)
+                {
+                    return _link;
+                }
+
+                // The state and the signal are read in one critical section, so no transition is missed.
+                closed = _state == ClientState.Closed;
+                changed = _changed.Task;
+            }
+
+            if (closed)
+            {
+                throw ClosedException();
+            }
+
+            await changed.WaitAsync(t).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Spec 6.5 step 4d: makes a new exchange the current one of <paramref name="link"/> and writes its request through
+    /// the inner client with a token that never cancels. The caller holds Wire, which belongs to the exchange from now
+    /// on and is released only by <see cref="Resolve"/>.
+    /// </summary>
+    private Exchange StartExchange(Link link, RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item)
+    {
+        var exchange = new Exchange(link, type, code, item, _time.GetTimestamp());
+        lock (_sync)
+        {
+            link.Current = exchange;
+        }
+
+        Task<ControlItemMessage> request;
+        try
+        {
+            request = link.Client.SendAsync(type, code, payload, item, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // Only invalid arguments throw synchronously, and they were checked before; the exchange still owns Wire.
+            request = Task.FromException<ControlItemMessage>(ex);
+        }
+
+        exchange.Request = request;
+        _ = request.ContinueWith(
+            _settle, exchange, CancellationToken.None, TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default);
+        return exchange;
+    }
+
+    /// <summary>
+    /// Spec 6.6: runs when the inner request completed. A response or a NAK answered the exchange; anything else
+    /// resolves it as lost until the line discipline adds the unanswered state. Always releases Wire through <see cref="Resolve"/>.
+    /// </summary>
+    private void Settle(Exchange exchange)
+    {
+        Task<ControlItemMessage> request = exchange.Request;
+        Resolution resolution;
+        if (request.IsCompletedSuccessfully)
+        {
+            exchange.Link.Heard(_time);
+            resolution = new Resolution(Outcome.Answered, request.Result);
+        }
+        else
+        {
+            // Reading Exception marks it observed.
+            Exception cause = request.Exception?.InnerException ?? (Exception?)request.Exception ?? new TaskCanceledException(request);
+            if (cause is NetSdrNakException)
+            {
+                exchange.Link.Heard(_time);
+                resolution = new Resolution(Outcome.Answered);
+            }
+            else
+            {
+                resolution = new Resolution(Outcome.Lost, Cause: cause);
+            }
+        }
+
+        // A logger call here goes in a try whose finally resolves the exchange, so Wire is released whatever happens.
+        Resolve(exchange, resolution);
+    }
+
+    /// <summary>
+    /// Resolves an exchange exactly once: the state changes under <see cref="_sync"/>, then <see cref="Exchange.Late"/>
+    /// completes and Wire is released outside it. Returns <see langword="true"/> only for the call that resolved it.
+    /// </summary>
+    private bool Resolve(Exchange exchange, Resolution resolution)
+    {
+        ITimer? deadline;
+        lock (_sync)
+        {
+            if (exchange.State == ExchangeState.Resolved)
+            {
+                return false;
+            }
+
+            exchange.State = ExchangeState.Resolved;
+            deadline = exchange.Deadline;
+            exchange.Deadline = null;
+            if (ReferenceEquals(exchange.Link.Current, exchange))
+            {
+                exchange.Link.Current = null;
+            }
+        }
+
+        deadline?.Dispose();
+        exchange.Late.TrySetResult(resolution);
+        exchange.Link.Wire.Release();
+        return true;
+    }
+
+    /// <summary>Spec 6.5 step 5 and spec 8: whether a failed attempt gets another one.</summary>
+    private static bool ShouldRetryCommand(ResilienceContext context, Exception? exception)
+    {
+        // Checked first: Polly asks before its own cancellation check and before OnRetry, which would otherwise log a retry.
+        if (context.CancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        CommandExecution exec = context.Properties.GetValue(CommandExecution.ExecKey, null!);
+        if (exec.Owner._state == ClientState.Closed)
+        {
+            return false;
+        }
+
+        return exception switch
+        {
+            IOException => exec.Bound is null,                  // a session's requests stay on their connection
+            TimeoutException => exec.Outstanding is not null,   // the next attempt adopts the late reply
+            _ => false,
+        };
+    }
+
+    private void LogCommandRetrying(CommandExecution exec, int attempt, Exception exception) =>
+        ResilientClientLog.CommandRetrying(
+            _logger, exec.Type, exec.Item ?? "raw", exec.Code, attempt,
+            exception is TimeoutException ? "NoReplyWaitingForLateReply" : "ConnectionLost", exception);
+
+    /// <summary>What a request learns when the client is Closed: the disposal, or the failure the client gave up with.</summary>
+    private Exception ClosedException()
+    {
+        IOException? failure;
+        lock (_sync)
+        {
+            failure = _failure;
+        }
+
+        return (Exception?)failure ?? new ObjectDisposedException(nameof(ResilientControlClient));
+    }
+
+    /// <summary>Why a link's inner client is no longer connected, when it has said so.</summary>
+    private static Exception? LossCauseOf(Link link)
+    {
+        if (link.LossCause is { } cause)
+        {
+            return cause;
+        }
+
+        Task completion = link.Client.Completion;
+        return completion.IsFaulted ? completion.Exception!.InnerException : null;
+    }
+
+    private enum ClientState
+    {
+        Connected,
+        Reconnecting,
+        Closed,
+    }
+
+    /// <summary>One TCP connection: its inner client and the line discipline on it (spec 6.3).</summary>
+    private sealed class Link(NetSdrControlClient client)
+    {
+        public NetSdrControlClient Client { get; } = client;
+
+        /// <summary>Held from the write of a request until the exchange is resolved: by a reply, a NAK, a late reply or the loss of the connection.</summary>
+        public SemaphoreSlim Wire { get; } = new(1, 1);
+
+        /// <summary>The unresolved exchange on the line; written under the client's lock.</summary>
+        public Exchange? Current { get; set; }
+
+        /// <summary>The timestamp of the last frame received on this connection.</summary>
+        public long LastHeard;
+
+        /// <summary>Why the resilient client closed this connection itself, when it did.</summary>
+        public Exception? LossCause { get; set; }
+
+        /// <summary>Spec 6.8. Completed until the TCP connection exists, so a failed connect has nothing to await.</summary>
+        public Task Pump { get; set; } = Task.CompletedTask;
+
+        public void Heard(TimeProvider time) => Volatile.Write(ref LastHeard, time.GetTimestamp());
+    }
+
+    /// <summary>One written request and its fate (spec 6.3).</summary>
+    private sealed class Exchange(Link link, RequestType type, ushort code, string? item, long sentAt)
+    {
+        public Link Link { get; } = link;
+        public RequestType Type { get; } = type;
+        public ushort Code { get; } = code;
+        public string? Item { get; } = item;
+        public long SentAt { get; } = sentAt;
+
+        /// <summary>The inner client's request task; set right after the exchange is current.</summary>
+        public Task<ControlItemMessage> Request { get; set; } = null!;
+
+        /// <summary>How the exchange ended, for whoever waits for it after its response timeout.</summary>
+        public TaskCompletionSource<Resolution> Late { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Written under the client's lock.</summary>
+        public ExchangeState State { get; set; }
+
+        /// <summary>The late-reply deadline of an unanswered exchange; written under the client's lock.</summary>
+        public ITimer? Deadline { get; set; }
+    }
+
+    private enum ExchangeState
+    {
+        InFlight,
+        Unanswered,
+        Resolved,
+    }
+
+    private enum Outcome
+    {
+        /// <summary>A reply or a NAK answered the request while its caller waited.</summary>
+        Answered,
+
+        /// <summary>A late reply.</summary>
+        Reply,
+
+        /// <summary>A late NAK.</summary>
+        Nak,
+
+        /// <summary>The connection was lost before the request was answered.</summary>
+        Lost,
+    }
+
+    private readonly record struct Resolution(Outcome Outcome, ControlItemMessage Message = default, Exception? Cause = null);
+
+    /// <summary>One command of the application across its attempts (spec 8).</summary>
+    private sealed class CommandExecution(
+        ResilientControlClient owner, RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item)
+    {
+        public static readonly ResiliencePropertyKey<CommandExecution> ExecKey = new("NetSdr.Command");
+
+        public ResilientControlClient Owner { get; } = owner;
+        public RequestType Type { get; } = type;
+        public ushort Code { get; } = code;
+        public ReadOnlyMemory<byte> Payload { get; } = payload;
+        public string? Item { get; } = item;
+
+        /// <summary>The connection a session request is bound to; <see langword="null"/> for a command of the application.</summary>
+        public Link? Bound { get; set; }
+
+        /// <summary>The exchange that timed out on a live connection; the next attempt adopts its late reply.</summary>
+        public Exchange? Outstanding { get; set; }
+
+        /// <summary>The failure of the last attempt that was retried.</summary>
+        public Exception? LastError { get; set; }
+    }
+}
