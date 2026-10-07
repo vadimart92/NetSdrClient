@@ -199,10 +199,10 @@ public class TestServerStreamingTests
         using var c = new PacketCollector();
         // 256 samples a packet over two channels at 2560 Hz: 50 ms a packet, where one channel would need 100 ms.
         await server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = 2_560, Channels = 2 });
-        await Eventually.ThatAsync(() => c.Packets.Count >= 10);
+        await Eventually.ThatAsync(() => c.ArrivalTimestamps.Count >= 10);
         await server.StopStreamingAsync();
-        var packets = c.Packets.ToArray();
-        var elapsed = Stopwatch.GetElapsedTime(packets[0].Info.Timestamp, packets[9].Info.Timestamp);
+        var arrivals = c.ArrivalTimestamps.ToArray();
+        var elapsed = Stopwatch.GetElapsedTime(arrivals[0], arrivals[9]);
         Assert.InRange(elapsed.TotalMilliseconds, 300, 700);   // 450 ms; 900 ms for one channel
     }
 

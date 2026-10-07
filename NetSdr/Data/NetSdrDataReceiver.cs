@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using NetSdr.Framing;
 
 namespace NetSdr.Data;
@@ -11,6 +11,11 @@ namespace NetSdr.Data;
 /// A dedicated background thread reads the socket and calls the handler for every accepted datagram, so
 /// the handler runs on that thread. Reception stops only when the receiver is disposed.
 /// </summary>
+/// <remarks>
+/// Logging (<see cref="DataReceiverOptions.LoggerFactory"/>) writes nothing per packet: the start, the stop with the
+/// totals, each sequence gap, the first handler error of an interval and a summary every
+/// <see cref="DataReceiverOptions.StatisticsLogInterval"/>, checked once every 256 datagrams.
+/// </remarks>
 public sealed class NetSdrDataReceiver : IDisposable
 {
     private const int MaxDatagramSize = 65535;
@@ -29,6 +34,9 @@ public sealed class NetSdrDataReceiver : IDisposable
     /// </summary>
     private const int ReorderWindow = 1024;
 
+    /// <summary>How many datagrams, accepted or rejected, the receive thread handles between two looks at the clock.</summary>
+    private const int SummaryCheckInterval = 256;
+
     private enum State
     {
         Created,
@@ -43,15 +51,26 @@ public sealed class NetSdrDataReceiver : IDisposable
     private readonly ThreadPriority _threadPriority;
     private readonly Socket _socket;
     private readonly Lock _sync = new();
+    private readonly ILogger _logger;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _statisticsLogInterval;
+    private readonly bool _summaries;
 
     // Written under _sync; _state is also read by the receive thread without the lock.
     private volatile State _state;
     private IPEndPoint? _localEndPoint;
     private Thread? _thread;
 
-    // Touched only by the receive thread.
+    // Written by Start under _sync before the receive thread starts; read by Dispose for the totals of event 1203.
+    private long _startedAt;
+
+    // Touched only by the receive thread, except that Start sets _intervalStart before the thread starts.
     private bool _hasExpected;
     private ushort _expected;
+    private int _sinceCheck;
+    private long _intervalStart;
+    private DataReceiverStatistics _intervalBase;
+    private bool _handlerErrorLogged;
 
     // Written only by the receive thread, read by any thread through Statistics.
     private long _received;
@@ -66,13 +85,29 @@ public sealed class NetSdrDataReceiver : IDisposable
     /// </summary>
     /// <param name="handler">Called on the receive thread for every accepted datagram.</param>
     /// <param name="options">Settings, copied here; the defaults when omitted.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="handler"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="handler"/> or <see cref="DataReceiverOptions.LoggerFactory"/> is <see langword="null"/>.
+    /// </exception>
     /// <exception cref="ArgumentException"><see cref="DataReceiverOptions.RemoteAddress"/> is not an IPv4 address.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><see cref="DataReceiverOptions.InitialReceiveBufferBytes"/> is negative.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="DataReceiverOptions.InitialReceiveBufferBytes"/> is negative, or
+    /// <see cref="DataReceiverOptions.StatisticsLogInterval"/> is neither positive (up to <see cref="int.MaxValue"/>
+    /// milliseconds) nor <see cref="Timeout.InfiniteTimeSpan"/>.
+    /// </exception>
     public NetSdrDataReceiver(DataPacketHandler handler, DataReceiverOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
         options ??= new DataReceiverOptions();
+        ArgumentNullException.ThrowIfNull(options.LoggerFactory, nameof(options));
+        ArgumentNullException.ThrowIfNull(options.TimeProvider, nameof(options));
+        TimeSpan interval = options.StatisticsLogInterval;
+        if (interval != Timeout.InfiniteTimeSpan && (interval <= TimeSpan.Zero || interval.TotalMilliseconds > int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                interval,
+                "StatisticsLogInterval must be positive (at most Int32.MaxValue milliseconds) or Timeout.InfiniteTimeSpan.");
+        }
 
         IPAddress? remote = options.RemoteAddress;
         if (remote is not null)
@@ -93,6 +128,10 @@ public sealed class NetSdrDataReceiver : IDisposable
         _handler = handler;
         _validateLength = options.ValidateLength;
         _threadPriority = options.ThreadPriority;
+        _logger = options.LoggerFactory.CreateLogger(typeof(NetSdrDataReceiver).FullName!);
+        _timeProvider = options.TimeProvider;
+        _statisticsLogInterval = interval;
+        _summaries = interval != Timeout.InfiniteTimeSpan;
 
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         try
@@ -174,6 +213,8 @@ public sealed class NetSdrDataReceiver : IDisposable
     /// <exception cref="ObjectDisposedException">The receiver is disposed.</exception>
     public void Start()
     {
+        IPEndPoint localEndPoint;
+        int receiveBufferBytes;
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_state == State.Disposed, this);
@@ -187,6 +228,12 @@ public sealed class NetSdrDataReceiver : IDisposable
                 throw new InvalidOperationException("The receiver is already started.");
             }
 
+            localEndPoint = _localEndPoint!;
+            receiveBufferBytes = _socket.ReceiveBufferSize;
+            // Set before the thread starts, which publishes them to it.
+            _startedAt = _timeProvider.GetTimestamp();
+            _intervalStart = _startedAt;
+
             var thread = new Thread(ReceiveLoop)
             {
                 IsBackground = true,
@@ -198,6 +245,8 @@ public sealed class NetSdrDataReceiver : IDisposable
             _thread = thread;
             _state = State.Started;
         }
+
+        DataReceiverLog.ReceiveStarted(_logger, localEndPoint, receiveBufferBytes);
     }
 
     /// <summary>
@@ -220,13 +269,15 @@ public sealed class NetSdrDataReceiver : IDisposable
     /// <summary>
     /// Closes the socket and waits for the receive thread to finish, so no handler call is running when it returns.
     /// Called from the handler itself, it only closes the socket and the thread ends once the handler returns.
-    /// Safe to call more than once.
+    /// Safe to call more than once; only the call that stops a started receiver logs its totals.
     /// </summary>
     public void Dispose()
     {
+        State previous;
         Thread? thread;
         lock (_sync)
         {
+            previous = _state;
             _state = State.Disposed;
             thread = _thread;
         }
@@ -236,6 +287,21 @@ public sealed class NetSdrDataReceiver : IDisposable
         if (thread is not null && !ReferenceEquals(thread, Thread.CurrentThread))
         {
             thread.Join();
+        }
+
+        if (previous == State.Started)
+        {
+            long now = _timeProvider.GetTimestamp();
+            DataReceiverStatistics totals = Statistics;
+            DataReceiverLog.ReceiveStopped(
+                _logger,
+                _localEndPoint,
+                _timeProvider.GetElapsedTime(_startedAt, now),
+                totals.Received,
+                totals.Bytes,
+                totals.Lost,
+                totals.Rejected,
+                totals.HandlerErrors);
         }
     }
 
@@ -263,8 +329,13 @@ public sealed class NetSdrDataReceiver : IDisposable
                 // Windows reports an ICMP port-unreachable for an earlier send as a failed receive; the socket is fine.
                 continue;
             }
-            catch (SocketException)
+            catch (SocketException e)
             {
+                if (_state != State.Disposed)
+                {
+                    DataReceiverLog.ReceiveFailed(_logger, _localEndPoint, e);
+                }
+
                 return;
             }
             catch (ObjectDisposedException)
@@ -272,13 +343,53 @@ public sealed class NetSdrDataReceiver : IDisposable
                 return;
             }
 
-            long timestamp = Stopwatch.GetTimestamp();
-            DateTime utcTime = DateTime.UtcNow;
-            Handle(buffer, length, from, timestamp, utcTime);
+            Handle(buffer, length, from);
+
+            // The datagram is counted and the handler has returned, so it belongs to the interval being checked.
+            if (_summaries && ++_sinceCheck == SummaryCheckInterval)
+            {
+                _sinceCheck = 0;
+                LogSummaryIfDue();
+            }
         }
     }
 
-    private void Handle(byte[] buffer, int length, SocketAddress from, long timestamp, DateTime utcTime)
+    /// <summary>
+    /// Reads the clock once and, when <see cref="DataReceiverOptions.StatisticsLogInterval"/> has passed since the
+    /// last summary, logs what the counters gained since then and starts the next interval.
+    /// </summary>
+    private void LogSummaryIfDue()
+    {
+        long now = _timeProvider.GetTimestamp();
+        // The two-argument overload: the one-argument one would read the clock a second time.
+        TimeSpan elapsed = _timeProvider.GetElapsedTime(_intervalStart, now);
+        if (elapsed < _statisticsLogInterval)
+        {
+            return;
+        }
+
+        // Only this thread writes the counters, so the totals are exact here.
+        DataReceiverStatistics totals = Statistics;
+        long received = totals.Received - _intervalBase.Received;
+        long bytes = totals.Bytes - _intervalBase.Bytes;
+        long lost = totals.Lost - _intervalBase.Lost;
+        long rejected = totals.Rejected - _intervalBase.Rejected;
+        long handlerErrors = totals.HandlerErrors - _intervalBase.HandlerErrors;
+        if (lost > 0 || rejected > 0 || handlerErrors > 0)
+        {
+            DataReceiverLog.IntervalSummaryWithLoss(_logger, received, bytes, elapsed, lost, rejected, handlerErrors);
+        }
+        else
+        {
+            DataReceiverLog.IntervalSummary(_logger, received, bytes, elapsed);
+        }
+
+        _intervalBase = totals;
+        _intervalStart = now;
+        _handlerErrorLogged = false;
+    }
+
+    private void Handle(byte[] buffer, int length, SocketAddress from)
     {
         if (_remoteAddress is not null
             && !from.Buffer.Span.Slice(AddressOffset, AddressSize).SequenceEqual(_remoteAddress))
@@ -330,14 +441,25 @@ public sealed class NetSdrDataReceiver : IDisposable
         Interlocked.Add(ref _bytes, samples.Length);
         Interlocked.Increment(ref _received);
 
-        var info = new DataPacketInfo(sequence, gapBefore, FormatOf(length), timestamp, utcTime);
+        if (gapBefore > 0)
+        {
+            DataReceiverLog.SequenceGap(_logger, gapBefore, sequence);
+        }
+
+        var info = new DataPacketInfo(sequence, gapBefore, FormatOf(length));
         try
         {
             _handler(in info, samples);
         }
-        catch (Exception)
+        catch (Exception e)
         {
             Interlocked.Increment(ref _handlerErrors);
+            if (!_handlerErrorLogged)
+            {
+                // Later errors are only counted until the next summary, or for the receiver's life without summaries.
+                DataReceiverLog.HandlerFailed(_logger, sequence, e);
+                _handlerErrorLogged = true;
+            }
         }
     }
 }

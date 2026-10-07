@@ -1,4 +1,5 @@
 using NetSdr.Control;
+using NetSdr.Data;
 using NetSdr.Identification;
 
 namespace NetSdr.Tests;
@@ -9,11 +10,13 @@ public class LoggingOptionsTests
     [InlineData("NetSdrControlClient")]
     [InlineData("DeviceCatalog")]
     [InlineData("DeviceIdentity.ReadAsync")]
+    [InlineData("NetSdrDataReceiver")]
     public Task LoggerFactory_Null_Throws(string component) =>
         Assert.ThrowsAsync<ArgumentNullException>(() => CreateAsync(component, nullLoggerFactory: true));
 
     [Theory]
     [InlineData("NetSdrControlClient")]
+    [InlineData("NetSdrDataReceiver")]
     public Task TimeProvider_Null_Throws(string component) =>
         Assert.ThrowsAsync<ArgumentNullException>(() => CreateAsync(component, nullLoggerFactory: false));
 
@@ -25,6 +28,9 @@ public class LoggingOptionsTests
             : new NetSdrControlClientOptions { TimeProvider = null! })),
         "DeviceCatalog" => Run(() => new DeviceCatalog<object>(new IdentificationOptions { LoggerFactory = null! })),
         "DeviceIdentity.ReadAsync" => DeviceIdentity.ReadAsync(new NetSdrControlClient(), new IdentificationOptions { LoggerFactory = null! }),
+        "NetSdrDataReceiver" => Run(() => new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) => { }, nullLoggerFactory
+            ? new DataReceiverOptions { LoggerFactory = null! }
+            : new DataReceiverOptions { TimeProvider = null! })),
         _ => throw new ArgumentOutOfRangeException(nameof(component)),
     };
 

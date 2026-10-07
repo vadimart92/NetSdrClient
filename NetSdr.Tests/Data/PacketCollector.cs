@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using NetSdr.Data;
 
@@ -32,12 +33,19 @@ internal sealed class PacketCollector : IDisposable
 
     public ConcurrentQueue<(DataPacketInfo Info, byte[] Samples)> Packets { get; } = new();
 
+    /// <summary>
+    /// The <see cref="Stopwatch.GetTimestamp"/> at which each packet arrived; entry i belongs to entry i of
+    /// <see cref="Packets"/>.
+    /// </summary>
+    public ConcurrentQueue<long> ArrivalTimestamps { get; } = new();
+
     public IPEndPoint EndPoint { get; }
 
     public void Dispose() => Receiver.Dispose();
 
     private void Collect(in DataPacketInfo info, ReadOnlySpan<byte> samples)
     {
+        ArrivalTimestamps.Enqueue(Stopwatch.GetTimestamp());
         Packets.Enqueue((info, samples.ToArray()));
         _onPacket?.Invoke(Receiver);
     }

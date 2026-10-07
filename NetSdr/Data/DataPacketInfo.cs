@@ -9,16 +9,18 @@ namespace NetSdr.Data;
 /// <param name="samples">The datagram without its 4-byte prefix (header and sequence number).</param>
 public delegate void DataPacketHandler(in DataPacketInfo info, ReadOnlySpan<byte> samples);
 
-/// <summary>Metadata of one data packet.</summary>
+/// <summary>
+/// Metadata of one data packet. It carries no arrival time, so the receiver reads no clock per packet: time follows
+/// from the samples (sample index divided by the sample rate) or from <see cref="Sequence"/>. An application that
+/// needs the wall clock stamps it itself, once per recording or in its handler.
+/// </summary>
 public readonly struct DataPacketInfo
 {
-    internal DataPacketInfo(ushort sequence, int gapBefore, SampleFormat format, long timestamp, DateTime utcTime)
+    internal DataPacketInfo(ushort sequence, int gapBefore, SampleFormat format)
     {
         Sequence = sequence;
         GapBefore = gapBefore;
         Format = format;
-        Timestamp = timestamp;
-        UtcTime = utcTime;
     }
 
     /// <summary>The sequence number from the datagram.</summary>
@@ -38,10 +40,4 @@ public readonly struct DataPacketInfo
 
     /// <summary>Sample layout deduced from the datagram length.</summary>
     public SampleFormat Format { get; }
-
-    /// <summary>Arrival time as <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> ticks; monotonic.</summary>
-    public long Timestamp { get; }
-
-    /// <summary>Arrival time on the wall clock, for stamping recordings.</summary>
-    public DateTime UtcTime { get; }
 }
