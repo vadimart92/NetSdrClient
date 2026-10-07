@@ -29,6 +29,10 @@ public sealed class ResilientControlClientOptions
     /// and the wait for a reconnection. Must be positive (at most <see cref="int.MaxValue"/> milliseconds) or
     /// <see cref="Timeout.InfiniteTimeSpan"/>. A command that runs out of time fails with <see cref="TimeoutException"/>.
     /// </summary>
+    /// <remarks>
+    /// Commands wait through a reboot of the device just as through a reconnection. When the device boots for longer
+    /// than this, they fail with <see cref="TimeoutException"/>, so set it above the longest boot time.
+    /// </remarks>
     public TimeSpan CommandTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>

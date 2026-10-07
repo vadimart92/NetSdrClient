@@ -1,7 +1,7 @@
 # NetSdr: перезавантаження пристрою і політика відновлення
 
 Дата: 2026-10-07
-Статус: узгоджено в обговоренні, чекає на огляд письмової версії
+Статус: реалізовано за планом docs/superpowers/plans/2026-10-07-netsdr-device-reboot.md
 Базується на: `2026-10-07-netsdr-resilience-logging-design.md` (далі "спека стійкості") і
 `2026-10-02-netsdr-framework-design.md` (розділ 11, приклад Vega)
 
@@ -68,7 +68,7 @@ NetSdr/Control/
   ResilientControlClient.cs         змінено: RebootAsync, перевірка опцій
   ResilientControlClient.Supervisor.cs   змінено: кроки відновлення (розділ 5)
   ResilientControlClient.Recovery.cs     новий partial: запит ручного перезавантаження, виконання перезавантаження
-  ResilientControlClient.Log.cs     змінено: події 1113-1117, причина відмови
+  ResilientControlClient.Log.cs     змінено: події 1113-1118, причина відмови
 NetSdr.Testing/
   NetSdrTestServer.cs               змінено: Availability, ClearState
   ServerAvailability.cs             новий: enum ServerAvailability { Normal, CloseOnAccept, Silent }

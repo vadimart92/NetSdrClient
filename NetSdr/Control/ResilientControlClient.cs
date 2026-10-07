@@ -176,17 +176,22 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
-    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
-    /// on failure nothing is left running. The host name is resolved again on every reconnection.
+    /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
+    /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
+    /// failed attempt writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
+    /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
+    /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
+    /// stops the attempts, the pauses, the reboot and the boot wait, and nothing is left running. The host name is resolved again on every reconnection.
     /// </summary>
     /// <param name="host">Host name or IP address of the device.</param>
     /// <param name="port">TCP port of the control channel; the device listens on 50000 by default.</param>
     /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
     /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
     /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
-    /// <exception cref="SocketException">The TCP connection failed.</exception>
-    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
-    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="SocketException">The TCP connection of the last attempt failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification, of the last attempt.</exception>
+    /// <exception cref="IOException">The connection of the last attempt was lost before it was verified.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public static Task<ResilientControlClient> ConnectAsync(
         string host, int port = 50000, ResilientControlClientOptions? options = null, CancellationToken ct = default)
@@ -197,16 +202,21 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
-    /// passes. There is one attempt and <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called;
-    /// on failure nothing is left running.
+    /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
+    /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
+    /// failed attempt writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
+    /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
+    /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
+    /// stops the attempts, the pauses, the reboot and the boot wait, and nothing is left running.
     /// </summary>
     /// <param name="endPoint">The control channel of the device.</param>
     /// <param name="options">The settings, validated and copied before the first await; <see langword="null"/> for the defaults.</param>
     /// <exception cref="ArgumentOutOfRangeException">An option is out of its range.</exception>
     /// <exception cref="ArgumentNullException"><see cref="ResilientControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
-    /// <exception cref="SocketException">The TCP connection failed.</exception>
-    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification.</exception>
-    /// <exception cref="IOException">The connection was lost before it was verified.</exception>
+    /// <exception cref="SocketException">The TCP connection of the last attempt failed.</exception>
+    /// <exception cref="TimeoutException">No TCP connection within <see cref="ResilientControlClientOptions.ConnectTimeout"/>, or no answer to the verification, of the last attempt.</exception>
+    /// <exception cref="IOException">The connection of the last attempt was lost before it was verified.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public static Task<ResilientControlClient> ConnectAsync(
         IPEndPoint endPoint, ResilientControlClientOptions? options = null, CancellationToken ct = default)
