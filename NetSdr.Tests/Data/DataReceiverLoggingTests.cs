@@ -195,7 +195,7 @@ public class DataReceiverLoggingTests
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 1, 256);
         await Eventually.ThatAsync(() => logs.Events(1203).Count == 1);
-        await Task.Delay(100);                                 // whatever the receive thread did after 1203 is logged by now
+        c.Dispose();                                           // joins the receive thread: all it logged is collected
         var stopped = Assert.Single(logs.Events(1203));
         Assert.Equal(("256", "1"), (stopped.Value("Received"), stopped.Value("HandlerErrors")));
         Assert.Equal(1203, logs.Collector.GetSnapshot().Last().Id.Id);
