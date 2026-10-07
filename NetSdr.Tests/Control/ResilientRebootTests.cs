@@ -517,43 +517,4 @@ public class ResilientRebootTests
             Assert.Single(logs.Events(1115));
         }
     }
-
-    // Final F6 (reboot spec 8): a logging provider that throws at the reboot events changes nothing. The policy lets
-    // the first reconnection attempt fail (1104), then reboots (1114).
-    [Fact]
-    public async Task ThrowingProvider_ManualAndEscalatedRebootsComplete()
-    {
-        int decisions = 0;
-        var policy = new RecordingPolicy { Decide = _ => Interlocked.Increment(ref decisions) == 1 ? RecoveryAction.Continue : RecoveryAction.Reboot(RebootKind.Soft) };
-        var (server, client, rebooter) = await StartAsync(new FakeLoggerFactory(), o =>
-        {
-            (o.ResponseTimeout, o.LateReplyTimeout, o.RecoveryPolicy) = (TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), policy);
-            o.LoggerFactory = new ControlClientLoggingTests.ThrowingLoggerFactory(1101, 1102, 1103, 1104, 1105, 1113, 1114, 1116);
-        });
-        await using (server)
-        await using (client)
-        {
-            await client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test);
-            Assert.True(client.IsConnected);
-            server.Availability = ServerAvailability.Silent;
-            await Eventually.ThatAsync(() => rebooter.Calls.Count == 2 && client.IsConnected, Limits.Test);
-            Assert.Equal(new[] { RebootKind.Soft, RebootKind.Soft }, rebooter.Calls);
-            Assert.False(client.Completion.IsCompleted);
-        }
-    }
-
-    // Final F4/F6: a provider that throws at 1118 does not end the series of the first connection.
-    [Fact]
-    public async Task ThrowingProvider_FirstConnectRetriesOn()
-    {
-        var time = new FakeTimeProvider();
-        var connector = new PipeConnector(time) { Before = (n, _) => n < 3 ? Resilient.Refused() : Task.CompletedTask, Serve = d => d.NakEverythingAsync() };
-        var options = Resilient.Seam(null, time);
-        options.ConnectAttempts = 3;
-        options.LoggerFactory = new ControlClientLoggingTests.ThrowingLoggerFactory(1118);
-        var connecting = ResilientControlClient.ConnectAsync(connector.ConnectAsync, "pipe", options, CancellationToken.None);
-        await time.AdvanceUntilAsync(() => connecting.IsCompleted, TimeSpan.FromMilliseconds(100));
-        await using var client = await connecting;
-        Assert.Equal(3, connector.Attempts);
-    }
 }

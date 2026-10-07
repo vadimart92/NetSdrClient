@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-10-07T22:19:24.2187206+00:00",
-  "updatedAt": "2026-10-07T22:19:24.2211272+00:00",
+  "updatedAt": "2026-10-07T22:26:51.6066344+00:00",
   "description": "Initial baseline created by 'slopwatch init' on 2026-10-07 22:19:24 UTC",
   "entries": [
     {
@@ -41,51 +41,6 @@
       "baselinedAt": "2026-10-07T22:19:24.2209603+00:00"
     },
     {
-      "hash": "660db1f5d7865bbc",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 317,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed. The client is attached and reading: throwing now would make the caller take\n            // a running client for a failed connect, and AttachSocket would close the stream under it.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209665+00:00"
-    },
-    {
-      "hash": "4ab5f7a5374ab8fa",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 399,
-      "codeSnippet": "catch (Exception)\n                {\n                    // A logging provider failed. The client is closed, and whoever awaits the disposal (the resilient\n                    // client does for every connection) goes on with its own cleanup.\n                }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.220969+00:00"
-    },
-    {
-      "hash": "eeb462845da530be",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 481,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed. The request is on the wire and stays the request in flight, so its caller\n                // still waits for the reply: leaving now would free the gate while the reply can still arrive.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209714+00:00"
-    },
-    {
-      "hash": "ba889de8b8d87d29",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 523,
-      "codeSnippet": "catch (Exception)\n                {\n                    // A logging provider failed; the caller still learns about its own cancellation.\n                }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209731+00:00"
-    },
-    {
-      "hash": "b47625ea4d29335d",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 540,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the caller still learns about the timeout.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209749+00:00"
-    },
-    {
       "hash": "16fe71b3cb3204ee",
       "ruleId": "SW003",
       "filePath": "NetSdr/Control/NetSdrControlClient.cs",
@@ -104,15 +59,6 @@
       "baselinedAt": "2026-10-07T22:19:24.2209793+00:00"
     },
     {
-      "hash": "1c99032e6d2b82ac",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/NetSdrControlClient.cs",
-      "lineNumber": 929,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed. The fault still completes, and the callers of Fault (a failed write, a\n            // timeout, the read loop) still report the fault itself rather than the provider's exception.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209812+00:00"
-    },
-    {
       "hash": "d71b412faca84d53",
       "ruleId": "SW003",
       "filePath": "NetSdr/Control/NetSdrControlClient.cs",
@@ -120,24 +66,6 @@
       "codeSnippet": "catch (Exception)\n        {\n            // The connection is being dropped; a failure to close it has nobody to report to.\n        }",
       "message": "Empty catch block swallows exceptions without handling",
       "baselinedAt": "2026-10-07T22:19:24.2209835+00:00"
-    },
-    {
-      "hash": "85c2dbefbe58a638",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.cs",
-      "lineNumber": 145,
-      "codeSnippet": "catch (Exception)\n                        {\n                            // A logging provider failed (reboot spec 8); the series goes on.\n                        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209859+00:00"
-    },
-    {
-      "hash": "0a65f6dff1e87a38",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.cs",
-      "lineNumber": 363,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed; the request is registered and runs.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209874+00:00"
     },
     {
       "hash": "d674e2d9b3bd214f",
@@ -149,24 +77,6 @@
       "baselinedAt": "2026-10-07T22:19:24.2209895+00:00"
     },
     {
-      "hash": "afd0898a78426996",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.cs",
-      "lineNumber": 910,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2209911+00:00"
-    },
-    {
-      "hash": "c92d5cb0d1c30e38",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.cs",
-      "lineNumber": 1177,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed (reboot spec 8). Not rethrown: this runs on a timer thread, where an\n            // exception would end the process; the connection is closed below all the same.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210004+00:00"
-    },
-    {
       "hash": "cb930d287715fa52",
       "ruleId": "SW003",
       "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
@@ -174,42 +84,6 @@
       "codeSnippet": "catch (ObjectDisposedException)\n            {\n                // Ruling C8: TakeRebootRequest replaced and disposed this wake meanwhile, so the request is already taken.\n            }",
       "message": "Empty catch block swallows exceptions without handling",
       "baselinedAt": "2026-10-07T22:19:24.2210033+00:00"
-    },
-    {
-      "hash": "15f2e89c2aceef1a",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
-      "lineNumber": 252,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; a failing policy still means Continue.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210049+00:00"
-    },
-    {
-      "hash": "a37065c6a67cd481",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
-      "lineNumber": 289,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the reboot still runs.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210065+00:00"
-    },
-    {
-      "hash": "2c31aef42be72c7f",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
-      "lineNumber": 370,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; a new series of attempts follows.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210088+00:00"
-    },
-    {
-      "hash": "285e5739a9124b22",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Recovery.cs",
-      "lineNumber": 388,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed; the boot wait still runs.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210104+00:00"
     },
     {
       "hash": "b3835987cef0371c",
@@ -221,42 +95,6 @@
       "baselinedAt": "2026-10-07T22:19:24.2210123+00:00"
     },
     {
-      "hash": "a503ff99bc05979d",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 111,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the disposal still completes.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210144+00:00"
-    },
-    {
-      "hash": "a8c9dc9c5943b327",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 171,
-      "codeSnippet": "catch (Exception)\n                    {\n                        // A logging provider failed; the loss is marked, and the reconnection goes on.\n                    }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210162+00:00"
-    },
-    {
-      "hash": "2cf718e32a934257",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 198,
-      "codeSnippet": "catch (Exception)\n                {\n                    // A logging provider failed; the connection is published and watched, not given up on.\n                }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.221018+00:00"
-    },
-    {
-      "hash": "68403859d4e43bdd",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 233,
-      "codeSnippet": "catch (Exception)\n            {\n                // The inner client's disposal failed (a logging provider); the supervisor never throws.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210203+00:00"
-    },
-    {
       "hash": "9425f880b89c2283",
       "ruleId": "SW003",
       "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
@@ -264,15 +102,6 @@
       "codeSnippet": "catch (Exception ex) when (\n                ex is not (RecoveryGaveUpException or FatalRestoreException)\n                && wake.IsCancellationRequested && !_lifetime.IsCancellationRequested)\n            {\n                // The wake (Ruling C9): whatever the series ended with while a request woke it, the next turn takes\n    // ...",
       "message": "Empty catch block swallows exceptions without handling",
       "baselinedAt": "2026-10-07T22:19:24.2210227+00:00"
-    },
-    {
-      "hash": "a7b3416ccd064793",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 322,
-      "codeSnippet": "catch (Exception) when (stop.IsCancellationRequested)\n        {\n            // The disposal, or a give-up, cancelled a wait: the heartbeat stops, the end of the connection is still\n            // awaited below, and the exchange on the line is resolved by Settle, the observer, Expire or the end of\n            // the inner client, as any other. Every logger call of a turn is guarded, so anything else that escapes\n    // ...",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210255+00:00"
     },
     {
       "hash": "baa7e8e49104084d",
@@ -284,15 +113,6 @@
       "baselinedAt": "2026-10-07T22:19:24.2210271+00:00"
     },
     {
-      "hash": "d9973c07006c0773",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 420,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the heartbeat still waits for the outcome of its request.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210287+00:00"
-    },
-    {
       "hash": "e337af95fc1e5021",
       "ruleId": "SW003",
       "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
@@ -300,69 +120,6 @@
       "codeSnippet": "catch (Exception)\n        {\n            // A NAK proves the device alive. A foreign reply leaves the exchange unanswered with the same deadline.\n            // Anything else is a dead connection, which Completion reports.\n        }",
       "message": "Empty catch block swallows exceptions without handling",
       "baselinedAt": "2026-10-07T22:19:24.2210308+00:00"
-    },
-    {
-      "hash": "add79adaa63e6270",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 560,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed; the supervisor never throws, and the client still closes.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210325+00:00"
-    },
-    {
-      "hash": "25ac86438cf5f304",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 653,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the callback still runs.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.221034+00:00"
-    },
-    {
-      "hash": "328d5839545017f8",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
-      "lineNumber": 697,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed; the callback succeeded, and the connection is published.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.221036+00:00"
-    },
-    {
-      "hash": "6221593552533be4",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Data/NetSdrDataReceiver.cs",
-      "lineNumber": 354,
-      "codeSnippet": "catch (Exception)\n                    {\n                        // A logging provider failed; an unhandled exception here would end the process.\n                    }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210384+00:00"
-    },
-    {
-      "hash": "a20718a8c104c53e",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Data/NetSdrDataReceiver.cs",
-      "lineNumber": 426,
-      "codeSnippet": "catch (Exception)\n        {\n            // A logging provider failed on the receive thread, where an unhandled exception would end the process;\n            // the interval still turns over, and the next summary reports from here.\n        }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210474+00:00"
-    },
-    {
-      "hash": "93945a043882755e",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Data/NetSdrDataReceiver.cs",
-      "lineNumber": 495,
-      "codeSnippet": "catch (Exception)\n            {\n                // A logging provider failed; the gap is counted, and the packet is still delivered.\n            }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210491+00:00"
-    },
-    {
-      "hash": "a9c022163a0ed78b",
-      "ruleId": "SW003",
-      "filePath": "NetSdr/Data/NetSdrDataReceiver.cs",
-      "lineNumber": 517,
-      "codeSnippet": "catch (Exception)\n                {\n                    // A logging provider failed; the error is counted, and the receive thread goes on.\n                }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-10-07T22:19:24.2210506+00:00"
     },
     {
       "hash": "cf18fc32ddb4fd6b",
@@ -696,6 +453,15 @@
       "codeSnippet": "Task.Delay(400)",
       "message": "Test uses Task.Delay(400) which may indicate a timing-dependent test",
       "baselinedAt": "2026-10-07T22:19:24.2211271+00:00"
+    },
+    {
+      "hash": "af35d9e62c33eaf4",
+      "ruleId": "SW003",
+      "filePath": "NetSdr/Control/ResilientControlClient.Supervisor.cs",
+      "lineNumber": 293,
+      "codeSnippet": "catch (Exception) when (stop.IsCancellationRequested)\n        {\n            // The disposal, or a give-up, cancelled a wait: the heartbeat stops, the end of the connection is still\n            // awaited below, and the exchange on the line is resolved by Settle, the observer, Expire or the end of\n            // the inner client, as any other. Anything else that escapes is a failure of the heartbeat itself, which\n    // ...",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-10-07T22:26:51.6065377+00:00"
     }
   ]
 }
