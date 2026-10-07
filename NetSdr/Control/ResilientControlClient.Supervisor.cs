@@ -189,12 +189,6 @@ public sealed partial class ResilientControlClient
                     return;
                 }
 
-                // The callers of the manual reboots of this loss are connected again (reboot spec 4.2).
-                foreach (RebootRequest request in state.ManualWaiters)
-                {
-                    request.Completion.TrySetResult();
-                }
-
                 try
                 {
                     ResilientClientLog.Reconnected(
@@ -204,6 +198,13 @@ public sealed partial class ResilientControlClient
                 catch (Exception)
                 {
                     // A logging provider failed; the connection is published and watched, not given up on.
+                }
+
+                // The callers of the manual reboots of this loss are connected again (reboot spec 4.2), after
+                // 1105 is written, so a caller that resumes finds the reconnection logged.
+                foreach (RebootRequest request in state.ManualWaiters)
+                {
+                    request.Completion.TrySetResult();
                 }
 
                 // The loss is over: a later give-up belongs to the next loss or to the heartbeat, not to this one.

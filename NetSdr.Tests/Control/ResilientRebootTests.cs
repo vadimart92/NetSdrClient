@@ -289,4 +289,168 @@ public class ResilientRebootTests
         Assert.Equal(("Soft", "2", "Verify"), (logs.Events(1114)[0].Value("Kind"), logs.Events(1114)[0].Value("FailedAttempts"), logs.Events(1114)[0].Value("Phase")));
         Assert.Empty(logs.Events(1106));
     }
+
+    /// <summary>A seam on fake time whose attempt 1 is answered by StartAsync; later verifications the test answers itself.</summary>
+    static async Task<(ResilientControlClient Client, PipeDevice Device, PipeConnector Connector, FakeRebooter Rebooter, FakeLoggerFactory Logs, FakeTimeProvider Time)>
+        SeamAsync(Action<ResilientControlClientOptions>? configure = null, Func<int, bool>? accept = null)
+    {
+        var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter { BootTime = TimeSpan.Zero });
+        var connector = new PipeConnector(time) { Before = (n, _) => accept is null || accept(n) ? Task.CompletedTask : Resilient.Refused() };
+        var options = Resilient.Seam(logs, time).WithRebooter(rebooter);
+        configure?.Invoke(options);
+        var (client, device) = await connector.StartAsync(options);
+        time.Advance(TimeSpan.FromSeconds(1));
+        device.CloseRemote();
+        return (client, device, connector, rebooter, logs, time);
+    }
+
+    static async Task<PipeDevice> PendingVerifyAsync(PipeConnector connector)
+    {
+        PipeDevice device = await connector.NextAsync();
+        Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync());
+        return device;
+    }
+
+    [Fact]
+    public async Task RebootAsync_DuringBackoff_InterruptsPause()
+    {
+        bool back = false;
+        var (client, _, connector, rebooter, logs, time) = await SeamAsync(o => o.RecoveryPolicy = new RecordingPolicy(), accept: n => n == 1 || Volatile.Read(ref back));
+        await using (client)
+        {
+            DateTimeOffset lost = time.GetUtcNow();
+            await time.AdvanceUntilAsync(() => logs.Events(1104).Count == 3, TimeSpan.FromMilliseconds(100));   // 0, 1, 3 s failed; the 4 s pause runs
+            time.Advance(TimeSpan.FromSeconds(1));
+            Volatile.Write(ref back, true);
+            var reboot = client.RebootAsync(RebootKind.Soft);
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);               // fake time did not move: the pause was interrupted
+            var device = await PendingVerifyAsync(connector);
+            await device.SendAsync(Resilient.Nak);
+            await reboot.WaitAsync(Limits.Test);
+            Assert.InRange((connector.AttemptTimes.Last() - lost).TotalSeconds, 4, 4.3);
+            Assert.Equal(5, connector.Attempts);
+        }
+    }
+
+    [Fact]
+    public async Task RebootAsync_DuringAttempt_WaitsForItToEnd()
+    {
+        var policy = new RecordingPolicy();
+        var (client, _, connector, rebooter, _, time) = await SeamAsync(o => o.RecoveryPolicy = policy);
+        await using (client)
+        {
+            var attempt = await PendingVerifyAsync(connector);
+            var reboot = client.RebootAsync(RebootKind.Soft);
+            await Task.Delay(200);
+            Assert.Empty(rebooter.Calls);                                                // the attempt runs on
+            Assert.True(attempt.Client.IsConnected);
+            attempt.CloseRemote();                                                       // it fails: the request runs instead of the pause
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);
+            Assert.Empty(policy.Calls);                                                  // no policy call for that failure
+            await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
+            await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
+            await reboot.WaitAsync(Limits.Test);
+        }
+    }
+
+    [Fact]
+    public async Task RebootAsync_AttemptSucceededMeanwhile_StillReboots()
+    {
+        var (client, _, connector, rebooter, logs, time) = await SeamAsync();
+        await using (client)
+        {
+            var attempt = await PendingVerifyAsync(connector);
+            var reboot = client.RebootAsync(RebootKind.Soft);
+            await attempt.SendAsync(Resilient.Nak);                                      // published, then the request runs at once
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);
+            await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
+            await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
+            await reboot.WaitAsync(Limits.Test);
+            Assert.Equal(2, logs.Events(1105).Count);
+            Assert.Single(logs.Events(1103));                                            // the requested loss is not reported
+        }
+    }
+
+    [Fact]
+    public async Task RebootAsync_Coalesce_HardWins()
+    {
+        var (client, _, connector, rebooter, logs, time) = await SeamAsync();
+        await using (client)
+        {
+            var attempt = await PendingVerifyAsync(connector);
+            var soft = client.RebootAsync(RebootKind.Soft);
+            var hard = client.RebootAsync(RebootKind.Hard);
+            await attempt.SendAsync(Resilient.Nak);
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);
+            await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
+            await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
+            await Task.WhenAll(soft, hard).WaitAsync(Limits.Test);
+            Assert.Equal(new[] { RebootKind.Hard }, rebooter.Calls);
+            Assert.Equal(2, logs.Events(1113).Count);
+        }
+    }
+
+    // Spec 4.2 table row 4 (ruling C11): a manual request joins the reboot an escalation is running.
+    [Fact]
+    public async Task RebootAsync_DuringEscalationBootWait_Joins()
+    {
+        bool back = false;
+        var policy = new RecordingPolicy { Decide = _ => RecoveryAction.Reboot(RebootKind.Soft) };
+        var (client, _, connector, rebooter, logs, time) = await SeamAsync(o =>
+        {
+            o.RecoveryPolicy = policy;
+            ((FakeRebooter)o.Rebooter!).BootTime = TimeSpan.FromSeconds(5);
+        }, accept: n => n == 1 || Volatile.Read(ref back));
+        await using (client)
+        {
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);                 // the escalation's 5 s boot wait runs on fake time
+            Volatile.Write(ref back, true);
+            var reboot = client.RebootAsync(RebootKind.Hard);                           // joins, whatever its kind
+            await Task.Delay(100);
+            Assert.False(reboot.IsCompleted);
+            await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));
+            await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
+            await reboot.WaitAsync(Limits.Test);
+            Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
+            Assert.False(Assert.Single(rebooter.Contexts).Requested);
+            Assert.Single(logs.Events(1113));
+            Assert.Single(logs.Events(1114));
+            Assert.Single(logs.Events(1116));
+            Assert.Single(policy.Calls);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    public async Task RebootAsync_ManualCountsTowardsEscalation(int maxReboots, int expectedReboots)
+    {
+        var policy = new RecordingPolicy { Decide = new EscalatingRecoveryPolicy { MaxRebootsPerLoss = maxReboots }.OnAttemptFailed };
+        var (client, _, _, rebooter, _, time) = await SeamAsync(o => o.RecoveryPolicy = policy, accept: n => n == 1);
+        var reboot = client.RebootAsync(RebootKind.Hard);                                // noticed loss or not, the request runs before the first series
+        await time.AdvanceUntilAsync(() => rebooter.Calls.Count == expectedReboots && policy.Calls.Count >= 6, TimeSpan.FromSeconds(1));   // six failures span about 31 s of backoff
+        Assert.Equal(Enumerable.Repeat(RebootKind.Hard, expectedReboots), rebooter.Calls);
+        Assert.All(policy.Calls, c => Assert.Equal(0, c.SoftReboots));
+        Assert.Equal(1, policy.Calls.SkipWhile(c => c.HardReboots == 0).First().HardReboots);   // Ruling C17: the supervisor's first refusal may reach the policy before the request
+        if (expectedReboots == 2) Assert.Equal(3, policy.Calls.Count(c => c.HardReboots == 1));   // three failures after the manual hard, then the second
+        await client.DisposeAsync();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => reboot.WaitAsync(Limits.Test));
+    }
+
+    // Review Focus 1.
+    [Fact]
+    public async Task RebootAsync_OnLastAllowedAttempt_RebootsThenGiveUpFailsTheCaller()
+    {
+        var (client, _, connector, rebooter, logs, time) = await SeamAsync(o => o.ReconnectAttempts = 2, accept: n => n != 2);
+        await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));
+        var attempt = await PendingVerifyAsync(connector);                               // attempt 2 of 2
+        var reboot = client.RebootAsync(RebootKind.Soft);
+        attempt.CloseRemote();
+        await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);                     // the reboot still runs
+        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => reboot.WaitAsync(Limits.Test)));
+        Assert.Equal(("attempts exhausted", "2"), (Assert.Single(logs.Events(1106)).Value("Reason"), logs.Events(1106)[0].Value("Attempts")));
+        Assert.Equal(3, connector.Attempts);                                             // no attempt beyond the cap
+        await client.DisposeAsync();
+    }
 }
