@@ -114,11 +114,14 @@ public sealed partial class ResilientControlClient
         public Exception? LastError { get; set; }
     }
 
-    /// <summary>The state of one loss across the attempts of the reconnection pipeline (spec 8).</summary>
-    private sealed class ReconnectState(Exception cause, DateTimeOffset lostAt, long lostTimestamp)
+    /// <summary>
+    /// The state of one loss across the attempts of the reconnection pipeline (spec 8), through every series of attempts
+    /// and every reboot of the loss (reboot spec 5.1). A new loss gets a new state, so its counters start at zero.
+    /// </summary>
+    private sealed class ReconnectState(Exception? cause, DateTimeOffset lostAt, long lostTimestamp)
     {
-        /// <summary>Why the connection was lost.</summary>
-        public Exception Cause { get; } = cause;
+        /// <summary>Why the connection was lost; <see langword="null"/> only for the first connection, which lost nothing.</summary>
+        public Exception? Cause { get; } = cause;
 
         /// <summary>When it was lost, as <see cref="ConnectionRestoredContext"/> reports it.</summary>
         public DateTimeOffset LostAt { get; } = lostAt;
@@ -131,5 +134,23 @@ public sealed partial class ResilientControlClient
 
         /// <summary>The phase the running attempt is in, for event 1104.</summary>
         public ReconnectPhase Phase { get; set; }
+
+        /// <summary>Failed attempts since the last reboot of this loss, or since the loss; reset by a reboot step.</summary>
+        public int FailedAttemptsSinceReboot { get; set; }
+
+        /// <summary>Soft reboots of this loss, attempted (a failed reboot counts).</summary>
+        public int SoftReboots { get; set; }
+
+        /// <summary>Hard reboots of this loss, attempted (a failed reboot counts).</summary>
+        public int HardReboots { get; set; }
+
+        /// <summary>The kind of the last accepted reboot of this loss, or <see langword="null"/>; reported by <see cref="ConnectionRestoredContext.AfterReboot"/>.</summary>
+        public RebootKind? AfterReboot { get; set; }
+
+        /// <summary>The failure of the last failed attempt: what the client gives up with when the attempt limit allows no new attempt.</summary>
+        public Exception? LastFailure { get; set; }
+
+        /// <summary>Manual reboot requests carried out during this loss; completed once a connection is published.</summary>
+        public List<RebootRequest> ManualWaiters { get; } = [];
     }
 }

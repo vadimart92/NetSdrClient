@@ -521,7 +521,7 @@ public sealed partial class ResilientControlClient
             Task restored;
             try
             {
-                restored = callback(new ConnectionRestoredContext(session, state.Cause, state.LostAt, null), _lifetime.Token)
+                restored = callback(new ConnectionRestoredContext(session, state.Cause!, state.LostAt, null), _lifetime.Token)
                     ?? Task.FromException(new InvalidOperationException("ConnectionRestored returned null instead of a task."));
             }
             catch (Exception ex)

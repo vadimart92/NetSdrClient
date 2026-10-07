@@ -36,6 +36,15 @@ internal static class Resilient
         return options;
     }
 
+    /// <summary>Sets <see cref="ResilientControlClientOptions.Rebooter"/> and <see cref="ResilientControlClientOptions.RecoveryPolicy"/>; a null policy means the default ladder.</summary>
+    public static ResilientControlClientOptions WithRebooter(
+        this ResilientControlClientOptions options, IDeviceRebooter rebooter, IRecoveryPolicy? policy = null)
+    {
+        options.Rebooter = rebooter;
+        options.RecoveryPolicy = policy;
+        return options;
+    }
+
     /// <summary>Starts a test server and connects to it; on failure the server is disposed.</summary>
     public static async Task<(NetSdrTestServer Server, ResilientControlClient Client)> StartAsync(
         ResilientControlClientOptions options, Action<NetSdrTestServer>? setup = null)
