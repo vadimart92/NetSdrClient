@@ -22,7 +22,10 @@ internal enum PublishReason
     /// <summary>A frame that failed the request in flight.</summary>
     Foreign,
 
-    /// <summary>A NAK with no request in flight.</summary>
+    /// <summary>
+    /// A header-only frame that answered no request: a <c>Response</c> NAK with no request in flight, or a header-only
+    /// frame of another type, which never answers one, even while a request is in flight.
+    /// </summary>
     Nak,
 }
 

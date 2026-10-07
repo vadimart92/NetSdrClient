@@ -157,4 +157,18 @@ public class ControlClientLoggingTests
         Assert.Equal(new[] { "Unsolicited", "Data", "NoRequest", "Nak", "LateReply", "Foreign" },
             logs.Events(1009).Select(r => r.Value("Reason")));
     }
+
+    [Fact]
+    public async Task ControlClientLogging_HeaderOnlyFrameOfAnotherType_PublishedAsNak_WhileRequestInFlight()
+    {
+        var logs = new FakeLoggerFactory();
+        await using var device = PipeDevice.Create(Logged(logs, fault: false));
+        var call = device.Client.GetAsync<InterfaceVersion>();
+        await device.ReadRequestAsync();
+        await device.SendAsync("02 20");                      // a header-only Unsolicited frame never answers a request
+        await device.SendAsync("06 00 03 00 11 02");          // the real reply
+        Assert.Equal(529, (await call.WaitAsync(Limits.Test)).Version);
+        var published = Assert.Single(logs.Events(1009));
+        Assert.Equal(("Unsolicited", "Nak"), (published.Value("ReplyType"), published.Value("Reason")));
+    }
 }

@@ -708,8 +708,10 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// A header-only frame is a NAK. Only a <c>Response</c> can answer the request in flight; without one it is just
-    /// another message, and it ends the wait for the reply of an abandoned request, which <see cref="LateReplyObserver"/> sees.
+    /// A header-only frame is a NAK. Only a <c>Response</c> NAK answers the request in flight. A header-only frame of
+    /// another type, even while a request is in flight, and a <c>Response</c> NAK with no request in flight answer
+    /// nothing and go to <see cref="Unsolicited"/>; the latter also ends the wait for the reply of an abandoned
+    /// request, which <see cref="LateReplyObserver"/> sees.
     /// </summary>
     private void HandleNak(ReplyType type)
     {
