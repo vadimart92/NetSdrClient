@@ -309,8 +309,16 @@ public sealed class NetSdrControlClient : INetSdrControlClient
             _readLoop = Task.Run(() => ReadLoopAsync(input));
         }
 
-        ControlClientLog.Connected(
-            _logger, _supervised ? LogLevel.Debug : LogLevel.Information, remoteEndPoint, localEndPoint);
+        try
+        {
+            ControlClientLog.Connected(
+                _logger, _supervised ? LogLevel.Debug : LogLevel.Information, remoteEndPoint, localEndPoint);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed. The client is attached and reading: throwing now would make the caller take
+            // a running client for a failed connect, and AttachSocket would close the stream under it.
+        }
     }
 
     /// <summary>Attaches an established connection. Closes it if the client cannot take it.</summary>
@@ -454,10 +462,18 @@ public sealed class NetSdrControlClient : INetSdrControlClient
                 return;
             }
 
-            ControlClientLog.RequestSent(_logger, pending.RequestType, pending.Item, pending.Code, frame.Payload.Length);
-            if (_logger.IsEnabled(LogLevel.Trace))
+            try
             {
-                ControlClientLog.FrameSent(_logger, Convert.ToHexString(frame.Memory.Span));
+                ControlClientLog.RequestSent(_logger, pending.RequestType, pending.Item, pending.Code, frame.Payload.Length);
+                if (_logger.IsEnabled(LogLevel.Trace))
+                {
+                    ControlClientLog.FrameSent(_logger, Convert.ToHexString(frame.Memory.Span));
+                }
+            }
+            catch (Exception)
+            {
+                // A logging provider failed. The request is on the wire and stays the request in flight, so its caller
+                // still waits for the reply: leaving now would free the gate while the reply can still arrive.
             }
         }
         finally
@@ -492,7 +508,15 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
             if (!timedOut)
             {
-                ControlClientLog.RequestAbandoned(_logger, pending.RequestType, pending.Item, pending.Code);
+                try
+                {
+                    ControlClientLog.RequestAbandoned(_logger, pending.RequestType, pending.Item, pending.Code);
+                }
+                catch (Exception)
+                {
+                    // A logging provider failed; the caller still learns about its own cancellation.
+                }
+
                 throw;
             }
 
@@ -505,13 +529,15 @@ public sealed class NetSdrControlClient : INetSdrControlClient
                     _logger, _supervised ? LogLevel.Debug : LogLevel.Warning,
                     pending.RequestType, pending.Item, pending.Code, _responseTimeout, faultClient);
             }
-            finally
+            catch (Exception)
             {
-                if (faultClient)
-                {
-                    // The terminal state is complete before the caller learns about the timeout.
-                    Fault(timeout);
-                }
+                // A logging provider failed; the caller still learns about the timeout.
+            }
+
+            if (faultClient)
+            {
+                // The terminal state is complete before the caller learns about the timeout.
+                Fault(timeout);
             }
 
             throw timeout;
@@ -892,17 +918,20 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         {
             ControlClientLog.Faulted(_logger, _supervised ? LogLevel.Debug : LogLevel.Error, remote, exception);
         }
+        catch (Exception)
+        {
+            // A logging provider failed. The fault still completes, and the callers of Fault (a failed write, a
+            // timeout, the read loop) still report the fault itself rather than the provider's exception.
+        }
+
+        // The terminal state is complete before the caller learns its request failed.
+        try
+        {
+            Finish(exception);
+        }
         finally
         {
-            // The terminal state is complete before the caller learns its request failed.
-            try
-            {
-                Finish(exception);
-            }
-            finally
-            {
-                pending?.Fail(exception);
-            }
+            pending?.Fail(exception);
         }
     }
 

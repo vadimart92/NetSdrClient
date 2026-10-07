@@ -158,6 +158,101 @@ public class ControlClientLoggingTests
             logs.Events(1009).Select(r => r.Value("Reason")));
     }
 
+    // A provider that throws on the caller's side of a request changes nothing: the connect, the reply, the timeout and
+    // the cancellation reach the caller as they would without logging, and the client stays consistent.
+    [Theory]
+    [InlineData(1000)]
+    [InlineData(1003)]
+    [InlineData(1010)]
+    public async Task ControlClientLogging_ThrowingProvider_ConnectAndRequestUnaffected(int throwsAt)
+    {
+        var options = new NetSdrControlClientOptions { LoggerFactory = new ThrowingLoggerFactory(throwsAt) };
+        var (server, client) = await Loopback.StartAsync(options: options);
+        await using (server)
+        await using (client)
+        {
+            Assert.True(client.IsConnected);
+            Assert.Equal(-20, (await client.SetAsync(new RfGain(0, -20)).WaitAsync(Limits.Test)).GainDb);
+            Assert.Equal(-10, (await client.SetAsync(new RfGain(0, -10)).WaitAsync(Limits.Test)).GainDb);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ControlClientLogging_ThrowingProvider_TimeoutStaysTimeout(bool fault)
+    {
+        var options = Logged(new FakeLoggerFactory(), fault);
+        options.LoggerFactory = new ThrowingLoggerFactory(1006, 1002);
+        await using var device = PipeDevice.Create(options);
+        var timedOut = device.Client.GetAsync<ProductId>();
+        await device.ReadRequestAsync();
+        await Assert.ThrowsAsync<TimeoutException>(() => timedOut.WaitAsync(Limits.Test));
+        if (fault)
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => device.Client.Completion.WaitAsync(Limits.Test));
+            return;
+        }
+
+        var next = device.Client.GetAsync<InterfaceVersion>();
+        await device.ReadRequestAsync();
+        await device.SendAsync("06 00 03 00 11 02");
+        Assert.Equal(529, (await next.WaitAsync(Limits.Test)).Version);
+    }
+
+    [Fact]
+    public async Task ControlClientLogging_ThrowingProvider_CancellationStaysCancellation()
+    {
+        var options = Logged(new FakeLoggerFactory(), fault: false);
+        options.LoggerFactory = new ThrowingLoggerFactory(1008);
+        await using var device = PipeDevice.Create(options);
+        using var cancel = new CancellationTokenSource();
+        var cancelled = device.Client.GetAsync<ProductId>(cancel.Token);
+        await device.ReadRequestAsync();
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.WaitAsync(Limits.Test));
+        var next = device.Client.GetAsync<InterfaceVersion>();
+        await device.ReadRequestAsync();
+        await device.SendAsync("06 00 03 00 11 02");
+        Assert.Equal(529, (await next.WaitAsync(Limits.Test)).Version);
+    }
+
+    [Fact]
+    public async Task ControlClientLogging_ThrowingProvider_DeviceCloseFaultsAndDisposes()
+    {
+        var options = new NetSdrControlClientOptions { LoggerFactory = new ThrowingLoggerFactory(1002) };
+        var (server, client) = await Loopback.StartAsync(options: options);
+        await using (server)
+        {
+            await server.DisconnectClientAsync();
+            await Assert.ThrowsAnyAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
+        }
+    }
+
+    /// <summary>Loggers enabled at every level that throw on the given event ids and drop every other entry.</summary>
+    private sealed class ThrowingLoggerFactory(params int[] throwsAt) : ILoggerFactory
+    {
+        public ILogger CreateLogger(string categoryName) => new Logger(throwsAt);
+
+        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
+
+        public void Dispose() { }
+
+        private sealed class Logger(int[] throwsAt) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (throwsAt.Contains(eventId.Id)) throw new InvalidOperationException($"The logging provider failed at {eventId.Id}.");
+            }
+        }
+    }
+
     [Fact]
     public async Task ControlClientLogging_HeaderOnlyFrameOfAnotherType_PublishedAsNak_WhileRequestInFlight()
     {
