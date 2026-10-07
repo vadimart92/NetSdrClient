@@ -90,6 +90,62 @@ public class IdentificationLoggingTests
     }
 
     [Fact]
+    public async Task IdentificationLogging_ProbeValues_OptionsAndFirmwareWithoutVersion()
+    {
+        var logs = new FakeLoggerFactory();
+        var (server, client) = await Loopback.StartAsync(s =>
+        {
+            s.Preload(new Options(0x06, 0x01, 0x12345678));
+            // Component 2 is answered without a version; the others are refused.
+            s.OnRequest(FirmwareVersion.Code, r => r.Payload.Span[0] == 2 ? ControlReply.Bytes(new byte[] { 2 }) : ControlReply.Nak);
+        });
+        await using (server)
+        await using (client)
+        {
+            var identity = await DeviceIdentity.ReadAsync(client, Logged(logs));
+            Assert.DoesNotContain(FirmwareVersion.Code, identity.Unsupported);   // one component answered
+        }
+
+        var options = Assert.Single(logs.Events(1300), r => r.Value("Item") == "Options");
+        Assert.Equal("flags 0x06, custom 0x01, detail 0x12345678", options.Value("Value"));
+        var firmware = Assert.Single(logs.Events(1300), r => r.Value("Item")!.StartsWith("FirmwareVersion"));
+        Assert.Equal(("FirmwareVersion id 2", "none"), (firmware.Value("Item"), firmware.Value("Value")));
+        Assert.Equal(new[] { "FirmwareVersion id 0", "FirmwareVersion id 1", "FirmwareVersion id 3" },
+            logs.Events(1301).Select(r => r.Value("Item")).Where(item => item!.StartsWith("FirmwareVersion")));
+    }
+
+    [Fact]
+    public async Task IdentificationLogging_FailureStep_FirmwareComponentAndAppProbe()
+    {
+        var logs = new FakeLoggerFactory();
+        var (server, client) = await Loopback.StartAsync(
+            s => s.OnRequest(FirmwareVersion.Code, r => r.Payload.Span[0] == 1 ? ControlReply.Silent : ControlReply.Nak),
+            new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(150) });
+        await using (server)
+        await using (client)
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => DeviceIdentity.ReadAsync(client, Logged(logs)));
+        }
+
+        Assert.Equal("FirmwareVersion id 1", Assert.Single(logs.Events(1303)).Value("Step"));
+
+        var probeLogs = new FakeLoggerFactory();
+        var (server2, client2) = await Loopback.StartAsync();
+        await using (server2)
+        await using (client2)
+        {
+            var options = Logged(probeLogs, standard: false);
+            options.Probes.Add((_, _, _) => Task.CompletedTask);
+            options.Probes.Add((_, _, _) => throw new InvalidOperationException("probe"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => DeviceIdentity.ReadAsync(client2, options));
+        }
+
+        var failed = Assert.Single(probeLogs.Events(1303));
+        Assert.Equal("probe 2 of 2", failed.Value("Step"));
+        Assert.IsType<InvalidOperationException>(failed.Exception);
+    }
+
+    [Fact]
     public async Task CatalogLogging_Matched()
     {
         var logs = new FakeLoggerFactory();
