@@ -217,6 +217,21 @@ public class ControlClientLoggingTests
         Assert.Equal(529, (await next.WaitAsync(Limits.Test)).Version);
     }
 
+    // The resilient client awaits every inner disposal: one that threw would skip the rest of its cleanup.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ControlClientLogging_ThrowingProvider_DisposeCompletes(bool supervised)
+    {
+        var options = new NetSdrControlClientOptions { LoggerFactory = new ThrowingLoggerFactory(1001), Supervised = supervised };
+        var (server, client) = await Loopback.StartAsync(options: options);
+        await using (server)
+        {
+            await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
+            Assert.True(client.Completion.IsCompletedSuccessfully);
+        }
+    }
+
     [Fact]
     public async Task ControlClientLogging_ThrowingProvider_DeviceCloseFaultsAndDisposes()
     {

@@ -392,7 +392,15 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
             if (wasConnected)
             {
-                ControlClientLog.Closed(_logger, _supervised ? LogLevel.Debug : LogLevel.Information, remote);
+                try
+                {
+                    ControlClientLog.Closed(_logger, _supervised ? LogLevel.Debug : LogLevel.Information, remote);
+                }
+                catch (Exception)
+                {
+                    // A logging provider failed. The client is closed, and whoever awaits the disposal (the resilient
+                    // client does for every connection) goes on with its own cleanup.
+                }
             }
         }
         finally
