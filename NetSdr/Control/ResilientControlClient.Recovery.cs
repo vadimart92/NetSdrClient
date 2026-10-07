@@ -1,4 +1,6 @@
 using System.Net;
+using System.Runtime.ExceptionServices;
+using Polly;
 
 namespace NetSdr.Control;
 
@@ -147,6 +149,55 @@ public sealed partial class ResilientControlClient
             {
                 _rebootRequest = null;
             }
+        }
+    }
+
+    /// <summary>
+    /// The start of every attempt, of a loss or of the first connection: the attempt limit across every series (reboot
+    /// spec 5.3, Ruling C10), checked first so the policy is never asked about an attempt that does not happen; then
+    /// the 1 s floor since the previous attempt started (Polly's jittered delay can be nearly zero, and the first
+    /// attempt after an early loss keeps it too), which <paramref name="ct"/> ends; then the attempt is counted.
+    /// </summary>
+    private async ValueTask BeginAttemptAsync(ReconnectState state, int attempts, CancellationToken ct)
+    {
+        if (state.Attempt >= attempts)
+        {
+            ExceptionDispatchInfo.Throw(state.LastFailure!);
+        }
+
+        TimeSpan remaining = AttemptFloor - _time.GetElapsedTime(_lastAttemptStart, _time.GetTimestamp());
+        if (remaining > TimeSpan.Zero)
+        {
+            await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
+        }
+
+        state.Attempt++;
+        _lastAttemptStart = _time.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Reboot spec 4.5: one attempt of the first connection, spec 7.4 steps 2-5 with the caller's token and no
+    /// <see cref="ReconnectPhase.Restore"/> phase; <see cref="OpenLinkAsync"/> closes the link of a failed attempt
+    /// itself. The caller's cancellation leaves as it is; any other failure goes to the recovery policy, without the
+    /// reboot slot.
+    /// </summary>
+    private async ValueTask<Link> ConnectOnceAsync(ResilienceContext context, ReconnectState state)
+    {
+        CancellationToken ct = context.CancellationToken;
+        await BeginAttemptAsync(state, _connectAttempts, ct).ConfigureAwait(false);
+        try
+        {
+            return await OpenLinkAsync(phase => state.Phase = phase, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            Exception decided = DecideAfterFailure(state, ex, checkSlot: false);
+            if (ReferenceEquals(decided, ex))
+            {
+                throw;
+            }
+
+            throw decided;
         }
     }
 

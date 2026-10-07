@@ -560,27 +560,12 @@ public sealed partial class ResilientControlClient
     {
         CancellationToken ct = context.CancellationToken;
 
-        // The attempt limit of the loss, across every series (reboot spec 5.3, Ruling C10): checked before the try, so
-        // the policy is never asked about an attempt that does not happen.
-        if (state.Attempt >= _options.ReconnectAttempts)
-        {
-            ExceptionDispatchInfo.Throw(state.LastFailure!);
-        }
+        // Step 1. A reboot request ends the floor too; the attempt number is taken after it, so a wake consumes none (Ruling 4).
+        await BeginAttemptAsync(state, _options.ReconnectAttempts, ct).ConfigureAwait(false);
 
         Link? link = null;
         try
         {
-            // Step 1. Polly's jittered delay can be nearly zero, so the floor is kept here, at the start of every attempt.
-            // A reboot request ends it too; the attempt number is taken after it, so a wake consumes none (Ruling 4).
-            TimeSpan remaining = AttemptFloor - _time.GetElapsedTime(_lastAttemptStart, _time.GetTimestamp());
-            if (remaining > TimeSpan.Zero)
-            {
-                await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
-            }
-
-            state.Attempt++;
-            _lastAttemptStart = _time.GetTimestamp();
-
             // Steps 2-5, and step 9 for a failure inside them. A reboot request does not interrupt a running attempt.
             link = await OpenLinkAsync(phase => state.Phase = phase, _lifetime.Token).ConfigureAwait(false);
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly Channel<ControlItemMessage> _unsolicited;
     private readonly ResiliencePipeline _commandPipeline;
     private readonly ResiliencePipeline _reconnect;
+    private readonly ResiliencePipeline _firstConnect;
     private readonly NetSdrControlClientOptions _innerOptions;
     private readonly ResilientControlClientOptions _options;
     private readonly TimeProvider _time;
@@ -98,31 +100,45 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                 },
             })
             .Build();
-        // Polly needs MaxRetryAttempts >= 1, so with one attempt per loss there is no retry strategy at all.
-        _reconnect = options.ReconnectAttempts == 1
+        _reconnect = BuildAttemptPipeline(
+            options.ReconnectAttempts,
+            (state, delay, failure) => ResilientClientLog.ReconnectAttemptFailed(_logger, state.Attempt, _target, state.Phase, delay, failure));
+        _firstConnect = BuildAttemptPipeline(
+            _connectAttempts,
+            (state, delay, failure) => ResilientClientLog.ConnectAttemptFailed(
+                _logger, state.Attempt, _connectAttempts, _target, state.Phase, delay, failure));
+    }
+
+    /// <summary>
+    /// The attempt series of a loss (<see cref="_reconnect"/>) or of the first connection (<see cref="_firstConnect"/>):
+    /// exponential backoff from 1 s to 30 s, at most <paramref name="attempts"/> attempts across every series, and
+    /// <paramref name="onRetry"/> writing the failure that another attempt follows.
+    /// </summary>
+    private ResiliencePipeline BuildAttemptPipeline(int attempts, Action<ReconnectState, TimeSpan, Exception> onRetry)
+    {
+        // Polly needs MaxRetryAttempts >= 1, so with one attempt there is no retry strategy at all.
+        return attempts == 1
             ? ResiliencePipeline.Empty
-            : new ResiliencePipelineBuilder { TimeProvider = options.TimeProvider }
+            : new ResiliencePipelineBuilder { TimeProvider = _options.TimeProvider }
                 .AddRetry(new RetryStrategyOptions
                 {
-                    MaxRetryAttempts = options.ReconnectAttempts - 1,
+                    MaxRetryAttempts = attempts - 1,
                     BackoffType = DelayBackoffType.Exponential,
                     Delay = TimeSpan.FromSeconds(1),
                     MaxDelay = TimeSpan.FromSeconds(30),
-                    UseJitter = options.UseJitter,
-                    // Cancellation is the disposal or a reboot request, never a failed attempt; a reentrant
-                    // ConnectionRestored callback is fatal (spec 7.5), so the client gives up instead of trying again;
-                    // a decision of the recovery policy ends the series (reboot spec 5.3); and the attempt limit holds
-                    // across every series of the loss (Ruling 3).
+                    UseJitter = _options.UseJitter,
+                    // Cancellation is the disposal, a reboot request or the caller's token, never a failed attempt; a
+                    // reentrant ConnectionRestored callback is fatal (spec 7.5), so the client gives up instead of trying
+                    // again; a decision of the recovery policy ends the series (reboot spec 5.3); and the attempt limit
+                    // holds across every series (Ruling 3).
                     ShouldHandle = a => ValueTask.FromResult(
                         a.Outcome.Exception is not (null or FatalRestoreException or RebootScheduledException or RecoveryGaveUpException)
                         && !a.Context.CancellationToken.IsCancellationRequested
-                        && a.Context.Properties.GetValue(ReconnectKey, null!).Attempt < options.ReconnectAttempts),
+                        && a.Context.Properties.GetValue(ReconnectKey, null!).Attempt < attempts),
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
-                        ReconnectState state = a.Context.Properties.GetValue(ReconnectKey, null!);
-                        ResilientClientLog.ReconnectAttemptFailed(
-                            _logger, state.Attempt, _target, state.Phase, a.RetryDelay, a.Outcome.Exception!);
+                        onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
                         return default;
                     },
                 })
@@ -411,14 +427,43 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// The first and only attempt of <c>ConnectAsync</c>: spec 7.4 steps 2-5 with the caller's token, then the
-    /// publication and the start of the supervisor.
+    /// <c>ConnectAsync</c> (reboot spec 4.5): the series of <see cref="ResilientControlClientOptions.ConnectAttempts"/>
+    /// attempts with the caller's token and the reboot steps the recovery policy schedules between them, then the
+    /// publication and the start of the supervisor. A give-up of the policy throws the last failure; there is no
+    /// reboot slot yet, so no manual request takes part.
     /// </summary>
     private async Task<ResilientControlClient> ConnectCoreAsync(CancellationToken ct)
     {
-        // Recorded as for a reconnection attempt, so the first attempt after an early loss keeps the 1 s floor.
-        _lastAttemptStart = _time.GetTimestamp();
-        Link link = await OpenLinkAsync(null, ct).ConfigureAwait(false);
+        // The counters of the first connection; the first loss starts its own.
+        var state = new ReconnectState(null, _time.GetUtcNow(), _time.GetTimestamp());
+        Link link;
+        while (true)
+        {
+            RebootScheduledException scheduled;
+            ResilienceContext context = ResilienceContextPool.Shared.Get(ct);
+            try
+            {
+                context.Properties.Set(ReconnectKey, state);
+                link = await _firstConnect.ExecuteAsync(ConnectOnceAsync, context, state).ConfigureAwait(false);
+                break;
+            }
+            catch (RebootScheduledException ex)
+            {
+                scheduled = ex;
+            }
+            catch (RecoveryGaveUpException ex)
+            {
+                ExceptionDispatchInfo.Throw(ex.InnerException!);
+                throw;      // not reached; Throw does not return, which definite assignment does not know
+            }
+            finally
+            {
+                ResilienceContextPool.Shared.Return(context);
+            }
+
+            await RebootStepAsync(scheduled.Kind, state, null, scheduled.InnerException, ct).ConfigureAwait(false);
+        }
+
         if (!Publish(link))
         {
             // Nobody holds the client yet, so only ConnectAsync itself could have closed it; kept for the invariant.
