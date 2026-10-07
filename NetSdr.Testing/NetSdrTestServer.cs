@@ -34,12 +34,27 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     private TcpListener? _listener;
     private Task? _acceptLoop;
     private Task? _disposal;
+    private volatile ServerAvailability _availability;    // read without the lock by the accept loop and every frame
 
     /// <summary>The TCP port the server listens on; 0 until <see cref="StartAsync"/> has been called.</summary>
     public int Port { get; private set; }
 
     /// <summary>Completes when the first client connects, and is cancelled if the server is disposed before that.</summary>
     public Task ClientConnected => _clientConnected.Task;
+
+    /// <summary>
+    /// How the server answers; <see cref="ServerAvailability.Normal"/> by default, safe to change from any thread.
+    /// <see cref="ServerAvailability.CloseOnAccept"/> closes every new accepted connection at once, without reading,
+    /// and keeps the current one: a booting device looks exactly like this. <see cref="ServerAvailability.Silent"/>
+    /// reads and records requests in <see cref="Received"/> but sends no reply to them, on the current connection too
+    /// from the moment of the change; an explicit <c>SendUnsolicitedAsync</c> and the UDP stream are not affected.
+    /// The listener never stops: rebinding the same port is unreliable on Windows, a close after the accept is deterministic.
+    /// </summary>
+    public ServerAvailability Availability
+    {
+        get => _availability;
+        set => _availability = value;
+    }
 
     /// <summary>A snapshot of every control request received so far, oldest first.</summary>
     public IReadOnlyList<ControlRequest> Received
@@ -136,6 +151,18 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Forgets every stored payload, preloaded ones included, as a rebooted device forgets its settings. The handlers
+    /// and <see cref="Received"/> are kept.
+    /// </summary>
+    public void ClearState()
+    {
+        lock (_sync)
+        {
+            _state.Clear();
+        }
+    }
+
     /// <summary>Sends an <c>Unsolicited</c> frame carrying <paramref name="item"/> to the client.</summary>
     /// <exception cref="InvalidOperationException">No client is connected.</exception>
     public Task SendUnsolicitedAsync<T>(T item) where T : struct, IControlItem<T> =>
@@ -220,6 +247,13 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             while (true)
             {
                 Socket socket = await listener.AcceptSocketAsync(token).ConfigureAwait(false);
+                if (_availability == ServerAvailability.CloseOnAccept)
+                {
+                    // A booting device: the connection is accepted and closed before anything is read.
+                    socket.Dispose();
+                    continue;
+                }
+
                 await ServeAsync(socket).ConfigureAwait(false);
             }
         }
@@ -368,6 +402,12 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         lock (_sync)
         {
             _received.Add(request);
+        }
+
+        if (_availability == ServerAvailability.Silent)
+        {
+            // A hung device: the request is recorded, no handler runs, nothing changes and nothing is written.
+            return;
         }
 
         ControlReply reply;
