@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using NetSdr.Control;
@@ -452,5 +451,72 @@ public class ResilientRebootTests
         Assert.Equal(("attempts exhausted", "2"), (Assert.Single(logs.Events(1106)).Value("Reason"), logs.Events(1106)[0].Value("Attempts")));
         Assert.Equal(3, connector.Attempts);                                             // no attempt beyond the cap
         await client.DisposeAsync();
+    }
+
+    // Final F1 (reboot spec 4.2 row 1, 5.4): a manual request wakes the supervisor while the heartbeat waits for the
+    // late reply of a device that does not answer; the reboot starts at once, and the end of the connection is no loss.
+    [Fact]
+    public async Task RebootAsync_HeartbeatUnanswered_RebootsAtOnce()
+    {
+        var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter { BootTime = TimeSpan.Zero });
+        var connector = new PipeConnector(time);
+        var options = Resilient.Seam(logs, time).WithRebooter(rebooter);
+        options.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
+        var (client, device) = await connector.StartAsync(options);
+        await using (client)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(100));
+            Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync().WaitAsync(Limits.Test));   // the heartbeat, never answered
+            time.Advance(TimeSpan.FromMilliseconds(200));                                // past ResponseTimeout, inside the late-reply deadline
+            await Eventually.ThatAsync(() => logs.Events(1101).Count == 1);                 // HeartbeatMissed
+            var reboot = client.RebootAsync(RebootKind.Soft);
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);               // fake time did not reach the 750 ms deadline
+            await time.AdvanceUntilAsync(() => connector.Attempts == 2, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
+            await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
+            await reboot.WaitAsync(Limits.Test);
+            Assert.True(client.IsConnected);
+            Assert.Empty(logs.Events(1103));
+            Assert.Single(logs.Events(1113));
+            Assert.Single(logs.Events(1116));
+        }
+    }
+
+    // Final F6 (reboot spec 8): a logging provider that throws at the reboot events changes nothing. The policy lets
+    // the first reconnection attempt fail (1104), then reboots (1114).
+    [Fact]
+    public async Task ThrowingProvider_ManualAndEscalatedRebootsComplete()
+    {
+        int decisions = 0;
+        var policy = new RecordingPolicy { Decide = _ => Interlocked.Increment(ref decisions) == 1 ? RecoveryAction.Continue : RecoveryAction.Reboot(RebootKind.Soft) };
+        var (server, client, rebooter) = await StartAsync(new FakeLoggerFactory(), o =>
+        {
+            (o.ResponseTimeout, o.LateReplyTimeout, o.RecoveryPolicy) = (TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), policy);
+            o.LoggerFactory = new ControlClientLoggingTests.ThrowingLoggerFactory(1101, 1102, 1103, 1104, 1105, 1113, 1114, 1116);
+        });
+        await using (server)
+        await using (client)
+        {
+            await client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test);
+            Assert.True(client.IsConnected);
+            server.Availability = ServerAvailability.Silent;
+            await Eventually.ThatAsync(() => rebooter.Calls.Count == 2 && client.IsConnected, Limits.Test);
+            Assert.Equal(new[] { RebootKind.Soft, RebootKind.Soft }, rebooter.Calls);
+            Assert.False(client.Completion.IsCompleted);
+        }
+    }
+
+    // Final F4/F6: a provider that throws at 1118 does not end the series of the first connection.
+    [Fact]
+    public async Task ThrowingProvider_FirstConnectRetriesOn()
+    {
+        var time = new FakeTimeProvider();
+        var connector = new PipeConnector(time) { Before = (n, _) => n < 3 ? Resilient.Refused() : Task.CompletedTask, Serve = d => d.NakEverythingAsync() };
+        var options = Resilient.Seam(null, time);
+        options.ConnectAttempts = 3;
+        options.LoggerFactory = new ControlClientLoggingTests.ThrowingLoggerFactory(1118);
+        var connecting = ResilientControlClient.ConnectAsync(connector.ConnectAsync, "pipe", options, CancellationToken.None);
+        await time.AdvanceUntilAsync(() => connecting.IsCompleted, TimeSpan.FromMilliseconds(100));
+        await using var client = await connecting;
+        Assert.Equal(3, connector.Attempts);
     }
 }

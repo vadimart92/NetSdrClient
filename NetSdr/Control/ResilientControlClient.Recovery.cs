@@ -77,9 +77,7 @@ public sealed partial class ResilientControlClient
             // same lock, so no request is left in a slot nobody completes.
             if (_state == ClientState.Closed)
             {
-                throw _failure is null
-                    ? new ObjectDisposedException(nameof(ResilientControlClient))
-                    : new InvalidOperationException("The client gave up reconnecting; create a new client.", _failure);
+                throw ClosedSyncException(_failure);
             }
 
             if (_rebootRequest is null)
@@ -162,13 +160,18 @@ public sealed partial class ResilientControlClient
     {
         if (state.Attempt >= attempts)
         {
-            ExceptionDispatchInfo.Throw(state.LastFailure!);
+            // LastFailure is null only when every attempt of the loss ended with a cancellation read as the wake.
+            ExceptionDispatchInfo.Throw(state.LastFailure ?? new IOException("No attempt of this loss failed."));
         }
 
-        TimeSpan remaining = AttemptFloor - _time.GetElapsedTime(_lastAttemptStart, _time.GetTimestamp());
-        if (remaining > TimeSpan.Zero)
+        // No floor before the very first attempt, whatever the TimeProvider's timestamps start at.
+        if (_lastAttemptStart is long last)
         {
-            await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
+            TimeSpan remaining = AttemptFloor - _time.GetElapsedTime(last, _time.GetTimestamp());
+            if (remaining > TimeSpan.Zero)
+            {
+                await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
+            }
         }
 
         state.Attempt++;
@@ -191,6 +194,8 @@ public sealed partial class ResilientControlClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            // A failure that lands as the caller cancels is the cancellation (spec 4.5, 9): the policy is not asked.
+            ct.ThrowIfCancellationRequested();
             Exception decided = DecideAfterFailure(state, ex, checkSlot: false);
             if (ReferenceEquals(decided, ex))
             {
@@ -301,6 +306,8 @@ public sealed partial class ResilientControlClient
         {
             try
             {
+                // A cancelled ct never reaches the transport, which might not check its token (spec 4.5).
+                ct.ThrowIfCancellationRequested();
                 Task reboot = _rebooter!.RebootAsync(kind, context, linked.Token);
                 // A transport that ignores its token is left behind on a timeout or a disposal (Ruling 10); its fault is observed.
                 _ = reboot.ContinueWith(

@@ -47,7 +47,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private volatile Link _link = null!;    // published by ConnectCoreAsync before the instance is handed out
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
-    private long _lastAttemptStart;
+    private long? _lastAttemptStart;
 
     /// <summary>The link of the reconnection attempt in progress, from its pump start until it is published or closed; what <see cref="DisposeAsync"/> closes besides <see cref="_link"/>.</summary>
     private Link? _restoring;
@@ -138,7 +138,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
-                        onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
+                        try
+                        {
+                            onRetry(a.Context.Properties.GetValue(ReconnectKey, null!), a.RetryDelay, a.Outcome.Exception!);
+                        }
+                        catch (Exception)
+                        {
+                            // A logging provider failed (reboot spec 8); the series goes on.
+                        }
+
                         return default;
                     },
                 })
@@ -178,7 +186,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
     /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
     /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
-    /// failed attempt writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// failed attempt that another attempt follows writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
     /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
     /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
     /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
@@ -204,7 +212,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     /// Connects to the device and verifies the connection with a <c>Get</c> of the status codes, which a NAK also
     /// passes. It makes <see cref="ResilientControlClientOptions.ConnectAttempts"/> attempts (1 without a
     /// <see cref="ResilientControlClientOptions.Rebooter"/>, 8 with one), about 1, 2, 4 ... 30 seconds apart, and every
-    /// failed attempt writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
+    /// failed attempt that another attempt follows writes Warning 1118. With a <see cref="ResilientControlClientOptions.Rebooter"/> the
     /// <see cref="ResilientControlClientOptions.RecoveryPolicy"/> is asked after every failure, and a reboot it decides
     /// runs as during a reconnection. <see cref="ResilientControlClientOptions.ConnectionRestored"/> is not called, not
     /// even after a reboot. When the attempts run out the exception of the last attempt is thrown as is; cancellation
@@ -663,10 +671,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             failure = _failure;
         }
 
-        throw failure is null
-            ? new ObjectDisposedException(nameof(ResilientControlClient))
-            : new InvalidOperationException("The client gave up reconnecting; create a new client.", failure);
+        throw ClosedSyncException(failure);
     }
+
+    /// <summary>
+    /// What a call that starts on a Closed client throws (spec 6.5 step 0, Ruling C12): the disposal, or the give-up
+    /// with <paramref name="failure"/> as the cause. Shared by <see cref="ThrowIfClosed"/> and the reboot slot.
+    /// </summary>
+    private static Exception ClosedSyncException(IOException? failure) => failure is null
+        ? new ObjectDisposedException(nameof(ResilientControlClient))
+        : new InvalidOperationException("The client gave up reconnecting; create a new client.", failure);
 
     /// <summary>Spec 6.5 step 0: the payload of a Set, written into a fresh zeroed buffer.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The item does not fit in one frame.</exception>
@@ -1160,13 +1174,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             ResilientClientLog.ConnectionUnresponsive(
                 _logger, exchange.Type, exchange.Code, _time.GetElapsedTime(exchange.SentAt), link.Client.RemoteEndPoint);
         }
-        finally
+        catch (Exception)
         {
-            // A logging provider that throws must not leave the line held or the connection open. The synchronous
-            // part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
-            _ = link.Client.DisposeAsync();
-            Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
+            // A logging provider failed (reboot spec 8). Not rethrown: this runs on a timer thread, where an
+            // exception would end the process; the connection is closed below all the same.
         }
+
+        // The synchronous part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
+        _ = link.Client.DisposeAsync();
+        Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
     }
 
     /// <summary>
