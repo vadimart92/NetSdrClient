@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using NetSdr.Framing;
 using NetSdr.Items;
 
@@ -37,6 +38,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TimeSpan _responseTimeout;
     private readonly bool _faultOnTimeout;
+    private readonly ILogger _logger;
+    private readonly TimeProvider _timeProvider;
+    private readonly bool _supervised;
 
     // Written under _sync. _state is also read without the lock by IsConnected.
     private volatile State _state;
@@ -52,6 +56,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     private IPEndPoint? _localEndPoint;
     private IPEndPoint? _remoteEndPoint;
 
+    /// <exception cref="ArgumentNullException"><see cref="NetSdrControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1, or
     /// <see cref="NetSdrControlClientOptions.ResponseTimeout"/> is neither positive (up to <see cref="int.MaxValue"/> milliseconds)
@@ -60,6 +65,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     public NetSdrControlClient(NetSdrControlClientOptions? options = null)
     {
         options ??= new NetSdrControlClientOptions();
+        ArgumentNullException.ThrowIfNull(options.LoggerFactory, nameof(options));
+        ArgumentNullException.ThrowIfNull(options.TimeProvider, nameof(options));
         TimeSpan timeout = options.ResponseTimeout;
         if (timeout != Timeout.InfiniteTimeSpan && (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue))
         {
@@ -71,6 +78,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         _responseTimeout = timeout;
         _faultOnTimeout = options.FaultOnTimeout;
+        _logger = options.LoggerFactory.CreateLogger(typeof(NetSdrControlClient).FullName!);
+        _timeProvider = options.TimeProvider;
+        _supervised = options.Supervised;
         _unsolicited = Channel.CreateBounded<ControlItemMessage>(new BoundedChannelOptions(options.UnsolicitedCapacity)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -219,14 +229,20 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <paramref name="type"/> is not <c>Set</c>, <c>Get</c> or <c>GetRange</c>, or the payload does not fit in one frame.
     /// </exception>
     public Task<ControlItemMessage> SendAsync(
-        RequestType type, ushort code, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        RequestType type, ushort code, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
+        SendAsync(type, code, payload, item: null, ct);
+
+    /// <summary>The raw request path of the public <c>SendAsync</c>, with the item name the logs show.</summary>
+    /// <param name="item">The item name in the logs; <see langword="null"/> logs it as <c>raw</c>.</param>
+    internal Task<ControlItemMessage> SendAsync(
+        RequestType type, ushort code, ReadOnlyMemory<byte> payload, string? item, CancellationToken ct)
     {
         if (type is not (RequestType.Set or RequestType.Get or RequestType.GetRange))
         {
             throw new ArgumentOutOfRangeException(nameof(type), type, "Only Set, Get and GetRange requests can be sent.");
         }
 
-        var pending = new PendingRawRequest(code, type);
+        var pending = new PendingRawRequest(code, type, item);
         RentedFrame frame = RentFrame(type, code, payload.Length, nameof(payload));
         payload.Span.CopyTo(frame.Payload);
         return ExchangeAsync(pending, pending.Reply, frame, ct);
@@ -241,6 +257,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         PendingRequest? pending;
         Task? readLoop;
         Exception? fault;
+        bool wasConnected;
+        IPEndPoint? remote;
         lock (_sync)
         {
             if (_state == State.Disposed)
@@ -248,6 +266,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
                 return new ValueTask(_disposed.Task);
             }
 
+            wasConnected = _state == State.Connected;
+            remote = _remoteEndPoint;
             fault = _state == State.Faulted ? _fault : null;
             _state = State.Disposed;
             pending = _pending;
@@ -255,7 +275,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             readLoop = _readLoop;
         }
 
-        return DisposeCoreAsync(fault, pending, readLoop);
+        return DisposeCoreAsync(fault, pending, readLoop, wasConnected, remote);
     }
 
     /// <summary>Starts the read loop on an established connection.</summary>
@@ -277,6 +297,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             _state = State.Connected;
             _readLoop = Task.Run(() => ReadLoopAsync(input));
         }
+
+        ControlClientLog.Connected(
+            _logger, _supervised ? LogLevel.Debug : LogLevel.Information, remoteEndPoint, localEndPoint);
     }
 
     /// <summary>Attaches an established connection. Closes it if the client cannot take it.</summary>
@@ -326,7 +349,10 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
     }
 
-    private async ValueTask DisposeCoreAsync(Exception? fault, PendingRequest? pending, Task? readLoop)
+    /// <param name="wasConnected">The client was connected and had not faulted, so the closure is logged.</param>
+    /// <param name="remote">The device's end of the connection, for the log.</param>
+    private async ValueTask DisposeCoreAsync(
+        Exception? fault, PendingRequest? pending, Task? readLoop, bool wasConnected, IPEndPoint? remote)
     {
         try
         {
@@ -343,6 +369,11 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             if (readLoop is not null)
             {
                 await readLoop.ConfigureAwait(false);
+            }
+
+            if (wasConnected)
+            {
+                ControlClientLog.Closed(_logger, _supervised ? LogLevel.Debug : LogLevel.Information, remote);
             }
         }
         finally
@@ -409,6 +440,13 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             catch (Exception ex)
             {
                 Fault(ex as IOException ?? new IOException("Failed to write a request to the device.", ex));
+                return;
+            }
+
+            ControlClientLog.RequestSent(_logger, pending.RequestType, pending.Item, pending.Code, frame.Payload.Length);
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                ControlClientLog.FrameSent(_logger, Convert.ToHexString(frame.Memory.Span));
             }
         }
         finally
@@ -428,7 +466,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     {
         try
         {
-            return await reply.WaitAsync(_responseTimeout, ct).ConfigureAwait(false);
+            return await reply.WaitAsync(_responseTimeout, _timeProvider, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
@@ -443,16 +481,26 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
             if (!timedOut)
             {
+                ControlClientLog.RequestAbandoned(_logger, pending.RequestType, pending.Item, pending.Code);
                 throw;
             }
 
             var timeout = new TimeoutException(
                 $"The device did not reply to the {pending.RequestType} request for item 0x{pending.Code:X4} " +
                 $"within {_responseTimeout.TotalMilliseconds:0} ms.");
-            if (faultClient)
+            try
             {
-                // The terminal state is complete before the caller learns about the timeout.
-                Fault(timeout);
+                ControlClientLog.RequestTimedOut(
+                    _logger, _supervised ? LogLevel.Debug : LogLevel.Warning,
+                    pending.RequestType, pending.Item, pending.Code, _responseTimeout, faultClient);
+            }
+            finally
+            {
+                if (faultClient)
+                {
+                    // The terminal state is complete before the caller learns about the timeout.
+                    Fault(timeout);
+                }
             }
 
             throw timeout;
@@ -491,6 +539,8 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             switch (_state)
             {
                 case State.Connected:
+                    // Before the write and under the lock, so the reader loop always sees it when the reply arrives.
+                    pending.WriteStartedAt = _timeProvider.GetTimestamp();
                     _pending = pending;
                     return _output!;
                 case State.NotConnected:
@@ -598,11 +648,17 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     /// <exception cref="NetSdrProtocolException">The frame is malformed.</exception>
     private void ProcessFrame(ReadOnlySequence<byte> frame, byte type, int length)
     {
+        if (_logger.IsEnabled(LogLevel.Trace))
+        {
+            ControlClientLog.FrameReceived(
+                _logger, Convert.ToHexString(frame.IsSingleSegment ? frame.FirstSpan : frame.ToArray()));
+        }
+
         var replyType = (ReplyType)type;
         if (replyType > ReplyType.RangeResponse)
         {
             // Data items and acknowledgements have no item code; the payload is everything after the header.
-            Publish(replyType, 0, frame.Slice(FrameHeader.Size));
+            Publish(replyType, 0, frame.Slice(FrameHeader.Size), PublishReason.Data);
             return;
         }
 
@@ -625,7 +681,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         if (replyType == ReplyType.Unsolicited)
         {
-            Publish(replyType, code, payload);
+            Publish(replyType, code, payload, PublishReason.Unsolicited);
         }
         else
         {
@@ -655,17 +711,27 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         if (rejected is null)
         {
-            Publish(type, 0, ReadOnlySequence<byte>.Empty);
+            Publish(type, 0, ReadOnlySequence<byte>.Empty, PublishReason.Nak);
             return;
         }
 
-        rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
+        try
+        {
+            ControlClientLog.NakReceived(
+                _logger, rejected.RequestType, rejected.Item, rejected.Code,
+                _timeProvider.GetElapsedTime(rejected.WriteStartedAt));
+        }
+        finally
+        {
+            rejected.Fail(new NetSdrNakException(rejected.Code, rejected.RequestType));
+        }
     }
 
     private void HandleReply(ReplyType type, ushort code, ReadOnlySequence<byte> payload)
     {
         PendingRequest? pending = null;
         bool answers = false;
+        bool late = false;
         lock (_sync)
         {
             PendingRequest? active = _pending;
@@ -685,6 +751,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             {
                 // The late reply of a request nobody waits for. It is consumed, and the request in flight stays untouched.
                 _abandoned = null;
+                late = true;
             }
             else if (active is not null)
             {
@@ -697,20 +764,38 @@ public sealed class NetSdrControlClient : IAsyncDisposable
 
         if (pending is null)
         {
-            Publish(type, code, payload);
+            Publish(type, code, payload, late ? PublishReason.LateReply : PublishReason.NoRequest);
             return;
         }
 
         if (answers)
         {
-            CompletePending(pending, payload);
+            try
+            {
+                ControlClientLog.ReplyReceived(
+                    _logger, type, pending.Item, code, _timeProvider.GetElapsedTime(pending.WriteStartedAt),
+                    (int)payload.Length);
+            }
+            finally
+            {
+                CompletePending(pending, payload);
+            }
+
             return;
         }
 
-        // The foreign frame is readable from Unsolicited before the caller learns its request failed.
-        Publish(type, code, payload);
-        pending.Fail(new NetSdrProtocolException(
-            $"Expected {pending.ExpectedType} for item 0x{pending.Code:X4} but received {type} for item 0x{code:X4}."));
+        try
+        {
+            ControlClientLog.ForeignReply(_logger, pending.ExpectedType, pending.Code, type, code);
+
+            // The foreign frame is readable from Unsolicited before the caller learns its request failed.
+            Publish(type, code, payload, PublishReason.Foreign);
+        }
+        finally
+        {
+            pending.Fail(new NetSdrProtocolException(
+                $"Expected {pending.ExpectedType} for item 0x{pending.Code:X4} but received {type} for item 0x{code:X4}."));
+        }
     }
 
     /// <summary>Reads the reply straight from the pipe buffer, copying only when the payload spans several segments.</summary>
@@ -735,8 +820,9 @@ public sealed class NetSdrControlClient : IAsyncDisposable
         }
     }
 
-    private void Publish(ReplyType type, ushort code, ReadOnlySequence<byte> payload)
+    private void Publish(ReplyType type, ushort code, ReadOnlySequence<byte> payload, PublishReason reason)
     {
+        ControlClientLog.MessagePublished(_logger, type, code, (int)payload.Length, reason);
         ReadOnlyMemory<byte> copy = payload.IsEmpty ? ReadOnlyMemory<byte>.Empty : payload.ToArray();
         _unsolicited.Writer.TryWrite(new ControlItemMessage(type, code, copy));
     }
@@ -745,6 +831,7 @@ public sealed class NetSdrControlClient : IAsyncDisposable
     private void Fault(Exception exception)
     {
         PendingRequest? pending;
+        IPEndPoint? remote;
         lock (_sync)
         {
             if (_state != State.Connected)
@@ -756,16 +843,25 @@ public sealed class NetSdrControlClient : IAsyncDisposable
             _fault = exception;
             pending = _pending;
             _pending = null;
+            remote = _remoteEndPoint;
         }
 
-        // The terminal state is complete before the caller learns its request failed.
+        // Logged first, so whoever sees Completion fail finds the event already written.
         try
         {
-            Finish(exception);
+            ControlClientLog.Faulted(_logger, _supervised ? LogLevel.Debug : LogLevel.Error, remote, exception);
         }
         finally
         {
-            pending?.Fail(exception);
+            // The terminal state is complete before the caller learns its request failed.
+            try
+            {
+                Finish(exception);
+            }
+            finally
+            {
+                pending?.Fail(exception);
+            }
         }
     }
 

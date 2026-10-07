@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace NetSdr.Control;
 
 /// <summary>Settings of a <see cref="NetSdrControlClient"/>.</summary>
@@ -34,4 +37,20 @@ public sealed class NetSdrControlClientOptions
     /// (and the remembered request stays remembered); that is a limit of the protocol, not of this setting.
     /// </remarks>
     public bool FaultOnTimeout { get; set; } = true;
+
+    /// <summary>
+    /// Creates the client's logger, category <c>NetSdr.Control.NetSdrControlClient</c>. Defaults to
+    /// <see cref="NullLoggerFactory.Instance"/>, which logs nothing; <see langword="null"/> is rejected by the client's constructor.
+    /// </summary>
+    public ILoggerFactory LoggerFactory { get; set; } = NullLoggerFactory.Instance;
+
+    /// <summary>The clock of <see cref="ResponseTimeout"/> and of the durations in the logs. Set only by tests.</summary>
+    internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+    /// <summary>
+    /// Whether the client belongs to a <c>ResilientControlClient</c>, which reports the fate of the connection itself:
+    /// connect, close, failure and timeout events are then logged at Debug instead of Information, Error and Warning.
+    /// Set only by <c>ResilientControlClient</c>.
+    /// </summary>
+    internal bool Supervised { get; set; }
 }
