@@ -48,8 +48,39 @@ public sealed class ResilientControlClientOptions
     /// <summary>
     /// How many connection attempts one lost connection gets before the client gives up for good. Must be at least 1;
     /// <see cref="int.MaxValue"/> means never giving up. The attempts start about 1, 2, 4, 8, 16, 30, 30... seconds apart.
+    /// The limit holds for the whole loss, across every reboot of the device: a reboot gives no extra attempts.
     /// </summary>
     public int ReconnectAttempts { get; set; } = int.MaxValue;
+
+    /// <summary>
+    /// Reboots the device when reconnecting does not help, as <see cref="RecoveryPolicy"/> decides, and on
+    /// <c>ResilientControlClient.RebootAsync</c>. Without it the recovery policy is never called and the client behaves
+    /// exactly as without reboot support. <see langword="null"/> by default.
+    /// </summary>
+    public IDeviceRebooter? Rebooter { get; set; }
+
+    /// <summary>
+    /// Decides after every failed reconnection attempt whether to continue, reboot the device or give up. Called only
+    /// while <see cref="Rebooter"/> is set: without a rebooter a reboot cannot be carried out, so a policy alone is
+    /// allowed but never called. <see langword="null"/> with a <see cref="Rebooter"/> means
+    /// <c>new EscalatingRecoveryPolicy()</c>: a soft reboot after 3 failed attempts, a hard one after 3 more.
+    /// </summary>
+    public IRecoveryPolicy? RecoveryPolicy { get; set; }
+
+    /// <summary>
+    /// The limit of one call of <see cref="IDeviceRebooter.RebootAsync"/>; after it the reboot counts as failed with
+    /// <see cref="TimeoutException"/> and the attempts go on. Must be positive and at most <see cref="int.MaxValue"/>
+    /// milliseconds; 10 seconds by default.
+    /// </summary>
+    public TimeSpan RebootTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How many attempts <c>ConnectAsync</c> makes before it fails, about 1, 2, 4 ... 30 seconds apart. Must be at least 1;
+    /// <see langword="null"/> means 1 without a <see cref="Rebooter"/> and 8 with one (three attempts, a soft reboot,
+    /// three more, a hard reboot, two more). The automatic 8 does not follow the numbers of
+    /// <see cref="EscalatingRecoveryPolicy"/>: whoever changes them sets this explicitly.
+    /// </summary>
+    public int? ConnectAttempts { get; set; }
 
     /// <summary>
     /// Capacity of the <see cref="ResilientControlClient.Unsolicited"/> channel. When it is full the oldest message

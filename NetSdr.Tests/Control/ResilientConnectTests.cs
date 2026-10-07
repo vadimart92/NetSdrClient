@@ -20,6 +20,8 @@ public class ResilientConnectTests
         ["ConnectTimeout 0"] = o => o.ConnectTimeout = TimeSpan.Zero,
         ["ReconnectAttempts 0"] = o => o.ReconnectAttempts = 0,
         ["UnsolicitedCapacity 0"] = o => o.UnsolicitedCapacity = 0,
+        ["RebootTimeout 0"] = o => o.RebootTimeout = TimeSpan.Zero,
+        ["RebootTimeout Infinite"] = o => o.RebootTimeout = Timeout.InfiniteTimeSpan,
     };
 
     public static TheoryData<string> InvalidNames
@@ -50,6 +52,7 @@ public class ResilientConnectTests
             (int)o.CommandTimeout.TotalSeconds, (int)o.HeartbeatInterval.TotalSeconds, (int)o.ConnectTimeout.TotalSeconds));
         Assert.Equal((int.MaxValue, 256, true), (o.ReconnectAttempts, o.UnsolicitedCapacity, o.UseJitter));
         Assert.Same(NullLoggerFactory.Instance, o.LoggerFactory);
+        Assert.Null(o.Rebooter); Assert.Null(o.RecoveryPolicy); Assert.Null(o.ConnectAttempts); Assert.Equal(10, (int)o.RebootTimeout.TotalSeconds);
     }
 
     [Fact]

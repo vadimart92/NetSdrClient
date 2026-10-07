@@ -33,6 +33,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private readonly Func<NetSdrControlClient, CancellationToken, Task> _connect;
     private readonly string _target;
     private readonly Action<Task<ControlItemMessage>, object?> _settle;
+    private readonly IDeviceRebooter? _rebooter;
+    private readonly IRecoveryPolicy? _policy;       // null exactly when _rebooter is: without a rebooter it is never called
+    private readonly int _connectAttempts;
 
     /// <summary>The scope of the running <see cref="ResilientControlClientOptions.ConnectionRestored"/> callback, seen by everything it runs (spec 7.5).</summary>
     private readonly AsyncLocal<RestoreScope?> _restoreScope = new();
@@ -62,6 +65,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         _time = options.TimeProvider;
         _logger = options.LoggerFactory.CreateLogger(typeof(ResilientControlClient).FullName!);
         _settle = (_, state) => Settle((Exchange)state!);
+        _rebooter = options.Rebooter;
+        _policy = _rebooter is null ? null : options.RecoveryPolicy ?? new EscalatingRecoveryPolicy();
+        _connectAttempts = options.ConnectAttempts ?? (_rebooter is null ? 1 : 8);
         _innerOptions = new NetSdrControlClientOptions
         {
             ResponseTimeout = options.ResponseTimeout,          // finite: tells a busy device from a dead connection
@@ -305,6 +311,12 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             throw new ArgumentOutOfRangeException(nameof(options), options.UnsolicitedCapacity, "UnsolicitedCapacity must be at least 1.");
         }
 
+        RequireFinite(options.RebootTimeout, nameof(options.RebootTimeout), nameof(options));
+        if (options.ConnectAttempts is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.ConnectAttempts, "ConnectAttempts must be at least 1.");
+        }
+
         return new ResilientControlClientOptions
         {
             ResponseTimeout = options.ResponseTimeout,
@@ -318,6 +330,10 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             LoggerFactory = options.LoggerFactory,
             TimeProvider = options.TimeProvider,
             UseJitter = options.UseJitter,
+            Rebooter = options.Rebooter,
+            RecoveryPolicy = options.RecoveryPolicy,
+            RebootTimeout = options.RebootTimeout,
+            ConnectAttempts = options.ConnectAttempts,
         };
     }
 
