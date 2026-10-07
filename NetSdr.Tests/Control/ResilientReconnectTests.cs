@@ -174,18 +174,21 @@ public class ResilientReconnectTests
     [Fact]
     public async Task Backoff_Schedule_And_AntiFlap()
     {
-        var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var time = new CountingTimeProvider(fake);
         var connector = new PipeConnector(time) { Before = (n, _) => n == 1 ? Task.CompletedTask : Resilient.Refused() };
         var (client, device) = await connector.StartAsync(Resilient.Seam(logs, time));
         await using (client)
         {
-            time.Advance(TimeSpan.FromSeconds(1));               // the first attempt after this loss may start at once
+            fake.Advance(TimeSpan.FromSeconds(1));               // the first attempt after this loss may start at once
             device.CloseRemote();
-            // The loss and the refused attempt 2 run in real time on pool threads; fake time steps only once Polly has logged
-            // 1104 for it and is about to create its 1 s delay. The later attempts fire inline inside Advance and are exact.
-            await Eventually.ThatAsync(() => logs.Events(1104).Count == 1);
-            await time.AdvanceUntilAsync(() => connector.Attempts >= 6, TimeSpan.FromMilliseconds(100));
-            // Starts at 0, 1, 3, 7, 15 s: consecutive gaps, each late by at most a few 100 ms steps of fake time.
+            // The loss and the refused attempt 2 run in real time on pool threads. Fake time steps only once Polly has
+            // created the 1 s delay after attempt 2 (the only 1 s timer: the floor has passed, ConnectTimeout is 5 s), so
+            // attempt 3 is due exactly 1 s after attempt 2. The later attempts fire inline inside Advance and are exact.
+            await Eventually.ThatAsync(() => time.TimerDueTimes.Contains(TimeSpan.FromSeconds(1)));
+            await fake.AdvanceUntilAsync(() => connector.Attempts >= 6, TimeSpan.FromMilliseconds(100));
+            // Starts at 0, 1, 3, 7, 15 s: consecutive gaps, exact as every delay exists before time moves; the slack
+            // only allows for a continuation that would leave Advance's thread and start a few 100 ms steps late.
             var starts = connector.AttemptTimes.Skip(1).Take(5).ToArray();
             double[] gaps = [1, 2, 4, 8];
             for (int i = 1; i < 5; i++) Assert.InRange((starts[i] - starts[i - 1]).TotalSeconds, gaps[i - 1], gaps[i - 1] + 0.3);

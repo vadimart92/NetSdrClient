@@ -25,15 +25,20 @@ internal static class FakeTime
 }
 
 /// <summary>
-/// Forwards everything to <c>inner</c> and records the name of the thread behind every
-/// <see cref="GetTimestamp"/> call, so a test can count how often, and where, a component reads the clock.
+/// Forwards everything to <c>inner</c> and records the name of the thread behind every <see cref="GetTimestamp"/>
+/// call and the due time of every timer, so a test can count how often, and where, a component reads the clock, and
+/// wait until a timer exists before it moves fake time.
 /// </summary>
 internal sealed class CountingTimeProvider(TimeProvider inner) : TimeProvider
 {
     private readonly ConcurrentQueue<string?> _timestampReaders = new();
+    private readonly ConcurrentQueue<TimeSpan> _timerDueTimes = new();
 
     /// <summary>The thread name of each <see cref="GetTimestamp"/> call, in call order.</summary>
     public IReadOnlyCollection<string?> TimestampReaders => _timestampReaders;
+
+    /// <summary>The due time of each timer, in creation order; recorded once <c>inner</c> has created it.</summary>
+    public IReadOnlyCollection<TimeSpan> TimerDueTimes => _timerDueTimes;
 
     public override long TimestampFrequency => inner.TimestampFrequency;
 
@@ -47,6 +52,11 @@ internal sealed class CountingTimeProvider(TimeProvider inner) : TimeProvider
 
     public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
 
-    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
-        inner.CreateTimer(callback, state, dueTime, period);
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        ITimer timer = inner.CreateTimer(callback, state, dueTime, period);
+        // After the creation: whoever sees the entry can move fake time, and the timer is already counting.
+        _timerDueTimes.Enqueue(dueTime);
+        return timer;
+    }
 }

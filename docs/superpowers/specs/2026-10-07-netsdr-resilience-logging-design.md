@@ -120,6 +120,7 @@ NetSdr.Tests/
                                           Microsoft.Extensions.Diagnostics.Testing 10.10.0
   FakeLoggerFactory.cs                  новий: ILoggerFactory над FakeLogCollector
   FakeTime.cs                           новий: AdvanceUntilAsync і TimeProvider, що рахує GetTimestamp
+                                        і записує строки створених таймерів
   EndToEndTests.cs                      змінено: EndToEnd_StreamResumesAfterReconnect
   Control/PipeDevice.cs                 змінено: static PipeDevice Attach(NetSdrControlClient client,
                                         PipeOptions? toClient = null) приєднує вже створений клієнт
@@ -1630,7 +1631,9 @@ TDD, як і раніше. Кожне очікування в тестах об�
 - У стійкому клієнті `FakeTimeProvider` (`options.TimeProvider`, `UseJitter = false`) лише для
   тестів backoff, відмови і ритму через шов. Помічник `AdvanceUntilAsync`
   (`NetSdr.Tests/FakeTime.cs`) просуває час кроками, бо таймери в очікуванні
-  `FakeTimeProvider` не видно.
+  `FakeTimeProvider` не видно. Де важить, від якого моменту рахується таймер (розклад
+  backoff), тест загортає `FakeTimeProvider` у `CountingTimeProvider`, що записує строк кожного
+  створеного таймера, і рушає час лише тоді, коли потрібний таймер уже існує.
 - Запізнілі відповіді дає `ControlReply.After`. Сервер обробляє кадри по одному, тож його
   відповіді лишаються в порядку. Обробники з воротами звільняють їх у `finally`.
 - Heartbeat з відповіддю Response потребує
