@@ -686,6 +686,12 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         if (!link.Client.IsConnected)
         {
             link.Wire.Release();
+            if (_state == ClientState.Closed)
+            {
+                // The connection died because the client was closed: the final exception, as in step 4e.
+                throw ClosedException();
+            }
+
             throw new IOException($"The connection to {_target} was lost.", LossCauseOf(link));
         }
 
@@ -737,6 +743,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     private async Task DrainAsync(Exchange exchange)
     {
         Resolution resolution = await exchange.Late.Task.ConfigureAwait(false);
+        LogLateReplyDrained(exchange, resolution, LateOwner.CancelledCaller);
+    }
+
+    /// <summary>
+    /// Event 1108 for an exchange nobody waited for that ended with a late reply or a late NAK; any other resolution
+    /// is nothing to report. The exchange is already resolved and the line free, so a logging provider that throws
+    /// changes nothing.
+    /// </summary>
+    private void LogLateReplyDrained(Exchange exchange, Resolution resolution, LateOwner owner)
+    {
         if (resolution.Outcome is not (Outcome.Reply or Outcome.Nak))
         {
             return;
@@ -746,11 +762,11 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         {
             ResilientClientLog.LateReplyDrained(
                 _logger, resolution.Outcome == Outcome.Nak ? LateOutcome.Nak : LateOutcome.Reply,
-                exchange.Type, exchange.Code, LateOwner.CancelledCaller);
+                exchange.Type, exchange.Code, owner);
         }
         catch (Exception)
         {
-            // A logging provider failed; the exchange is already resolved and the line is free.
+            // A logging provider failed.
         }
     }
 
@@ -781,17 +797,33 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                 throw new NetSdrNakException(exec.Code, exec.Type);
             default:
                 // Lost. Answered is impossible: the inner request had already failed when the exchange became outstanding.
+                if (_state == ClientState.Closed)
+                {
+                    // The connection died because the client was closed: the final exception, as in step 4e.
+                    throw ClosedException();
+                }
+
                 throw new IOException(
                     $"The connection to {_target} was lost before {exec.Type} 0x{exec.Code:X4} was answered.", late.Cause);
         }
     }
 
-    /// <summary>Event 1107; <c>Late</c> is how long after its response timeout the request was answered.</summary>
+    /// <summary>
+    /// Event 1107; <c>Late</c> is how long after its response timeout the request was answered. The exchange is
+    /// already resolved, so a logging provider that throws does not turn an answered command into a failure.
+    /// </summary>
     private void LogLateReplyAdopted(CommandExecution exec, Exchange exchange, LateOutcome outcome)
     {
         TimeSpan late = _time.GetElapsedTime(exchange.SentAt, exchange.ResolvedAt) - _options.ResponseTimeout;
-        ResilientClientLog.LateReplyAdopted(
-            _logger, exec.Type, exec.Item ?? "raw", exec.Code, outcome, late < TimeSpan.Zero ? TimeSpan.Zero : late);
+        try
+        {
+            ResilientClientLog.LateReplyAdopted(
+                _logger, exec.Type, exec.Item ?? "raw", exec.Code, outcome, late < TimeSpan.Zero ? TimeSpan.Zero : late);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed.
+        }
     }
 
     /// <summary>
@@ -923,8 +955,26 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             }
 
             exchange.State = ExchangeState.Unanswered;
-            exchange.Deadline = _time.CreateTimer(
-                Expire, exchange, due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+        }
+
+        // Created outside the lock: a TimeProvider may run an already-due timer inline, and Expire logs and closes
+        // the connection, which nothing does under _sync (spec 6.10 invariant 12).
+        ITimer deadline = _time.CreateTimer(
+            Expire, exchange, due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+        bool resolved;
+        lock (_sync)
+        {
+            resolved = exchange.State == ExchangeState.Resolved;
+            if (!resolved)
+            {
+                exchange.Deadline = deadline;
+            }
+        }
+
+        if (resolved)
+        {
+            // The late reply, the loss, or the timer itself resolved the exchange meanwhile: Resolve found no timer to free.
+            deadline.Dispose();
         }
     }
 
@@ -942,11 +992,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             exchange = link.Current;
         }
 
-        if (exchange is not null
-            && Resolve(exchange, isNak ? new Resolution(Outcome.Nak) : new Resolution(Outcome.Reply, message)))
+        if (exchange is null)
         {
-            link.Heard(_time);
+            return;
         }
+
+        // Heard before the resolution: the heartbeat that wakes on the resolved exchange reads LastHeard next, and
+        // must not send a probe right after the device was heard. A duplicate resolution leaves it refreshed, which
+        // is as true: a frame did arrive.
+        link.Heard(_time);
+        Resolve(exchange, isNak ? new Resolution(Outcome.Nak) : new Resolution(Outcome.Reply, message));
     }
 
     /// <summary>

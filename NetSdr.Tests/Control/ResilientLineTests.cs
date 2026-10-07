@@ -76,11 +76,11 @@ public class ResilientLineTests
         {
             var nak = await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<SerialNumber>().WaitAsync(Limits.Test));
             Assert.Equal(SerialNumber.Code, nak.Code);
-            Assert.Equal(529, (await client.GetAsync<InterfaceVersion>()).Version);
+            Assert.Equal(529, (await client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test)).Version);
             var options = new IdentificationOptions { IncludeStandardProbes = false };
             options.Probes.Add(Probes.Item<SerialNumber>());
             options.Probes.Add(Probes.Item<InterfaceVersion>());
-            var identity = await DeviceIdentity.ReadAsync(client, options);
+            var identity = await DeviceIdentity.ReadAsync(client, options).WaitAsync(Limits.Test);
             Assert.Equal(SerialNumber.Code, Assert.Single(identity.Unsupported));
             Assert.Equal(2, server.Received.Count(r => r.Code == SerialNumber.Code));   // one per call, none resent
         }
@@ -101,7 +101,7 @@ public class ResilientLineTests
             await Task.Delay(300);
             Assert.False(next.IsCompleted);
             await device.SendAsync(Resilient.ProductReply);
-            Assert.Equal(Hex.Parse("04 20 03 00"), await next);
+            Assert.Equal(Hex.Parse("04 20 03 00"), await next.WaitAsync(Limits.Test));
             await device.SendAsync(Resilient.VersionReply);
             Assert.Equal(0x03524453u, (await a.WaitAsync(Limits.Test)).Value);
             Assert.Equal(529, (await b.WaitAsync(Limits.Test)).Version);
@@ -124,7 +124,7 @@ public class ResilientLineTests
             await Task.Delay(300);
             Assert.False(next.IsCompleted);
             await device.SendAsync(Resilient.ProductReply);                    // A's real reply frees the line
-            Assert.Equal(Hex.Parse("04 20 03 00"), await next);
+            Assert.Equal(Hex.Parse("04 20 03 00"), await next.WaitAsync(Limits.Test));
             await device.SendAsync(Resilient.VersionReply);
             Assert.Equal(529, (await b.WaitAsync(Limits.Test)).Version);
             var codes = new List<ushort>();

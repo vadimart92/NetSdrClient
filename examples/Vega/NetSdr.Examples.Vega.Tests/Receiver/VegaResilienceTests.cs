@@ -35,14 +35,14 @@ public class VegaResilienceTests
         int asked = 0;
         emulator.Server.OnRequest(ProductId.Code, _ => Interlocked.Increment(ref asked) == 1 ? product.After(TimeSpan.FromMilliseconds(250)) : product);
         emulator.Server.OnRequest(SerialNumber.Code, _ => ControlReply.Nak.After(TimeSpan.FromMilliseconds(250)));
-        await emulator.StartAsync();
+        await emulator.StartAsync().WaitAsync(Limits.Test);
         var client = await ConnectAsync(emulator, Fast());
         VegaReceiverBase device = await Catalog().AttachAsync(client).WaitAsync(Limits.Test);
         Assert.IsType<VegaV2Receiver>(device);
         Assert.Contains(SerialNumber.Code, device.Identity.Unsupported);
         Assert.Equal(1, emulator.Server.Received.Count(r => r.Code == ProductId.Code));
         Assert.Equal(1, emulator.Server.Received.Count(r => r.Code == SerialNumber.Code));
-        await device.DisposeAsync();                                           // the device owns the client
+        await device.DisposeAsync().AsTask().WaitAsync(Limits.Test);           // the device owns the client
         Assert.True(client.Completion.IsCompletedSuccessfully);
     }
 

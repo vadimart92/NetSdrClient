@@ -333,7 +333,14 @@ public sealed class NetSdrDataReceiver : IDisposable
             {
                 if (_state != State.Disposed)
                 {
-                    DataReceiverLog.ReceiveFailed(_logger, _localEndPoint, e);
+                    try
+                    {
+                        DataReceiverLog.ReceiveFailed(_logger, _localEndPoint, e);
+                    }
+                    catch (Exception)
+                    {
+                        // A logging provider failed; an unhandled exception here would end the process.
+                    }
                 }
 
                 return;
@@ -375,13 +382,21 @@ public sealed class NetSdrDataReceiver : IDisposable
         long lost = totals.Lost - _intervalBase.Lost;
         long rejected = totals.Rejected - _intervalBase.Rejected;
         long handlerErrors = totals.HandlerErrors - _intervalBase.HandlerErrors;
-        if (lost > 0 || rejected > 0 || handlerErrors > 0)
+        try
         {
-            DataReceiverLog.IntervalSummaryWithLoss(_logger, received, bytes, elapsed, lost, rejected, handlerErrors);
+            if (lost > 0 || rejected > 0 || handlerErrors > 0)
+            {
+                DataReceiverLog.IntervalSummaryWithLoss(_logger, received, bytes, elapsed, lost, rejected, handlerErrors);
+            }
+            else
+            {
+                DataReceiverLog.IntervalSummary(_logger, received, bytes, elapsed);
+            }
         }
-        else
+        catch (Exception)
         {
-            DataReceiverLog.IntervalSummary(_logger, received, bytes, elapsed);
+            // A logging provider failed on the receive thread, where an unhandled exception would end the process;
+            // the interval still turns over, and the next summary reports from here.
         }
 
         _intervalBase = totals;
@@ -443,7 +458,14 @@ public sealed class NetSdrDataReceiver : IDisposable
 
         if (gapBefore > 0)
         {
-            DataReceiverLog.SequenceGap(_logger, gapBefore, sequence);
+            try
+            {
+                DataReceiverLog.SequenceGap(_logger, gapBefore, sequence);
+            }
+            catch (Exception)
+            {
+                // A logging provider failed; the gap is counted, and the packet is still delivered.
+            }
         }
 
         var info = new DataPacketInfo(sequence, gapBefore, FormatOf(length));
@@ -457,8 +479,15 @@ public sealed class NetSdrDataReceiver : IDisposable
             if (!_handlerErrorLogged)
             {
                 // Later errors are only counted until the next summary, or for the receiver's life without summaries.
-                DataReceiverLog.HandlerFailed(_logger, sequence, e);
                 _handlerErrorLogged = true;
+                try
+                {
+                    DataReceiverLog.HandlerFailed(_logger, sequence, e);
+                }
+                catch (Exception)
+                {
+                    // A logging provider failed; the error is counted, and the receive thread goes on.
+                }
             }
         }
     }

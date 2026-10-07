@@ -33,7 +33,7 @@ public class ResilientHeartbeatTests
         {
             for (int i = 0; i < 20; i++)
             {
-                await client.GetAsync<InterfaceVersion>();
+                await client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test);
                 await Task.Delay(50);
             }
 
@@ -108,7 +108,7 @@ public class ResilientHeartbeatTests
             Assert.Equal(-10, (await client.SetAsync(new RfGain(0, -10)).WaitAsync(Limits.Test)).GainDb);
             server.OnRequest(StatusCodes.Code, Resilient.FirstTimes(2, ControlReply.Silent, ControlReply.Nak));
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
-            await client.DisposeAsync();
+            await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
         }
 
         void Expect(FakeLoggerFactory from, int id, LogLevel level, string category)
@@ -124,6 +124,8 @@ public class ResilientHeartbeatTests
         Assert.Contains(logs.Events(1003), r => r.Value("Item") == "RfGain");
         Assert.Contains(logs.Events(1004), r => r.Value("Item") == "RfGain");
         Assert.Empty(logs.Events(1010).Concat(logs.Events(1011)).Concat(logs.Events(1106)));
+        Assert.Single(logs.Events(1103));                                             // the unresponsive line only: the disposal is not a loss
+        Assert.Single(logs.Events(1112));
 
         // The device closes the connection: the inner fault is Debug; Trace shows the frames.
         var traced = new FakeLoggerFactory(LogLevel.Trace);
@@ -131,13 +133,14 @@ public class ResilientHeartbeatTests
         await using (server2)
         await using (client2)
         {
-            await server2.DisconnectClientAsync();
+            await server2.DisconnectClientAsync().WaitAsync(Limits.Test);
             await Eventually.ThatAsync(() => traced.Events(1105).Count == 1);
         }
 
         Expect(traced, 1002, LogLevel.Debug, Inner);
         Assert.NotEmpty(traced.Events(1010));
         Assert.NotEmpty(traced.Events(1011));
+        Assert.Single(traced.Events(1103));                                           // the device's drop only, not the disposal
 
         // Giving up: Error 1106 exactly once.
         var gaveUp = new FakeLoggerFactory();
@@ -146,7 +149,7 @@ public class ResilientHeartbeatTests
         var (lost, device) = await new PipeConnector { Before = (n, _) => n == 1 ? Task.CompletedTask : Resilient.Refused() }.StartAsync(options);
         device.CloseRemote();
         await Assert.ThrowsAsync<IOException>(() => lost.Completion.WaitAsync(Limits.Test));
-        await lost.DisposeAsync();
+        await lost.DisposeAsync().AsTask().WaitAsync(Limits.Test);
         Expect(gaveUp, 1106, LogLevel.Error, Outer);
         Assert.Single(gaveUp.Events(1106));
     }

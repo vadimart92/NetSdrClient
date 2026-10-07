@@ -114,6 +114,8 @@ public class ResilientConnectTests
         }
 
         Assert.Equal(LogLevel.Information, Assert.Single(logs.Events(1112)).Level);
+        Assert.Empty(logs.Events(1103));                                              // the disposal is not a loss
+        Assert.Empty(logs.Events(1104));                                              // and nothing reconnects after it
     }
 
     [Fact]
