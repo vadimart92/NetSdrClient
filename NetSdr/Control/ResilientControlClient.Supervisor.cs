@@ -1,4 +1,6 @@
 using System.Runtime.ExceptionServices;
+using NetSdr.Framing;
+using NetSdr.Items;
 using Polly;
 
 namespace NetSdr.Control;
@@ -172,18 +174,96 @@ public sealed partial class ResilientControlClient
     }
 
     /// <summary>
-    /// Returns when the inner client of <paramref name="link"/> has ended, for whatever reason, without throwing: the
-    /// supervisor reads the cause from the client itself. The heartbeat (spec 7.3) joins this wait.
+    /// Spec 7.3: probes the published connection with a <c>Get</c> of the status codes whenever nothing has been
+    /// heard from the device for <see cref="ResilientControlClientOptions.HeartbeatInterval"/>, and returns when the
+    /// inner client of <paramref name="link"/> has ended, for whatever reason, without throwing: the supervisor reads
+    /// the cause from the client itself. A dead idle connection is found by the heartbeat's late-reply deadline
+    /// (<see cref="Expire"/>), which closes the inner client.
     /// </summary>
     private async Task WatchAsync(Link link)
     {
+        Task completion = link.Client.Completion;
         try
         {
-            await link.Client.Completion.ConfigureAwait(false);
+            while (!completion.IsCompleted && !_lifetime.IsCancellationRequested)
+            {
+                await HeartbeatTurnAsync(link, completion).ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            // A logging provider failed, or the disposal cancelled a wait: the heartbeat stops, the end of the
+            // connection is still awaited below, and the exchange on the line is resolved by Settle, the observer,
+            // Expire or the end of the inner client, as any other.
+        }
+
+        try
+        {
+            await completion.ConfigureAwait(false);
         }
         catch (Exception)
         {
             // The fault is the loss; SuperviseAsync takes it from Completion.
+        }
+    }
+
+    /// <summary>
+    /// One turn of the heartbeat loop: waits until the heartbeat is due, skips it while a request of somebody else is
+    /// on the line, which is the probe then, and otherwise sends one and waits for its outcome. Every wait ends when
+    /// <paramref name="completion"/> completes or the client is disposed.
+    /// </summary>
+    private async Task HeartbeatTurnAsync(Link link, Task completion)
+    {
+        TimeSpan interval = _options.HeartbeatInterval;
+        if (interval == Timeout.InfiniteTimeSpan)
+        {
+            // No heartbeat: only the end of the connection matters.
+            await Task.WhenAny(completion).ConfigureAwait(false);
+            return;
+        }
+
+        // LastHeard is written by every reply, NAK, foreign reply, late reply and pumped message of the connection.
+        TimeSpan untilDue = interval - _time.GetElapsedTime(Volatile.Read(ref link.LastHeard));
+        if (untilDue > TimeSpan.Zero)
+        {
+            await Task.WhenAny(completion, Task.Delay(untilDue, _time, _lifetime.Token)).ConfigureAwait(false);
+            return;
+        }
+
+        // A non-blocking try never overtakes a queued command, and fails while a request is in flight or unanswered:
+        // checking and taking the line is one atomic step.
+        if (!link.Wire.Wait(0))
+        {
+            await Task.WhenAny(completion, Task.Delay(interval, _time, _lifetime.Token)).ConfigureAwait(false);
+            return;
+        }
+
+        // From here Wire belongs to the exchange, until it is resolved.
+        Exchange exchange = StartExchange(link, RequestType.Get, StatusCodes.Code, ReadOnlyMemory<byte>.Empty, nameof(StatusCodes));
+        try
+        {
+            // Bounded by the inner client's ResponseTimeout, on the same clock (spec 6.7).
+            await exchange.Request.ConfigureAwait(false);
+        }
+        catch (TimeoutException) when (link.Client.IsConnected)
+        {
+            // Unanswered on a live connection: the late reply resolves the exchange, or Expire closes the connection.
+            ResilientClientLog.HeartbeatMissed(_logger, _options.ResponseTimeout, _options.LateReplyTimeout);
+        }
+        catch (Exception)
+        {
+            // A NAK proves the device alive. A foreign reply leaves the exchange unanswered with the same deadline.
+            // Anything else is a dead connection, which Completion reports.
+        }
+
+        // The next heartbeat is not sent while this one is unanswered: the line is held until the exchange is
+        // resolved, and its resolution is what frees the line and updates LastHeard.
+        Resolution resolution = await exchange.Late.Task.ConfigureAwait(false);
+        if (resolution.Outcome is Outcome.Reply or Outcome.Nak)
+        {
+            ResilientClientLog.LateReplyDrained(
+                _logger, resolution.Outcome == Outcome.Nak ? LateOutcome.Nak : LateOutcome.Reply,
+                exchange.Type, exchange.Code, LateOwner.Heartbeat);
         }
     }
 
