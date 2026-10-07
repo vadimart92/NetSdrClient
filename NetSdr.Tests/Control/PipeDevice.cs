@@ -25,11 +25,16 @@ internal sealed class PipeDevice : IAsyncDisposable
 
     /// <param name="options">Client options.</param>
     /// <param name="toClient">Options of the pipe that carries device-to-client bytes.</param>
-    public static PipeDevice Create(NetSdrControlClientOptions? options = null, PipeOptions? toClient = null)
+    public static PipeDevice Create(NetSdrControlClientOptions? options = null, PipeOptions? toClient = null) =>
+        Attach(new NetSdrControlClient(options), toClient);
+
+    /// <summary>Attaches a client that is already built, for example one with hooks set, to a fresh pair of pipes.</summary>
+    /// <param name="client">A client that has not been attached yet.</param>
+    /// <param name="toClient">Options of the pipe that carries device-to-client bytes.</param>
+    public static PipeDevice Attach(NetSdrControlClient client, PipeOptions? toClient = null)
     {
         var toClientPipe = new Pipe(toClient ?? new PipeOptions(useSynchronizationContext: false));
         var fromClientPipe = new Pipe(new PipeOptions(useSynchronizationContext: false));
-        var client = new NetSdrControlClient(options);
         client.Attach(toClientPipe.Reader, fromClientPipe.Writer.AsStream());
         return new PipeDevice(client, toClientPipe, fromClientPipe);
     }

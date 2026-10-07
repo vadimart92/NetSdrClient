@@ -20,7 +20,9 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 {
     private const int CodeSize = 2;
     private const int FramePrefixSize = FrameHeader.Size + CodeSize;
-    private const int MaxPayloadSize = FrameHeader.MaxEncodableLength - FramePrefixSize;
+
+    /// <summary>The largest payload a control frame carries after its header and item code.</summary>
+    internal const int MaxPayloadSize = FrameHeader.MaxEncodableLength - FramePrefixSize;
 
     private enum State
     {
@@ -102,6 +104,15 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
     /// <summary>Whether the client is attached to a connection and has not faulted or been disposed.</summary>
     public bool IsConnected => _state == State.Connected;
+
+    /// <summary>
+    /// Called on the read loop, outside the client's lock and before the message goes to <see cref="Unsolicited"/>, when
+    /// the device answers a request nobody waits for any more: with <see langword="false"/> for its late reply, and with
+    /// <see langword="true"/> for a <c>Response</c> NAK that arrives with no request in flight while such a reply is still
+    /// expected. The message is the one <see cref="Unsolicited"/> receives; a NAK is <c>(Response, 0, empty)</c>.
+    /// Set before the client connects. It must neither block nor throw: an exception faults the client.
+    /// </summary>
+    internal Action<ControlItemMessage, bool>? LateReplyObserver { get; set; }
 
     /// <summary>
     /// The local end of the TCP connection, set by <c>ConnectAsync</c>; <see langword="null"/> before the client has
@@ -553,8 +564,10 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         }
     }
 
-    /// <param name="paramName">The public parameter the payload comes from, named in the error when it is too large.</param>
-    private static RentedFrame RentFrame(RequestType type, ushort code, int payloadSize, string? paramName)
+    /// <summary>Rejects a payload that does not fit in one control frame.</summary>
+    /// <param name="paramName">The public parameter the payload comes from, named in the error; <see langword="null"/> when there is none.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="payloadSize"/> is negative or above <see cref="MaxPayloadSize"/>.</exception>
+    internal static void ThrowIfPayloadTooLarge(int payloadSize, string? paramName)
     {
         if ((uint)payloadSize > MaxPayloadSize)
         {
@@ -563,7 +576,12 @@ public sealed class NetSdrControlClient : INetSdrControlClient
                 payloadSize,
                 $"A payload of {payloadSize} bytes does not fit in a control frame; the limit is {MaxPayloadSize} bytes.");
         }
+    }
 
+    /// <param name="paramName">The public parameter the payload comes from, named in the error when it is too large.</param>
+    private static RentedFrame RentFrame(RequestType type, ushort code, int payloadSize, string? paramName)
+    {
+        ThrowIfPayloadTooLarge(payloadSize, paramName);
         int length = FramePrefixSize + payloadSize;
         byte[] buffer = ArrayPool<byte>.Shared.Rent(length);
         FrameHeader.Write(buffer, length, (byte)type);
@@ -691,11 +709,12 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
     /// <summary>
     /// A header-only frame is a NAK. Only a <c>Response</c> can answer the request in flight; without one it is just
-    /// another message, and it ends the wait for the reply of an abandoned request.
+    /// another message, and it ends the wait for the reply of an abandoned request, which <see cref="LateReplyObserver"/> sees.
     /// </summary>
     private void HandleNak(ReplyType type)
     {
         PendingRequest? rejected = null;
+        bool late = false;
         if (type == ReplyType.Response)
         {
             lock (_sync)
@@ -704,6 +723,8 @@ public sealed class NetSdrControlClient : INetSdrControlClient
                 _pending = null;
                 if (rejected is null)
                 {
+                    // Read before it is cleared: the NAK may be the device's answer to the abandoned request.
+                    late = _abandoned is not null;
                     _abandoned = null;
                 }
             }
@@ -711,7 +732,13 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
         if (rejected is null)
         {
-            Publish(type, 0, ReadOnlySequence<byte>.Empty, PublishReason.Nak);
+            var message = new ControlItemMessage(type, 0, ReadOnlyMemory<byte>.Empty);
+            if (late)
+            {
+                LateReplyObserver?.Invoke(message, true);
+            }
+
+            Publish(message, PublishReason.Nak);
             return;
         }
 
@@ -764,7 +791,13 @@ public sealed class NetSdrControlClient : INetSdrControlClient
 
         if (pending is null)
         {
-            Publish(type, code, payload, late ? PublishReason.LateReply : PublishReason.NoRequest);
+            ControlItemMessage message = ToMessage(type, code, payload);
+            if (late)
+            {
+                LateReplyObserver?.Invoke(message, false);
+            }
+
+            Publish(message, late ? PublishReason.LateReply : PublishReason.NoRequest);
             return;
         }
 
@@ -820,12 +853,18 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         }
     }
 
-    private void Publish(ReplyType type, ushort code, ReadOnlySequence<byte> payload, PublishReason reason)
+    private void Publish(ReplyType type, ushort code, ReadOnlySequence<byte> payload, PublishReason reason) =>
+        Publish(ToMessage(type, code, payload), reason);
+
+    private void Publish(ControlItemMessage message, PublishReason reason)
     {
-        ControlClientLog.MessagePublished(_logger, type, code, (int)payload.Length, reason);
-        ReadOnlyMemory<byte> copy = payload.IsEmpty ? ReadOnlyMemory<byte>.Empty : payload.ToArray();
-        _unsolicited.Writer.TryWrite(new ControlItemMessage(type, code, copy));
+        ControlClientLog.MessagePublished(_logger, message.Type, message.Code, message.Payload.Length, reason);
+        _unsolicited.Writer.TryWrite(message);
     }
+
+    /// <summary>Copies the payload out of the pipe buffer, which is reused once the frame is consumed.</summary>
+    private static ControlItemMessage ToMessage(ReplyType type, ushort code, ReadOnlySequence<byte> payload) =>
+        new(type, code, payload.IsEmpty ? ReadOnlyMemory<byte>.Empty : payload.ToArray());
 
     /// <summary>Moves a connected client to the faulted state. Does nothing if it already faulted or was disposed.</summary>
     private void Fault(Exception exception)
