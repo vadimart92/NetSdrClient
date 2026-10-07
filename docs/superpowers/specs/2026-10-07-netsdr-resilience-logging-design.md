@@ -1256,8 +1256,13 @@ SuperviseAsync(Link link):
     }
   }
   catch (Exception) when (_lifetime.IsCancellationRequested) { }   // DisposeAsync, ніколи не відмова
-  catch (Exception ex) { GiveUp(ex); }                             // pipeline здався або повторний вхід
+  catch (Exception ex) { GiveUp(ex); await CloseLinkAsync(link); } // pipeline здався, повторний вхід, збій heartbeat
 ```
+
+Після збою циклу heartbeat `link` це ще живе опубліковане з'єднання. Клієнт у Closed ним уже
+не скористається, тож наглядач закриває його одразу, а не лишає до `DisposeAsync`. Після
+проваленого перепідключення це старе з'єднання, вже закрите, і повторне закриття нічого не
+робить.
 
 Наглядач ніколи не кидає. Кожне його очікування має токен життя або закінчується при
 закритті внутрішнього клієнта.

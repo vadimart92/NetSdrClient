@@ -92,6 +92,41 @@ public class ResilientHeartbeatTests
         }
     }
 
+    // Any failure of the heartbeat loop other than the disposal makes the client give up (spec 7.1), and the connection
+    // it was watching is still open then: it is closed at once, not left to DisposeAsync.
+    [Fact]
+    public async Task Heartbeat_LoopFails_GivesUp_AndClosesTheConnection()
+    {
+        var logs = new FakeLoggerFactory();
+        var time = new FailingTimersTimeProvider();
+        var options = Resilient.Seam(logs, time);
+        options.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
+        var (client, device) = await new PipeConnector { Serve = d => d.NakEverythingAsync() }.StartAsync(options);
+        await using (client)
+        {
+            time.Armed = true;                                                        // the heartbeat's next wait fails
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.IsType<InvalidOperationException>(failure.InnerException);
+            await device.Client.Completion.WaitAsync(Limits.Test);                    // the watched connection is closed
+            Assert.Single(logs.Events(1106));
+        }
+    }
+
+    /// <summary>The system clock, except that once <see cref="Armed"/> every new timer fails.</summary>
+    private sealed class FailingTimersTimeProvider : TimeProvider
+    {
+        private volatile bool _armed;
+
+        public bool Armed
+        {
+            get => _armed;
+            set => _armed = value;
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            _armed ? throw new InvalidOperationException("The clock failed.") : System.CreateTimer(callback, state, dueTime, period);
+    }
+
     [Fact]
     public async Task ResilientLogging_LevelsEventIdsCategories()
     {

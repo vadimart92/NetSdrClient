@@ -188,8 +188,20 @@ public sealed partial class ResilientControlClient
         }
         catch (Exception ex)
         {
-            // The pipeline ran out of attempts, or an attempt failed for good.
+            // The pipeline ran out of attempts, an attempt failed for good, or watching the published connection failed.
             GiveUp(ex, state?.Attempt ?? 0);
+
+            // After a failure of the heartbeat loop the watched connection is still open, and the Closed client never
+            // uses it again: it is closed now rather than at DisposeAsync. After a failed reconnection it is the lost
+            // connection, already closed, and closing it again does nothing.
+            try
+            {
+                await CloseLinkAsync(link).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The inner client's disposal failed (a logging provider); the supervisor never throws.
+            }
         }
     }
 
