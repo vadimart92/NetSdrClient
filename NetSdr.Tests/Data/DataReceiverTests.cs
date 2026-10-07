@@ -1,4 +1,6 @@
 using System.Net;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using NetSdr.Data;
 using NetSdr.Testing;
 
@@ -257,17 +259,25 @@ public class DataReceiverTests
     }
 
     [Fact]
-    public Task ReceiveLoop_DoesNotAllocatePerPacket() => AssertNoPerPacketAllocationAsync(options: null);
+    public Task ReceiveLoop_DoesNotAllocatePerPacket() =>
+        AssertNoPerPacketAllocationAsync(new DataReceiverOptions(), time: null);
 
-    // Logging changes nothing: every 256 datagrams the thread reads TimeProvider.System, which allocates nothing.
+    // The receive thread's own logging allocates nothing either. Every level is enabled on a logger that itself
+    // allocates nothing, and the measured window writes a sequence gap (1204) and a summary that is due (1202), besides
+    // the clock read of every 256th datagram.
     [Fact]
-    public Task ReceiveLoop_DoesNotAllocatePerPacket_WithLoggingEnabled() =>
-        AssertNoPerPacketAllocationAsync(new DataReceiverOptions { LoggerFactory = new FakeLoggerFactory() });
-
-    private static async Task AssertNoPerPacketAllocationAsync(DataReceiverOptions? options)
+    public async Task ReceiveLoop_DoesNotAllocatePerPacket_WithLoggingEnabled()
     {
-        const int PacketCount = 300;
-        const int WarmUp = 100;
+        var (logs, time) = (new CountingLoggerFactory(), new FakeTimeProvider());
+        await AssertNoPerPacketAllocationAsync(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time }, time);
+        Assert.Equal((2, 2, 0), (logs.Count(1204), logs.Count(1202), logs.Count(1201)));   // one gap and one summary per half
+    }
+
+    /// <param name="time">Advanced by a whole summary interval before each half, so its 256th datagram logs a summary.</param>
+    private static async Task AssertNoPerPacketAllocationAsync(DataReceiverOptions options, FakeTimeProvider? time)
+    {
+        const int PacketCount = 600;
+        const int WarmUp = 300;                                    // the first half; the second half is measured
         var allocated = new long[PacketCount];
         var count = 0;
         using var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) =>
@@ -279,16 +289,49 @@ public class DataReceiverTests
         receiver.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         receiver.Start();
 
-        for (ushort sequence = 0; sequence < PacketCount; sequence++)
+        // One sequence number is skipped in each half (before datagrams 100 and 400), so each half has a gap; the
+        // summaries fall on datagrams 256 and 512.
+        for (int half = 0; half < 2; half++)
         {
-            UdpTestSender.Send(receiver.LocalEndPoint, UdpTestSender.Datagram(sequence, 1028));
+            time?.Advance(TimeSpan.FromSeconds(10));
+            for (int i = half * WarmUp; i < (half + 1) * WarmUp; i++)
+            {
+                var sequence = (ushort)(i + (i >= 100 ? 1 : 0) + (i >= 400 ? 1 : 0));
+                UdpTestSender.Send(receiver.LocalEndPoint, UdpTestSender.Datagram(sequence, 1028));
+            }
+
+            await Eventually.ThatAsync(() => Volatile.Read(ref count) == (half + 1) * WarmUp);
         }
 
-        await Eventually.ThatAsync(() => Volatile.Read(ref count) == PacketCount);
         // The handler itself allocates nothing, so the receive thread must allocate nothing between two calls.
         for (int i = WarmUp; i < PacketCount; i++)
         {
             Assert.Equal(allocated[i - 1], allocated[i]);
+        }
+    }
+
+    /// <summary>Loggers enabled at every level that only count the events they get, allocating nothing per entry.</summary>
+    private sealed class CountingLoggerFactory : ILoggerFactory
+    {
+        private readonly int[] _counts = new int[1400];
+
+        public int Count(int eventId) => Volatile.Read(ref _counts[eventId]);
+
+        public ILogger CreateLogger(string categoryName) => new Logger(this);
+
+        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
+
+        public void Dispose() { }
+
+        private sealed class Logger(CountingLoggerFactory owner) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+                Interlocked.Increment(ref owner._counts[eventId.Id]);
         }
     }
 }
