@@ -175,7 +175,32 @@ public class ResilientHeartbeatTests
             Assert.IsType<InvalidOperationException>(failure.InnerException);
             await device.Client.Completion.WaitAsync(Limits.Test);                    // the watched connection is closed
             Assert.Equal(2, requests.Count);                                          // the verification and the one probe
-            Assert.Single(logs.Events(1106));
+            Assert.Equal("Gave up on pipe: watching the connection failed.", failure.Message);
+            var gaveUp = Assert.Single(logs.Events(1106));
+            Assert.Equal(("heartbeat failed", "0"), (gaveUp.Value("Reason"), gaveUp.Value("Attempts")));
+        }
+    }
+
+    // A loss that was recovered from is over: a later failure of the heartbeat names neither its attempts nor
+    // "attempts exhausted".
+    [Fact]
+    public async Task Heartbeat_LoopFails_AfterAReconnection_GivesUpForTheHeartbeat()
+    {
+        var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var time = new FailingTimersTimeProvider(fake, failUpTo: Interval);
+        var (client, device) = await new PipeConnector(time) { Serve = d => d.NakEverythingAsync() }
+            .StartAsync(FakeHeartbeat(logs, time));
+        await using (client)
+        {
+            device.CloseRemote();
+            await fake.AdvanceUntilAsync(() => logs.Events(1105).Count == 1, TimeSpan.FromMilliseconds(50));
+            Assert.Equal("1", logs.Events(1105)[0].Value("Attempts"));
+            time.Armed = true;
+            await fake.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(10));
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.Equal("Gave up on pipe: watching the connection failed.", failure.Message);
+            var gaveUp = Assert.Single(logs.Events(1106));
+            Assert.Equal(("heartbeat failed", "0"), (gaveUp.Value("Reason"), gaveUp.Value("Attempts")));
         }
     }
 

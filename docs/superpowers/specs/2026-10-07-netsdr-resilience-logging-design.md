@@ -311,8 +311,9 @@ examples/Vega/
 - 1100 `Reason`: `NoReplyWaitingForLateReply` або `ConnectionLost`.
 - 1104 `Phase`: `Connect`, `Verify`, `Restore`. Пишеться на кожну невдалу спробу, після якої
   буде наступна. Остання невдала спроба переходить в 1106.
-- 1106 `Reason`: `attempts exhausted` або `ConnectionRestored called the ResilientControlClient`.
-  Пишеться не більше одного разу, тим викликом `GiveUp`, що переміг.
+- 1106 `Reason`: `attempts exhausted`, `ConnectionRestored called the ResilientControlClient` або
+  `heartbeat failed` (збій самого циклу heartbeat, 7.1; тоді `Attempts` дорівнює 0, бо втрати
+  немає). Пишеться не більше одного разу, тим викликом `GiveUp`, що переміг.
 - 1107 і 1108 `Outcome`: `Reply` або `Nak`. 1108 `Owner`: `Heartbeat` або `CancelledCaller`.
 - 1102 і 1103 це Warning, бо вони пояснюють перепідключення, що йде слідом.
 - `Target` це `host:port` або кінцева точка, як її передали в `ConnectAsync`.
@@ -1408,7 +1409,9 @@ SuperviseAsync(Link link):
 2. `failure = new IOException("Gave up reconnecting to {target} after {attempts}
    attempt(s).", cause)`. Для повторного входу повідомлення називає саму помилку:
    `"Gave up reconnecting to {target}: ConnectionRestored called the ResilientControlClient
-   instead of context.Client."`.
+   instead of context.Client."`. Для збою циклу heartbeat (наглядач стеріг опубліковане
+   з'єднання, 7.1): `"Gave up on {target}: watching the connection failed."`. `attempts` це
+   спроби поточної втрати; після успішного перепідключення втрата закінчена, і їх 0.
 3. Під `_sync`: у Closed повернутися. Інакше Closed з причиною `GaveUp`, `_failure =
    failure`, підмінити `_changed`.
 4. Поза замком:
@@ -1418,7 +1421,7 @@ SuperviseAsync(Link link):
    - `_lifetime.Cancel()`: команди в черзі прокидаються і провалюються з цим `failure`;
    - завершити writer `Unsolicited`.
 5. З типовим `ReconnectAttempts = int.MaxValue` клієнт відмовляється лише через повторний
-   вхід.
+   вхід або збій самого циклу heartbeat.
 
 ### 7.7. `DisposeAsync`
 

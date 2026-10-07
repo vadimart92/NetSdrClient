@@ -121,11 +121,14 @@ public sealed partial class ResilientControlClient
     private async Task SuperviseAsync(Link link)
     {
         ReconnectState? state = null;
+        bool watching = false;
         try
         {
             while (true)
             {
+                watching = true;
                 await WatchAsync(link).ConfigureAwait(false);
+                watching = false;
                 Exception cause = link.LossCause
                     ?? link.Client.Completion.Exception?.InnerException
                     ?? new IOException("Connection closed.");
@@ -180,6 +183,9 @@ public sealed partial class ResilientControlClient
                 {
                     // A logging provider failed; the connection is published and watched, not given up on.
                 }
+
+                // The loss is over: a later give-up belongs to the next loss or to the heartbeat, not to this one.
+                state = null;
             }
         }
         catch (Exception) when (_lifetime.IsCancellationRequested)
@@ -189,7 +195,7 @@ public sealed partial class ResilientControlClient
         catch (Exception ex)
         {
             // The pipeline ran out of attempts, an attempt failed for good, or watching the published connection failed.
-            GiveUp(ex, state?.Attempt ?? 0);
+            GiveUp(ex, state?.Attempt ?? 0, watching);
 
             // After a failure of the heartbeat loop the watched connection is still open, and the Closed client never
             // uses it again: it is closed now rather than at DisposeAsync. After a failed reconnection it is the lost
@@ -376,17 +382,21 @@ public sealed partial class ResilientControlClient
     /// Otherwise the state is Closed with the failure kept, <see cref="Completion"/> fails with it, event 1106 is written
     /// once, the queued commands wake up to fail with it, and <see cref="Unsolicited"/> ends.
     /// </summary>
-    /// <param name="ex">What the last attempt failed with.</param>
-    /// <param name="attempts">How many attempts this loss got.</param>
-    private void GiveUp(Exception ex, int attempts)
+    /// <param name="ex">What the last attempt failed with, or what watching the connection failed with.</param>
+    /// <param name="attempts">How many attempts the current loss got; 0 when there is no loss.</param>
+    /// <param name="watching">The failure came from watching the published connection (the heartbeat loop), not from reconnecting.</param>
+    private void GiveUp(Exception ex, int attempts, bool watching)
     {
-        // Steps 1 and 2. A reentrant ConnectionRestored callback is named as the reason, with its own error as the cause.
+        // Steps 1 and 2. A reentrant ConnectionRestored callback is named as the reason, with its own error as the
+        // cause, and so is a failure of the heartbeat loop.
         bool reentered = ex is FatalRestoreException;
         Exception cause = reentered ? ex.InnerException! : ex;
         var failure = new IOException(
             reentered
                 ? $"Gave up reconnecting to {_target}: ConnectionRestored called the ResilientControlClient instead of context.Client."
-                : $"Gave up reconnecting to {_target} after {attempts} attempt(s).",
+                : watching
+                    ? $"Gave up on {_target}: watching the connection failed."
+                    : $"Gave up reconnecting to {_target} after {attempts} attempt(s).",
             cause);
 
         // Step 3.
@@ -415,7 +425,8 @@ public sealed partial class ResilientControlClient
         {
             ResilientClientLog.ReconnectGaveUp(
                 _logger, _target, attempts,
-                reentered ? "ConnectionRestored called the ResilientControlClient" : "attempts exhausted", failure);
+                reentered ? "ConnectionRestored called the ResilientControlClient" : watching ? "heartbeat failed" : "attempts exhausted",
+                failure);
         }
         catch (Exception)
         {
