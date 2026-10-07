@@ -341,10 +341,15 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     {
         var inner = new NetSdrControlClient(_innerOptions);
         var link = new Link(inner);
+        // Set before the connection exists: the observer must see the first late reply the read loop meets.
+        inner.LateReplyObserver = (message, isNak) => OnLateReply(link, message, isNak);
         try
         {
             phase?.Invoke(ReconnectPhase.Connect);
             await ConnectInnerAsync(inner, ct).ConfigureAwait(false);
+            // Whatever ends the inner client resolves the exchange it leaves unanswered; the verification is one.
+            _ = inner.Completion.ContinueWith(
+                _ => OnInnerCompleted(link), CancellationToken.None, TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default);
             link.Pump = PumpAsync(link);
             phase?.Invoke(ReconnectPhase.Verify);
             await VerifyAsync(link, ct).ConfigureAwait(false);
@@ -529,7 +534,14 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     {
         CancellationToken t = context.CancellationToken;
 
-        // Step 4a, the adoption of a late reply, joins with the line discipline.
+        // Step 4a. The previous attempt timed out on a live connection: wait for that request's late reply instead
+        // of writing the request again. The exchange lives on the execution, so a reply that came between the
+        // attempts is not lost.
+        if (exec.Outstanding is { } outstanding)
+        {
+            exec.Outstanding = null;
+            return await AdoptLateReplyAsync(exec, outstanding, t).ConfigureAwait(false);
+        }
 
         // Step 4b.
         Link link = await WaitForLinkAsync(exec, t).ConfigureAwait(false);
@@ -576,6 +588,38 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             exec.Outstanding = exchange;
             throw;
         }
+
+        // A NetSdrProtocolException on a live connection (a foreign reply) leaves as it is and is never retried;
+        // the line stays unanswered until the real reply or the deadline.
+    }
+
+    /// <summary>Spec 6.5 step 4a: the outcome of the exchange the previous attempt left unanswered.</summary>
+    /// <exception cref="NetSdrNakException">The device answered the request late with a NAK.</exception>
+    /// <exception cref="IOException">The connection was lost before the request was answered; retried on the next connection.</exception>
+    private async ValueTask<ControlItemMessage> AdoptLateReplyAsync(CommandExecution exec, Exchange outstanding, CancellationToken t)
+    {
+        Resolution late = await outstanding.Late.Task.WaitAsync(t).ConfigureAwait(false);
+        switch (late.Outcome)
+        {
+            case Outcome.Reply:
+                LogLateReplyAdopted(exec, outstanding, LateOutcome.Reply);
+                return late.Message;
+            case Outcome.Nak:
+                LogLateReplyAdopted(exec, outstanding, LateOutcome.Nak);
+                throw new NetSdrNakException(exec.Code, exec.Type);
+            default:
+                // Lost. Answered is impossible: the inner request had already failed when the exchange became outstanding.
+                throw new IOException(
+                    $"The connection to {_target} was lost before {exec.Type} 0x{exec.Code:X4} was answered.", late.Cause);
+        }
+    }
+
+    /// <summary>Event 1107; <c>Late</c> is how long after its response timeout the request was answered.</summary>
+    private void LogLateReplyAdopted(CommandExecution exec, Exchange exchange, LateOutcome outcome)
+    {
+        TimeSpan late = _time.GetElapsedTime(exchange.SentAt, exchange.ResolvedAt) - _options.ResponseTimeout;
+        ResilientClientLog.LateReplyAdopted(
+            _logger, exec.Type, exec.Item ?? "raw", exec.Code, outcome, late < TimeSpan.Zero ? TimeSpan.Zero : late);
     }
 
     /// <summary>
@@ -640,35 +684,132 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// Spec 6.6: runs when the inner request completed. A response or a NAK answered the exchange; anything else
-    /// resolves it as lost until the line discipline adds the unanswered state. Always releases Wire through <see cref="Resolve"/>.
+    /// Spec 6.6: runs when the inner request completed. A response or a NAK answered the exchange. A timeout or a
+    /// foreign reply on a live connection leaves it unanswered: Wire stays held and <see cref="Expire"/> is scheduled
+    /// for <c>ResponseTimeout + LateReplyTimeout</c> after the write, unless the observer resolved it meanwhile.
+    /// Anything else, or a dead connection, resolves it as lost. Nothing is logged here; whoever adds a logger call
+    /// puts it in a try whose finally resolves the exchange, so Wire is released whatever happens.
     /// </summary>
     private void Settle(Exchange exchange)
     {
         Task<ControlItemMessage> request = exchange.Request;
-        Resolution resolution;
+        Link link = exchange.Link;
         if (request.IsCompletedSuccessfully)
         {
-            exchange.Link.Heard(_time);
-            resolution = new Resolution(Outcome.Answered, request.Result);
-        }
-        else
-        {
-            // Reading Exception marks it observed.
-            Exception cause = request.Exception?.InnerException ?? (Exception?)request.Exception ?? new TaskCanceledException(request);
-            if (cause is NetSdrNakException)
-            {
-                exchange.Link.Heard(_time);
-                resolution = new Resolution(Outcome.Answered);
-            }
-            else
-            {
-                resolution = new Resolution(Outcome.Lost, Cause: cause);
-            }
+            link.Heard(_time);
+            Resolve(exchange, new Resolution(Outcome.Answered, request.Result));
+            return;
         }
 
-        // A logger call here goes in a try whose finally resolves the exchange, so Wire is released whatever happens.
-        Resolve(exchange, resolution);
+        // Reading Exception marks it observed.
+        Exception cause = request.Exception?.InnerException ?? (Exception?)request.Exception ?? new TaskCanceledException(request);
+        if (cause is NetSdrNakException)
+        {
+            link.Heard(_time);
+            Resolve(exchange, new Resolution(Outcome.Answered));
+            return;
+        }
+
+        if (cause is not (TimeoutException or NetSdrProtocolException) || !link.Client.IsConnected)
+        {
+            Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
+            return;
+        }
+
+        if (cause is NetSdrProtocolException)
+        {
+            // A foreign reply is still a frame from the device.
+            link.Heard(_time);
+        }
+
+        TimeSpan due = _options.ResponseTimeout + _options.LateReplyTimeout - _time.GetElapsedTime(exchange.SentAt);
+        lock (_sync)
+        {
+            if (exchange.State != ExchangeState.InFlight)
+            {
+                // The late reply came before the inner client gave up on it, and the observer resolved the exchange.
+                return;
+            }
+
+            exchange.State = ExchangeState.Unanswered;
+            exchange.Deadline = _time.CreateTimer(
+                Expire, exchange, due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>
+    /// Spec 6.6: the inner client's <see cref="NetSdrControlClient.LateReplyObserver"/>, called from its read loop
+    /// without its lock and before the message is published. A late reply or a late NAK answers the unresolved
+    /// exchange on the line. Never blocks and never throws: it only completes a <see cref="TaskCompletionSource{T}"/>
+    /// that runs its continuations asynchronously and releases Wire.
+    /// </summary>
+    private void OnLateReply(Link link, ControlItemMessage message, bool isNak)
+    {
+        Exchange? exchange;
+        lock (_sync)
+        {
+            exchange = link.Current;
+        }
+
+        if (exchange is not null
+            && Resolve(exchange, isNak ? new Resolution(Outcome.Nak) : new Resolution(Outcome.Reply, message)))
+        {
+            link.Heard(_time);
+        }
+    }
+
+    /// <summary>
+    /// Spec 6.6: the late-reply deadline of an unanswered exchange passed. If it is still unanswered on a live
+    /// connection, the connection is unresponsive: it is closed and the exchange is lost. After the exchange was
+    /// resolved, or once the connection is dead, there is nothing to do.
+    /// </summary>
+    /// <param name="state">The <see cref="Exchange"/> the timer belongs to.</param>
+    private void Expire(object? state)
+    {
+        var exchange = (Exchange)state!;
+        Link link = exchange.Link;
+        var cause = new TimeoutException(
+            $"No reply to {exchange.Type} 0x{exchange.Code:X4} within {_options.ResponseTimeout + _options.LateReplyTimeout}.");
+        lock (_sync)
+        {
+            if (exchange.State != ExchangeState.Unanswered || !link.Client.IsConnected)
+            {
+                return;
+            }
+
+            link.LossCause = cause;
+        }
+
+        try
+        {
+            ResilientClientLog.ConnectionUnresponsive(
+                _logger, exchange.Type, exchange.Code, _time.GetElapsedTime(exchange.SentAt), link.Client.RemoteEndPoint);
+        }
+        finally
+        {
+            // A logging provider that throws must not leave the line held or the connection open. The synchronous
+            // part of the inner client's disposal makes IsConnected false at once; the supervisor awaits the rest.
+            _ = link.Client.DisposeAsync();
+            Resolve(exchange, new Resolution(Outcome.Lost, Cause: cause));
+        }
+    }
+
+    /// <summary>
+    /// Runs when the inner client of <paramref name="link"/> ended, whatever the reason: the exchange it leaves on
+    /// the line can no longer be answered, so it is lost with the cause of the loss.
+    /// </summary>
+    private void OnInnerCompleted(Link link)
+    {
+        Exchange? exchange;
+        lock (_sync)
+        {
+            exchange = link.Current;
+        }
+
+        if (exchange is not null)
+        {
+            Resolve(exchange, new Resolution(Outcome.Lost, Cause: LossCauseOf(link)));
+        }
     }
 
     /// <summary>
@@ -686,6 +827,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             }
 
             exchange.State = ExchangeState.Resolved;
+            exchange.ResolvedAt = _time.GetTimestamp();
             deadline = exchange.Deadline;
             exchange.Deadline = null;
             if (ReferenceEquals(exchange.Link.Current, exchange))
@@ -799,6 +941,9 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
         /// <summary>Written under the client's lock.</summary>
         public ExchangeState State { get; set; }
+
+        /// <summary>The timestamp of the resolution; written under the client's lock, valid once <see cref="State"/> is Resolved.</summary>
+        public long ResolvedAt { get; set; }
 
         /// <summary>The late-reply deadline of an unanswered exchange; written under the client's lock.</summary>
         public ITimer? Deadline { get; set; }
