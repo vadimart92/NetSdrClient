@@ -76,6 +76,7 @@ NetSdr.Tests/
   Control/EscalatingRecoveryPolicyTests.cs   новий
   Control/ResilientRecoveryTests.cs          новий: ескалація з фальшивим транспортом
   Control/ResilientRebootTests.cs            новий: ручне перезавантаження
+  Control/ResilientFirstConnectTests.cs      новий: перше підключення з ConnectAttempts і драбиною
   Control/FakeRebooter.cs                    новий: скриптований IDeviceRebooter для тестів
   Testing/TestServerAvailabilityTests.cs     новий
 examples/Vega/NetSdr.Examples.Vega/
@@ -88,7 +89,8 @@ examples/Vega/NetSdr.Examples.Vega.Tests/
   Receiver/VegaRecoveryTests.cs     новий: драбина на емуляторі
 ```
 
-Нових залежностей немає.
+Нових залежностей немає. У спеці стійкості змінюється абзац про перше підключення в 5.1: він посилається на 4.5 цієї спеки.
+XML-документація `ConnectAsync` перелічує нову поведінку з `ConnectAttempts`.
 
 ## 3. Публічні типи
 
