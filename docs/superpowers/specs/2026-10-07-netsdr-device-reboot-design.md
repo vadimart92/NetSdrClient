@@ -20,11 +20,10 @@
 - `ResilientControlClient.RebootAsync(kind)`: ручне перезавантаження під керуванням наглядача.
 - Вигаданий сервісний протокол Vega, `VegaRebooter` і його підтримка в `VegaEmulator`.
 - `NetSdrTestServer.Availability` і `ClearState()` для емуляції завислого і завантажуваного пристрою.
+- Перше `ResilientControlClient.ConnectAsync` теж іде через драбину, якщо задано `Rebooter`. Його межу
+  задає нова опція `ConnectAttempts` (4.5).
 
 **Що не входить**
-- Відновлення при першому `ResilientControlClient.ConnectAsync`. Перше підключення лишається однією
-  спробою без повторів (спека стійкості 5.1). Застосунок, якому треба перезавантажити пристрій ще до
-  першого підключення, викликає свій `IDeviceRebooter` напряму, бо той у нього вже є.
 - Перезавантаження через канал керування, наприклад командою NetSDR. Обидва види ідуть транспортом
   розробника.
 - Перевірка, що після перезавантаження відповів той самий пристрій. Це справа колбека
@@ -179,6 +178,7 @@ public sealed class ResilientControlClientOptions
     public IDeviceRebooter? Rebooter { get; set; }
     public IRecoveryPolicy? RecoveryPolicy { get; set; }      // null з Rebooter означає new EscalatingRecoveryPolicy()
     public TimeSpan RebootTimeout { get; set; } = TimeSpan.FromSeconds(10);  // позитивний, не більше int.MaxValue мс
+    public int? ConnectAttempts { get; set; }  // null: 1 без Rebooter, 8 з Rebooter; явне значення >= 1
 }
 
 public sealed class ConnectionRestoredContext
@@ -198,7 +198,10 @@ public sealed partial class ResilientControlClient
 - Без `Rebooter` політика ніколи не викликається, і клієнт поводиться точно як до цієї зміни.
 - `RecoveryPolicy` без `Rebooter` дозволено, але вона не викликається: без транспорту рішення
   `Reboot` нема чим виконати. Опції не кидають у цьому випадку.
-- `RebootTimeout` поза межами дає `ArgumentOutOfRangeException` у `ConnectAsync`, як інші опції.
+- `RebootTimeout` поза межами або `ConnectAttempts` менше 1 дають `ArgumentOutOfRangeException` у
+  `ConnectAsync`, як інші опції.
+- Автоматичне значення `ConnectAttempts` з `Rebooter` дорівнює 8: три спроби, soft, ще три, hard, ще дві.
+  Воно не залежить від чисел `EscalatingRecoveryPolicy`; хто міняє драбину, задає `ConnectAttempts` явно.
 - Опції копіюються в `ConnectAsync`, тож посилання на `Rebooter` і `RecoveryPolicy` фіксуються там.
 - Документація `CommandTimeout` отримує примітку: команди під час перезавантаження чекають так само, як під
   час перепідключення. Якщо час завантаження більший за `CommandTimeout`, вони впадуть з
@@ -296,6 +299,30 @@ flowchart TB
 Після перезавантаження колбек отримує `context.AfterReboot = kind`. Колбек, що кинув виняток, і далі
 лише провалює спробу (спека стійкості 7.5), а політика бачить фазу `Restore`. Так застосунок може
 ескалювати з колбека: кинути виняток, коли пристрій відповідає, але стан неправильний.
+
+### 4.5. Перше підключення
+
+`ConnectAsync` робить `ConnectAttempts` спроб (автоматичне значення в 3.2) серією тієї самої форми, що й
+перепідключення, але без наглядача: клієнта ще немає.
+
+- Кожна спроба має фази `Connect` і `Verify`, як і зараз. Фази `Restore` немає: `ConnectionRestored` при
+  першому підключенні не викликається, навіть після перезавантаження, бо застосунок ще нічого не налаштував.
+- Паузи між спробами ті самі: 1, 2, 4 с і так до 30 с, щонайменше 1 с між початками спроб.
+- Невдала спроба пише Warning 1118 (`ConnectAttemptFailed`), а не 1104, бо це ще не перепідключення.
+- Якщо задано `Rebooter`, після кожної невдалої спроби викликається політика з тим самим `RecoveryContext`.
+  `Downtime` рахується від початку `ConnectAsync`, `LastRemoteEndPoint` у `RebootContext` дорівнює `null`,
+  поки жодна спроба не встановила TCP, `Requested` дорівнює `false`.
+- `Reboot(kind)` виконує той самий крок перезавантаження (4.3): 1114, транспорт, 1116, очікування
+  завантаження, нова серія з паузами з 1 с. `GiveUp` завершує `ConnectAsync` останньою невдачею спроби.
+- Вичерпано `ConnectAttempts`: `ConnectAsync` кидає виняток останньої спроби як є (`SocketException`,
+  `TimeoutException` або `IOException`), без обгортки. Так поведінка однієї спроби лишається такою, як зараз.
+- Скасування `ct` перериває і спробу, і паузу, і транспорт, і очікування завантаження:
+  `OperationCanceledException`, нічого не лишається працювати.
+- Успіх пише Information 1109, як і зараз, і запускає наглядача. Лічильники першого підключення не
+  переходять на першу втрату: вона починає з нуля.
+
+Без `Rebooter` і без явного `ConnectAttempts` перше підключення поводиться точно як зараз: одна спроба,
+швидка помилка адреси.
 
 ## 5. Вбудовування в наглядач
 
@@ -463,6 +490,7 @@ public sealed partial class NetSdrTestServer
 | 1115 | Warning | RebootFailed | `The {Kind} reboot of {Target} failed` (+exception) |
 | 1116 | Information | RebootAccepted | `{Target} accepted a {Kind} reboot; waiting {BootTime} for it to boot` |
 | 1117 | Warning | RecoveryPolicyFailed | `The recovery policy failed; continuing with the next attempt` (+exception) |
+| 1118 | Warning | ConnectAttemptFailed | `Connect attempt {Attempt} of {Attempts} to {Target} failed in phase {Phase}; next attempt in {Delay}` (+exception) |
 
 1106 отримує третю причину `recovery policy gave up`. Кожен виклик логера наглядача стоїть у `try`,
 як у спеці стійкості 3.1, і нічого не логується під `_sync`.
@@ -481,6 +509,9 @@ public sealed partial class NetSdrTestServer
 | Політика кинула виняток | 1117, далі як `Continue` |
 | Політика повернула `GiveUp` | 1106 з "recovery policy gave up", `Completion` падає з `IOException`, усередині остання невдача |
 | `ReconnectAttempts` вичерпано крізь перезавантаження | Відмова "attempts exhausted", як і раніше |
+| Перше підключення вичерпало `ConnectAttempts` | Виняток останньої спроби як є, кожна невдача пише 1118 |
+| Політика повернула `GiveUp` під час першого підключення | `ConnectAsync` кидає останню невдачу спроби |
+| `ct` скасовано під час першого підключення | `OperationCanceledException`, транспорт і очікування перервано |
 | `DisposeAsync` під час транспорту або очікування завантаження | Обидва перериваються, ручні запити отримують `ObjectDisposedException`, без 1106 |
 | Неправильні числа `EscalatingRecoveryPolicy`, `RebootTimeout`, `VegaRebooterOptions` | `ArgumentOutOfRangeException` |
 | Vega: неправильний ключ, зайнято, інший статус | `VegaException` з причиною |
@@ -539,6 +570,17 @@ public sealed partial class NetSdrTestServer
   межа `MaxRebootsPerLoss` дозволяє.
 - `Logging_1113To1117_LevelsAndCategory`.
 
+**`ResilientFirstConnectTests`**, шов і `FakeTimeProvider`
+- `NoRebooter_DefaultIsOneAttempt`: невдалий шов, одна спроба, `SocketException` одразу, жодного 1118.
+- `ExplicitConnectAttempts_RetriesWithBackoff`: `ConnectAttempts = 3` без `Rebooter`, спроби на 0, 1, 3 с, кидає останню невдачу, два 1118.
+- `Rebooter_DefaultEightAttempts_FullLadder`: шов не приймає ніколи, `FakeRebooter.Calls` дорівнює `[Soft, Hard]`, рівно 8 спроб, виняток останньої.
+- `Rebooter_RecoversAfterSoft`: шов починає приймати після soft, `ConnectAsync` повертає клієнта, 1109, `ConnectionRestored` не викликано.
+- `FirstConnect_RebootContext`: `LastRemoteEndPoint` дорівнює `null`, `Requested` дорівнює `false`.
+- `FirstConnect_CancelDuringBootWait_Throws_NothingRuns`.
+- `FirstConnect_PolicyGivesUp_ThrowsLastFailure`.
+- `FirstLoss_CountersStartAtZero`: після першого підключення з одним soft перша втрата бачить `SoftReboots = 0`.
+- `InvalidConnectAttempts_Throws`: 0 і -1.
+
 **`TestServerAvailabilityTests`**
 - `CloseOnAccept_NewConnectionClosed_CurrentKept`.
 - `Silent_RequestsRecorded_NoReplies`.
@@ -556,6 +598,7 @@ public sealed partial class NetSdrTestServer
 - `BoardHang_SoftThenHard`: `RebootRequests` дорівнює `[(Soft, true), (Hard, true)]`, відновлення після hard.
 - `ManualHardReboot_ClearsDeviceState`: мітка, задана до перезавантаження, після нього порожня.
 - `WrongServiceKey_RebootFails_1115`: ключ транспорту не збігається, `(Soft, false)`, 1115.
+- `HungAtStartup_FirstConnectRecoversBySoftReboot`: емулятор у `Hang(Firmware)` ще до `ConnectAsync`, клієнт повертається після soft, `RebootRequests` дорівнює `[(Soft, true)]`.
 
 ## 11. Рішення
 
@@ -569,6 +612,9 @@ public sealed partial class NetSdrTestServer
 - Невдалий транспорт зараховується як перезавантаження, щоб драбина могла дійти до hard.
 - Виняток політики не зупиняє клієнт: нічний запис важливіший за помилку в коді застосунку.
 - `MaxRebootsPerLoss` за замовчуванням 2: фізично вимкнений приймач не перезавантажується по колу.
+- Перше підключення теж іде через драбину. Межу задає окрема `ConnectAttempts`: без `Rebooter` одна спроба, як
+  раніше, з `Rebooter` вісім, на всю драбину. Нескінченний `ReconnectAttempts` для першого підключення
+  означав би, що неправильна адреса ніколи не дає помилки.
 - Емуляція завантаження закриває з'єднання одразу після прийняття, а не зупиняє слухача, заради детермінованості.
 
 **Відкинуті альтернативи**

@@ -619,9 +619,10 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 }
 ```
 
-`ConnectAsync` робить рівно одну спробу: TCP за `ConnectTimeout`, потім перевірочний
+`ConnectAsync` за замовчуванням робить рівно одну спробу: TCP за `ConnectTimeout`, потім перевірочний
 `Get 0x0005` (`StatusCodes`), який проходить і на Response, і на NAK. Повтору немає,
-`ConnectionRestored` не викликається. При невдачі нічого не лишається працювати, а виняток
+`ConnectionRestored` не викликається. Опція `ConnectAttempts` і перезавантаження при першому підключенні
+описані в спеці `2026-10-07-netsdr-device-reboot-design.md`, розділ 4.5. При невдачі нічого не лишається працювати, а виняток
 летить назовні: `SocketException`, `TimeoutException`, `OperationCanceledException` або
 `IOException`. Ім'я хоста резолвиться заново на кожному перепідключенні, тож пристрій зі
 зміненою DHCP-адресою знайдеться. Некоректні опції кидають синхронно, ще до першого `await`.
