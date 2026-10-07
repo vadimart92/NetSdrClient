@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetSdr.Control;
 
 namespace NetSdr.Identification;
@@ -19,4 +21,13 @@ public sealed class IdentificationOptions
 
     /// <summary>The application's own probes. They run in list order, after the standard probes.</summary>
     public IList<ProbeAsync> Probes { get; } = new List<ProbeAsync>();
+
+    /// <summary>
+    /// Creates the loggers of identification: category <c>NetSdr.Identification.DeviceIdentity</c> for
+    /// <see cref="DeviceIdentity.ReadAsync"/> and its probes, <c>NetSdr.Identification.DeviceCatalog</c> for a
+    /// <see cref="DeviceCatalog{TDevice}"/> these options are given to. Defaults to
+    /// <see cref="NullLoggerFactory.Instance"/>, which logs nothing; <see langword="null"/> is rejected by
+    /// <see cref="DeviceIdentity.ReadAsync"/> and by the constructor of <see cref="DeviceCatalog{TDevice}"/>.
+    /// </summary>
+    public ILoggerFactory LoggerFactory { get; set; } = NullLoggerFactory.Instance;
 }

@@ -1,4 +1,7 @@
+using System.Collections.Concurrent;
 using System.Net;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetSdr.Control;
 using NetSdr.Examples.Vega.Items;
 using NetSdr.Items;
@@ -58,5 +61,25 @@ public class VegaConnectTests
         await using var raw = new NetSdrControlClient();
         await raw.ConnectAsync("127.0.0.1", emulator.Port);
         await Assert.ThrowsAsync<NetSdrNakException>(() => raw.GetAsync<AntennaSelect, byte>(0));
+    }
+
+    [Fact]
+    public async Task ConnectAsync_PassesLoggerFactoryToIdentification()
+    {
+        var logs = new CategoryRecorder();
+        await using var emulator = new VegaEmulator();
+        await emulator.StartAsync();
+        await using var vega = await VegaReceiverBase.ConnectAsync("127.0.0.1", emulator.Port, VegaEmulator.DefaultKey,
+            new NetSdrControlClientOptions { LoggerFactory = logs });
+        Assert.Contains("NetSdr.Identification.DeviceIdentity", logs.Categories);
+        Assert.Contains("NetSdr.Identification.DeviceCatalog", logs.Categories);
+    }
+
+    sealed class CategoryRecorder : ILoggerFactory
+    {
+        public ConcurrentBag<string> Categories { get; } = [];
+        public ILogger CreateLogger(string categoryName) { Categories.Add(categoryName); return NullLogger.Instance; }
+        public void AddProvider(ILoggerProvider provider) { }
+        public void Dispose() { }
     }
 }

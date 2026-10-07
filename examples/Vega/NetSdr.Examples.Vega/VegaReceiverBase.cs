@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetSdr.Control;
 using NetSdr.Examples.Vega.Items;
 using NetSdr.Framing;
@@ -188,8 +189,12 @@ public abstract class VegaReceiverBase : IAsyncDisposable
         NetSdrControlClientOptions? options,
         Func<DeviceCatalog<VegaReceiverBase>, Task<VegaReceiverBase>> connect)
     {
-        var catalog = new DeviceCatalog<VegaReceiverBase>(
-                new IdentificationOptions { Probes = { VegaProbes.Identify(unlockKey) } }, options)
+        var identification = new IdentificationOptions
+        {
+            LoggerFactory = options?.LoggerFactory ?? NullLoggerFactory.Instance,
+            Probes = { VegaProbes.Identify(unlockKey) },
+        };
+        var catalog = new DeviceCatalog<VegaReceiverBase>(identification, options)
             .Register("Vega v2",
                 id => id.ProductId == VegaProtocol.ProductId && id.Get<VegaInfo>().Firmware >= new Version(2, 0),
                 (client, id) => new VegaV2Receiver(client, id))

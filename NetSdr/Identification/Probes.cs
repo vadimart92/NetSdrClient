@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NetSdr.Control;
 using NetSdr.Framing;
 using NetSdr.Items;
@@ -76,43 +77,90 @@ internal static class StandardProbes
     // A component is reported as its ID byte and a 16-bit version.
     private const int FirmwareEntrySize = sizeof(byte) + sizeof(ushort);
 
-    internal static async Task RunAsync(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
+    /// <summary>Reads the standard items, logging each request as event 1300 or 1301.</summary>
+    /// <param name="enterStep">Told the name of each request before it is sent, for event 1303.</param>
+    internal static async Task RunAsync(
+        INetSdrControlClient client,
+        DeviceIdentityBuilder builder,
+        ILogger logger,
+        Action<string> enterStep,
+        CancellationToken ct)
     {
-        if (await Probes.TryGetAsync<TargetName>(client, builder, ct).ConfigureAwait(false) is { } name)
+        if (await GetAsync<TargetName>(client, builder, logger, enterStep, ct).ConfigureAwait(false) is { } name)
         {
             builder.Name = name.Value;
+            Answered<TargetName>(logger, builder.Name);
         }
 
-        if (await Probes.TryGetAsync<SerialNumber>(client, builder, ct).ConfigureAwait(false) is { } serial)
+        if (await GetAsync<SerialNumber>(client, builder, logger, enterStep, ct).ConfigureAwait(false) is { } serial)
         {
             builder.SerialNumber = serial.Value;
+            Answered<SerialNumber>(logger, builder.SerialNumber);
         }
 
-        if (await Probes.TryGetAsync<InterfaceVersion>(client, builder, ct).ConfigureAwait(false) is { } iface)
+        if (await GetAsync<InterfaceVersion>(client, builder, logger, enterStep, ct).ConfigureAwait(false) is { } iface)
         {
             builder.InterfaceVersion = DeviceVersion.FromHundredths(iface.Version);
+            Answered<InterfaceVersion>(logger, builder.InterfaceVersion);
         }
 
-        await ReadFirmwareAsync(client, builder, ct).ConfigureAwait(false);
+        await ReadFirmwareAsync(client, builder, logger, enterStep, ct).ConfigureAwait(false);
 
-        if (await Probes.TryGetAsync<ProductId>(client, builder, ct).ConfigureAwait(false) is { } product)
+        if (await GetAsync<ProductId>(client, builder, logger, enterStep, ct).ConfigureAwait(false) is { } product)
         {
             builder.ProductId = product.Value;
+            Answered<ProductId>(logger, builder.ProductId);
         }
 
-        if (await Probes.TryGetAsync<Options>(client, builder, ct).ConfigureAwait(false) is { } options)
+        if (await GetAsync<Options>(client, builder, logger, enterStep, ct).ConfigureAwait(false) is { } options)
         {
             builder.Options = options;
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                Answered<Options>(
+                    logger, $"flags 0x{options.Flags:X2}, custom 0x{options.Custom:X2}, detail 0x{options.Detail:X8}");
+            }
         }
     }
 
+    // Gets one standard item; a NAK is logged here, an answer by the caller once the value is in the builder.
+    private static async Task<T?> GetAsync<T>(
+        INetSdrControlClient client,
+        DeviceIdentityBuilder builder,
+        ILogger logger,
+        Action<string> enterStep,
+        CancellationToken ct)
+        where T : struct, IControlItem<T>
+    {
+        string item = typeof(T).Name;
+        enterStep(item);
+        T? reply = await Probes.TryGetAsync<T>(client, builder, ct).ConfigureAwait(false);
+        if (reply is null)
+        {
+            IdentificationLog.ProbeUnsupported(logger, item, T.Code);
+        }
+
+        return reply;
+    }
+
+    private static void Answered<T>(ILogger logger, object? value) where T : struct, IControlItem<T> =>
+        IdentificationLog.ProbeAnswered(logger, typeof(T).Name, T.Code, value);
+
     // Item 0x0004 is asked for one component at a time. A device may know some components and not others, so
     // the code is unsupported only when it refused all of them.
-    private static async Task ReadFirmwareAsync(INetSdrControlClient client, DeviceIdentityBuilder builder, CancellationToken ct)
+    private static async Task ReadFirmwareAsync(
+        INetSdrControlClient client,
+        DeviceIdentityBuilder builder,
+        ILogger logger,
+        Action<string> enterStep,
+        CancellationToken ct)
     {
         int rejected = 0;
         for (byte id = BootId; id <= FpgaId; id++)
         {
+            string item = $"{nameof(FirmwareVersion)} id {id}";
+            enterStep(item);
+
             ControlItemMessage reply;
             try
             {
@@ -121,6 +169,7 @@ internal static class StandardProbes
             catch (NetSdrNakException)
             {
                 rejected++;
+                IdentificationLog.ProbeUnsupported(logger, item, FirmwareVersion.Code);
                 continue;
             }
 
@@ -128,25 +177,29 @@ internal static class StandardProbes
             // count against the code.
             if (reply.Payload.Length < FirmwareEntrySize)
             {
+                IdentificationLog.ProbeAnswered(logger, item, FirmwareVersion.Code, "none");
                 continue;
             }
 
             FirmwareVersion entry = reply.As<FirmwareVersion>();
+            object value;
             switch (id)
             {
                 case BootId:
-                    builder.BootVersion = DeviceVersion.FromHundredths(entry.Version);
+                    value = builder.BootVersion = DeviceVersion.FromHundredths(entry.Version);
                     break;
                 case FirmwareId:
-                    builder.FirmwareVersion = DeviceVersion.FromHundredths(entry.Version);
+                    value = builder.FirmwareVersion = DeviceVersion.FromHundredths(entry.Version);
                     break;
                 case HardwareId:
-                    builder.HardwareVersion = DeviceVersion.FromHundredths(entry.Version);
+                    value = builder.HardwareVersion = DeviceVersion.FromHundredths(entry.Version);
                     break;
-                case FpgaId:
-                    builder.Fpga = new FpgaInfo(entry.FpgaConfigId, entry.FpgaRevision);
+                default:
+                    value = builder.Fpga = new FpgaInfo(entry.FpgaConfigId, entry.FpgaRevision);
                     break;
             }
+
+            IdentificationLog.ProbeAnswered(logger, item, FirmwareVersion.Code, value);
         }
 
         if (rejected == ComponentCount)

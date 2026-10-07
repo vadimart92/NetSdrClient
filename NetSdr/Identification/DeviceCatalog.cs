@@ -1,4 +1,6 @@
 using System.Net;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetSdr.Control;
 
 namespace NetSdr.Identification;
@@ -19,8 +21,12 @@ namespace NetSdr.Identification;
 /// </remarks>
 public sealed class DeviceCatalog<TDevice> where TDevice : class
 {
+    private const string ClientClosed = "the client is closed";
+    private const string ClientKept = "the caller keeps the client";
+
     private readonly IdentificationOptions? _identification;
     private readonly NetSdrControlClientOptions? _clientOptions;
+    private readonly ILogger _logger;
     private readonly List<Registration> _registrations = new();
     private Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>>? _default;
 
@@ -30,8 +36,23 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     /// <see cref="DeviceIdentityBuilder.Current"/> and returns.
     /// </param>
     /// <param name="clientOptions">Settings of the clients <see cref="ConnectAsync(string, int, CancellationToken)"/> creates.</param>
+    /// <exception cref="ArgumentNullException">
+    /// <see cref="IdentificationOptions.LoggerFactory"/> of <paramref name="identification"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// The catalog logs its decisions through <see cref="IdentificationOptions.LoggerFactory"/>, category
+    /// <c>NetSdr.Identification.DeviceCatalog</c>; the clients it creates log through
+    /// <see cref="NetSdrControlClientOptions.LoggerFactory"/> of <paramref name="clientOptions"/>.
+    /// </remarks>
     public DeviceCatalog(IdentificationOptions? identification = null, NetSdrControlClientOptions? clientOptions = null)
     {
+        if (identification is not null)
+        {
+            ArgumentNullException.ThrowIfNull(identification.LoggerFactory, nameof(identification));
+        }
+
+        ILoggerFactory factory = identification?.LoggerFactory ?? NullLoggerFactory.Instance;
+        _logger = factory.CreateLogger(IdentificationLog.CatalogCategory);
         _identification = identification;
         _clientOptions = clientOptions;
     }
@@ -130,7 +151,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     public Task<TDevice> AttachAsync(INetSdrControlClient client, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
-        return CreateAsync(client, ct);
+        return CreateAsync(client, ClientKept, ct);
     }
 
     private async Task<TDevice> ConnectCoreAsync(Func<NetSdrControlClient, Task> connect, CancellationToken ct)
@@ -139,7 +160,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         try
         {
             await connect(client).ConfigureAwait(false);
-            return await CreateAsync(client, ct).ConfigureAwait(false);
+            return await CreateAsync(client, ClientClosed, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -148,7 +169,21 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         }
     }
 
-    private async Task<TDevice> CreateAsync(INetSdrControlClient client, CancellationToken ct)
+    // clientFate says in event 1312 what happens to the client when this fails.
+    private async Task<TDevice> CreateAsync(INetSdrControlClient client, string clientFate, CancellationToken ct)
+    {
+        try
+        {
+            return await IdentifyAndCreateAsync(client, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not DeviceNotRecognizedException)
+        {
+            IdentificationLog.AttachFailed(_logger, clientFate, ex);
+            throw;
+        }
+    }
+
+    private async Task<TDevice> IdentifyAndCreateAsync(INetSdrControlClient client, CancellationToken ct)
     {
         DeviceIdentity identity = await DeviceIdentity.ReadAsync(client, _identification, ct).ConfigureAwait(false);
 
@@ -156,6 +191,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         {
             if (registration.Matches(identity))
             {
+                IdentificationLog.DeviceMatched(_logger, identity.Name, identity.Model, registration.Name);
                 TDevice? device = await registration.CreateAsync(client, identity, ct).ConfigureAwait(false);
                 return device ?? throw FactoryReturnedNull($"The factory of registration \"{registration.Name}\"");
             }
@@ -163,11 +199,19 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
 
         if (_default is { } createDefault)
         {
+            IdentificationLog.DeviceMatched(_logger, identity.Name, identity.Model, "default");
             TDevice? device = await createDefault(client, identity, ct).ConfigureAwait(false);
             return device ?? throw FactoryReturnedNull("The default factory");
         }
 
-        throw new DeviceNotRecognizedException(identity, Registrations);
+        IReadOnlyList<string> candidates = Registrations;
+        if (_logger.IsEnabled(LogLevel.Warning))
+        {
+            IdentificationLog.DeviceNotRecognized(
+                _logger, identity.Name, identity.Model, identity.ProductId, IdentificationLog.Names(candidates));
+        }
+
+        throw new DeviceNotRecognizedException(identity, candidates);
     }
 
     private static InvalidOperationException FactoryReturnedNull(string factory) =>

@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using NetSdr.Control;
 
 namespace NetSdr.Identification;
@@ -99,6 +100,7 @@ public sealed record DeviceIdentity
     /// <param name="options">What to read; <see langword="null"/> reads the standard items only.</param>
     /// <param name="ct">Cancels the reading.</param>
     /// <exception cref="TimeoutException">The device did not answer a request.</exception>
+    /// <exception cref="ArgumentNullException"><see cref="IdentificationOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
     /// <remarks>
     /// A NAK is not an error: the field stays <see langword="null"/> and the item code goes into
     /// <see cref="Unsupported"/>. Every other failure, such as a timeout, a lost connection or an unreadable reply,
@@ -110,18 +112,83 @@ public sealed record DeviceIdentity
         ArgumentNullException.ThrowIfNull(client);
 
         options ??= new IdentificationOptions();
-        var builder = new DeviceIdentityBuilder();
+        ArgumentNullException.ThrowIfNull(options.LoggerFactory, nameof(options));
 
-        if (options.IncludeStandardProbes)
+        ILogger logger = options.LoggerFactory.CreateLogger(typeof(DeviceIdentity).FullName!);
+        long started = TimeProvider.System.GetTimestamp();
+        var builder = new DeviceIdentityBuilder();
+        string step = "start";
+
+        DeviceIdentity identity;
+        try
         {
-            await StandardProbes.RunAsync(client, builder, ct).ConfigureAwait(false);
+            if (options.IncludeStandardProbes)
+            {
+                await StandardProbes.RunAsync(client, builder, logger, current => step = current, ct).ConfigureAwait(false);
+            }
+
+            int count = options.Probes.Count;
+            int index = 0;
+            foreach (ProbeAsync probe in options.Probes)
+            {
+                index++;
+                step = $"probe {index} of {count}";
+                await RunProbeAsync(probe, index, count, client, builder, logger, ct).ConfigureAwait(false);
+            }
+
+            identity = builder.Current;
+        }
+        catch (Exception ex)
+        {
+            IdentificationLog.IdentificationFailed(logger, step, TimeProvider.System.GetElapsedTime(started), ex);
+            throw;
         }
 
-        foreach (ProbeAsync probe in options.Probes)
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            IdentificationLog.IdentityRead(
+                logger,
+                identity.Name,
+                identity.Model,
+                identity.SerialNumber,
+                identity.FirmwareVersion,
+                identity.ProductId,
+                TimeProvider.System.GetElapsedTime(started),
+                IdentificationLog.Codes(identity.Unsupported),
+                IdentificationLog.Names(identity.FactTypes.Select(type => type.Name)));
+        }
+
+        return identity;
+    }
+
+    // Runs a probe of the application and reports what it added to the builder.
+    private static async Task RunProbeAsync(
+        ProbeAsync probe,
+        int index,
+        int count,
+        INetSdrControlClient client,
+        DeviceIdentityBuilder builder,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (!logger.IsEnabled(LogLevel.Debug))
         {
             await probe(client, builder, ct).ConfigureAwait(false);
+            return;
         }
 
-        return builder.Current;
+        var factsBefore = builder.Facts.Keys.ToHashSet();
+        var unsupportedBefore = builder.UnsupportedCodes.ToHashSet();
+        long started = TimeProvider.System.GetTimestamp();
+
+        await probe(client, builder, ct).ConfigureAwait(false);
+
+        IdentificationLog.ProbeCompleted(
+            logger,
+            index,
+            count,
+            TimeProvider.System.GetElapsedTime(started),
+            IdentificationLog.Names(builder.Facts.Keys.Where(type => !factsBefore.Contains(type)).Select(type => type.Name)),
+            IdentificationLog.Codes(builder.UnsupportedCodes.Where(code => !unsupportedBefore.Contains(code))));
     }
 }
