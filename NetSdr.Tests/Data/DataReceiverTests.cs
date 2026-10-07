@@ -257,7 +257,14 @@ public class DataReceiverTests
     }
 
     [Fact]
-    public async Task ReceiveLoop_DoesNotAllocatePerPacket()
+    public Task ReceiveLoop_DoesNotAllocatePerPacket() => AssertNoPerPacketAllocationAsync(options: null);
+
+    // Logging changes nothing: every 256 datagrams the thread reads TimeProvider.System, which allocates nothing.
+    [Fact]
+    public Task ReceiveLoop_DoesNotAllocatePerPacket_WithLoggingEnabled() =>
+        AssertNoPerPacketAllocationAsync(new DataReceiverOptions { LoggerFactory = new FakeLoggerFactory() });
+
+    private static async Task AssertNoPerPacketAllocationAsync(DataReceiverOptions? options)
     {
         const int PacketCount = 300;
         const int WarmUp = 100;
@@ -268,7 +275,7 @@ public class DataReceiverTests
             int i = Volatile.Read(ref count);
             allocated[i] = GC.GetAllocatedBytesForCurrentThread();
             Volatile.Write(ref count, i + 1);
-        });
+        }, options);
         receiver.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         receiver.Start();
 
@@ -279,35 +286,6 @@ public class DataReceiverTests
 
         await Eventually.ThatAsync(() => Volatile.Read(ref count) == PacketCount);
         // The handler itself allocates nothing, so the receive thread must allocate nothing between two calls.
-        for (int i = WarmUp; i < PacketCount; i++)
-        {
-            Assert.Equal(allocated[i - 1], allocated[i]);
-        }
-    }
-
-    [Fact]
-    public async Task ReceiveLoop_DoesNotAllocatePerPacket_WithLoggingEnabled()
-    {
-        const int PacketCount = 300;
-        const int WarmUp = 100;
-        var allocated = new long[PacketCount];
-        var count = 0;
-        using var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) =>
-        {
-            int i = Volatile.Read(ref count);
-            allocated[i] = GC.GetAllocatedBytesForCurrentThread();
-            Volatile.Write(ref count, i + 1);
-        }, new DataReceiverOptions { LoggerFactory = new FakeLoggerFactory() });
-        receiver.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-        receiver.Start();
-
-        for (ushort sequence = 0; sequence < PacketCount; sequence++)
-        {
-            UdpTestSender.Send(receiver.LocalEndPoint, UdpTestSender.Datagram(sequence, 1028));
-        }
-
-        await Eventually.ThatAsync(() => Volatile.Read(ref count) == PacketCount);
-        // Logging changes nothing: every 256 datagrams the thread reads TimeProvider.System, which allocates nothing.
         for (int i = WarmUp; i < PacketCount; i++)
         {
             Assert.Equal(allocated[i - 1], allocated[i]);
