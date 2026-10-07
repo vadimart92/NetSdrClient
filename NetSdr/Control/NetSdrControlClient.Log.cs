@@ -23,8 +23,9 @@ internal enum PublishReason
     Foreign,
 
     /// <summary>
-    /// A header-only frame that answered no request: a <c>Response</c> NAK with no request in flight, or a header-only
-    /// frame of another type, which never answers one, even while a request is in flight.
+    /// A header-only frame that answered no request in flight: a <c>Response</c> NAK with no request in flight (which
+    /// may still be the late NAK of an abandoned request), or a header-only frame of another type, which never answers
+    /// one, even while a request is in flight.
     /// </summary>
     Nak,
 }
