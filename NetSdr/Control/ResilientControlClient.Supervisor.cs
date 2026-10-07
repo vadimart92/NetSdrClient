@@ -271,6 +271,15 @@ public sealed partial class ResilientControlClient
             return;
         }
 
+        // The exchange that just freed the line, such as the verification of a new connection, may have heard the device
+        // after LastHeard was read above: Settle writes it before it releases Wire. Read again now that the line is ours,
+        // so no probe follows a frame that has just arrived.
+        if (interval - _time.GetElapsedTime(Volatile.Read(ref link.LastHeard)) > TimeSpan.Zero)
+        {
+            link.Wire.Release();
+            return;
+        }
+
         // From here Wire belongs to the exchange, until it is resolved.
         Exchange exchange = StartExchange(link, RequestType.Get, StatusCodes.Code, ReadOnlyMemory<byte>.Empty, nameof(StatusCodes));
         try

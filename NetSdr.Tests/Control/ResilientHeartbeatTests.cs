@@ -103,14 +103,21 @@ public class ResilientHeartbeatTests
         var (client, _) = await connector.StartAsync(FakeHeartbeat(logs, time));
         await using (client)
         {
+            // Fake time moves only once the timer it is meant to fire exists, so it never runs ahead of the client.
+            var responseTimeout = TimeSpan.FromMilliseconds(150);
+            int responseTimers = time.TimerDueTimes.Count(due => due == responseTimeout);   // the verification's, if any
             await Eventually.ThatAsync(() => SilenceWaits(time) == 1);
             fake.Advance(Interval);                                                   // the heartbeat is written
             await Eventually.ThatAsync(() => requests.Count == 2);
-            await fake.AdvanceUntilAsync(() => logs.Events(1101).Count == 1, TimeSpan.FromMilliseconds(10));
-            // Up to the deadline, 750 ms after the write, nothing else is written: no second heartbeat while one is
-            // unanswered. The next connection waits for the rest of the 1 s floor, so it cannot add a frame yet.
-            await fake.AdvanceUntilAsync(() => logs.Events(1102).Count == 1, TimeSpan.FromMilliseconds(10));
-            Assert.Equal(2, requests.Count);
+            await Eventually.ThatAsync(() => time.TimerDueTimes.Count(due => due == responseTimeout) == responseTimers + 1);
+            fake.Advance(responseTimeout);
+            await Eventually.ThatAsync(() => logs.Events(1101).Count == 1);
+            // The late-reply deadline is 750 ms after the write, 600 ms from here. Up to it nothing else is written:
+            // no second heartbeat while one is unanswered, and the next connection waits for the rest of the 1 s floor.
+            await Eventually.ThatAsync(() => time.TimerDueTimes.Contains(TimeSpan.FromMilliseconds(600)));
+            fake.Advance(TimeSpan.FromMilliseconds(600));
+            Assert.Single(logs.Events(1102));                                         // Expire runs inside Advance
+            Assert.Equal(2, requests.Count);                                          // the verification and the one heartbeat
             await Eventually.ThatAsync(() => logs.Events(1103).Count == 1);
             Assert.Single(logs.Events(1101));
             await fake.AdvanceUntilAsync(() => logs.Events(1104).Any(r => r.Value("Phase") == "Verify"), TimeSpan.FromMilliseconds(10));
