@@ -6,6 +6,9 @@
 `2026-10-02-netsdr-device-identification-design.md`.
 Узгоджено з реалізацією 2026-10-02 (фінальний огляд гілки): розділи 2.1, 2.2, 4.1, 5.1, 5.2,
 6.2, 7.1, 7.2, 9 і 11.3 приведено до збудованого коду.
+Доповнено 2026-10-07 спекою `2026-10-07-netsdr-resilience-logging-design.md`: стійкий клієнт
+керування `ResilientControlClient`, інтерфейс `INetSdrControlClient`, логування всієї
+бібліотеки. Через це змінено розділи 1, 2.1, 5.1, 6.1, 8, 10 і 11.3.
 
 ## 1. Мета і межі
 
@@ -23,12 +26,15 @@ RFSPACE (SDR-IP, NetSDR і сумісні). Перший застосунок з
   `NetSdr.Testing`, щоб її брали і тести фреймворку, і тести застосунків.
 - Приклад застосунку з власним протоколом поверх базового (вигаданий приймач Vega) і його
   тести на тестовому сервері, розділ 11.
+- Автоматичне перепідключення і keepalive (heartbeat) у `ResilientControlClient`, логування
+  через `Microsoft.Extensions.Logging`. Додано 2026-10-07, описано в спеці
+  `2026-10-07-netsdr-resilience-logging-design.md`. У першій версії ці пункти були поза
+  межами.
 
 **Що свідомо не входить у першу версію**
 - Протокол виявлення пристроїв (broadcast UDP 48321/48322).
 - Оновлення прошивки (0x0300, 0x0302, Data Item 0 до пристрою).
 - RS232 через Data Item 2 (0x0200, 0x0201).
-- Автоматичне перепідключення, keepalive.
 - Декодування семплів у числа. Для 16 біт це `MemoryMarshal.Cast<byte, short>` на боці
   застосунку, для 24 біт застосунок розбирає сам.
 
@@ -50,14 +56,14 @@ flowchart LR
         CC[NetSdrControlClient]
         DR[NetSdrDataReceiver]
         FR[Framing]
-        IT[Items: структури команд]
+        IT["Items: структури команд"]
         CC --> FR
         DR --> FR
         CC --> IT
     end
     subgraph Dev["Приймач або NetSdrTestServer"]
-        T[TCP 50000: керування]
-        U[UDP: Data Item 0]
+        T["TCP 50000: керування"]
+        U["UDP: Data Item 0"]
     end
     A -->|"SetAsync / GetAsync"| CC
     A -->|"callback(info, samples)"| DR
@@ -69,11 +75,13 @@ flowchart LR
 
 ```
 NetSdr.sln
-NetSdr/                     бібліотека, net10.0, без залежностей поза BCL
+NetSdr/                     бібліотека, net10.0, залежить від Polly.Core і
+                            Microsoft.Extensions.Logging.Abstractions
   (корінь)                  NetSdrException, NetSdrProtocolException, NetSdrNakException;
                             простір імен NetSdr, бо їх кидають Framing, Control і Data
   Framing/                  FrameHeader, RequestType, ReplyType
-  Control/                  NetSdrControlClient, options, ControlItemMessage
+  Control/                  INetSdrControlClient, NetSdrControlClient, ResilientControlClient,
+                            options, ControlItemMessage, ConnectionRestoredContext
   Data/                     NetSdrDataReceiver, options, DataPacketInfo, SampleFormat, DataRate
   Items/                    IControlItem<T>, UInt40, стандартні структури
 NetSdr.Testing/             бібліотека, net10.0, залежить лише від NetSdr, без xUnit
@@ -89,6 +97,15 @@ docs/superpowers/specs/     ця специфікація
 `System.IO.Pipelines` і `System.Threading.Channels` входять у runtime, окремих пакетів
 не потрібно. Nullable увімкнено, `AllowUnsafeBlocks` вимкнено: усе через
 `MemoryMarshal` і `Unsafe` із BCL.
+
+Пакети поза BCL (з 2026-10-07, спека `2026-10-07-netsdr-resilience-logging-design.md`):
+
+| Пакет | Версія | Проєкт | Навіщо |
+|---|---|---|---|
+| `Polly.Core` | 8.8.0 | `NetSdr` | повтори і backoff усередині `ResilientControlClient`; жодного типу Polly в публічному API |
+| `Microsoft.Extensions.Logging.Abstractions` | 10.0.12 | `NetSdr` | `ILoggerFactory` в опціях, генератор `[LoggerMessage]` |
+| `Microsoft.Extensions.TimeProvider.Testing` | 10.10.0 | `NetSdr.Tests` | `FakeTimeProvider` для `ResponseTimeout`, backoff, відмови і підсумків UDP |
+| `Microsoft.Extensions.Diagnostics.Testing` | 10.10.0 | `NetSdr.Tests` | `FakeLogger` для перевірки рівнів, EventId і категорій |
 
 ### 2.2. Типовий сценарій
 
@@ -306,7 +323,13 @@ var reply = await client.SetAsync(new MyVendorItem(0, 42));
 ### 5.1. Публічне API
 
 ```csharp
-public sealed class NetSdrControlClient : IAsyncDisposable
+public interface INetSdrControlClient : IAsyncDisposable
+{
+    // SetAsync, GetAsync, GetAsync<T, TKey>, GetRangeAsync, SendAsync, Unsolicited,
+    // Completion, IsConnected, LocalEndPoint, RemoteEndPoint: сигнатури як у класі нижче
+}
+
+public sealed class NetSdrControlClient : INetSdrControlClient
 {
     public NetSdrControlClient(NetSdrControlClientOptions? options = null);
     public Task ConnectAsync(string host, int port = 50000, CancellationToken ct = default);
@@ -336,6 +359,9 @@ public sealed class NetSdrControlClientOptions
     public TimeSpan ResponseTimeout { get; set; } = TimeSpan.FromSeconds(2);
     public int UnsolicitedCapacity { get; set; } = 256;      // DropOldest при переповненні
     public bool FaultOnTimeout { get; set; } = true;
+    public ILoggerFactory LoggerFactory { get; set; } = NullLoggerFactory.Instance;  // null: ArgumentNullException
+    internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;         // годинник ResponseTimeout, для тестів
+    internal bool Supervised { get; set; }                                          // ставить ResilientControlClient: 1000, 1001, 1002, 1006 на Debug
 }
 
 public readonly struct ControlItemMessage
@@ -352,6 +378,26 @@ public readonly struct ControlItemMessage
 `SendAsync` це сирий шлях для коду без структури і для експериментів. Відповідь
 копіюється в `ControlItemMessage`.
 
+`INetSdrControlClient` (простір імен `NetSdr.Control`) містить усі члени класу, крім
+конструктора і `ConnectAsync`. Його реалізують `NetSdrControlClient` і
+`ResilientControlClient` (спека `2026-10-07-netsdr-resilience-logging-design.md`), тому
+ідентифікація і клієнти пристроїв працюють з обома. Публічна поведінка
+`NetSdrControlClient` не змінилася.
+
+Логування: `ILoggerFactory` з опцій, категорія `NetSdr.Control.NetSdrControlClient`,
+EventId 1000-1099.
+
+| Рівень | Що |
+|---|---|
+| Trace | hex кадрів в обидва боки; рядок будується лише після `IsEnabled(Trace)` |
+| Debug | кожен запит і відповідь (тип, код, ім'я пункту для типізованих викликів, розмір, тривалість), NAK, кожне unsolicited |
+| Information | підключення, звичайне закриття |
+| Warning | таймаут, чужа відповідь |
+| Error | збій клієнта |
+
+Для внутрішніх клієнтів `ResilientControlClient` підключення, закриття, збій і таймаут
+пишуться на Debug (спека 2026-10-07, 3.2). Повний перелік подій у спеці 2026-10-07.
+
 `LocalEndPoint` і `RemoteEndPoint` читаються із сокета під час `ConnectAsync` і лишаються
 доступними після відключення. IPv4-адреса, яку двомодовий сокет повідомляє як
 IPv4-mapped IPv6, повертається як IPv4, бо `DataOutputUdpAddress.For` приймає лише IPv4.
@@ -362,8 +408,8 @@ IPv4-mapped IPv6, повертається як IPv4, бо `DataOutputUdpAddress
 ```mermaid
 flowchart TB
     subgraph Caller["Потік виклику SetAsync / GetAsync"]
-        S1[SemaphoreSlim: один запит у польоті] --> S2[Зібрати кадр у буфер з ArrayPool]
-        S2 --> S3["pending = PendingRequest<T>"]
+        S1["SemaphoreSlim: один запит у польоті"] --> S2[Зібрати кадр у буфер з ArrayPool]
+        S2 --> S3["pending = PendingRequest#lt;T#gt;"]
         S3 --> S4[stream.WriteAsync]
         S4 --> S5[await pending.Task з таймаутом]
     end
@@ -442,8 +488,6 @@ public readonly struct DataPacketInfo
     public int GapBefore { get; }        // скільки пакетів загубилося перед цим
     public bool IsCaptureStart { get; }  // Sequence == 0
     public SampleFormat Format { get; }  // Int16, Int24, Unknown
-    public long Timestamp { get; }       // Stopwatch.GetTimestamp(), монотонний
-    public DateTime UtcTime { get; }     // час прийому для запису у файл
 }
 
 public enum SampleFormat : byte { Unknown = 0, Int16 = 1, Int24 = 2 }
@@ -468,6 +512,9 @@ public sealed class DataReceiverOptions
     public IPAddress? RemoteAddress { get; set; }
     public int InitialReceiveBufferBytes { get; set; } = 4 * 1024 * 1024;
     public ThreadPriority ThreadPriority { get; set; } = ThreadPriority.AboveNormal;
+    public ILoggerFactory LoggerFactory { get; set; } = NullLoggerFactory.Instance;  // null: ArgumentNullException
+    public TimeSpan StatisticsLogInterval { get; set; } = TimeSpan.FromSeconds(10); // Timeout.InfiniteTimeSpan вимикає
+    internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;         // для тестів
 }
 
 public readonly record struct DataReceiverStatistics(
@@ -480,6 +527,21 @@ public static class DataRate
 }
 ```
 
+`DataPacketInfo` не несе часу прийому. З 2026-10-07 у ньому немає `Timestamp` і `UtcTime`,
+і приймач не читає годинник на кожен пакет. Застосунок відновлює час із кількості семплів
+або з sequence number.
+
+Логування приймача: `ILoggerFactory` з опцій, категорія `NetSdr.Data.NetSdrDataReceiver`,
+EventId 1200-1299. Деталі в спеці `2026-10-07-netsdr-resilience-logging-design.md`.
+- Окремі пакети не логуються навіть на рівні Trace.
+- Старт прийому на рівні Information, кожен розрив sequence на рівні Debug.
+- Підсумок статистики за інтервал. Потік прийому раз на 256 пакетів читає годинник і пише
+  підсумок, якщо минув `StatisticsLogInterval`. Таймера немає. Якщо за інтервал зросли
+  `Lost`, `Rejected` або `HandlerErrors`, це Warning 1202, інакше Debug 1201. Підсумок від
+  `Start` пише `Dispose` на рівні Information (1203).
+- Виняток обробника: перший в інтервалі логується на рівні Error зі стеком, решта лише
+  рахуються в підсумку.
+
 ### 6.2. Цикл прийому
 
 Окремий фоновий потік, синхронний `ReceiveFrom` в один буфер на 65535 байт, тобто
@@ -491,7 +553,7 @@ public static class DataRate
 flowchart TB
     L1[ReceiveFrom у буфер 64 КБ] --> L2{RemoteAddress задано і не збігається?}
     L2 -- так --> REJ[Rejected++]
-    L2 -- ні --> L3{n < 4 або тип != Data0?}
+    L2 -- ні --> L3{"n < 4 або тип != Data0?"}
     L3 -- так --> REJ
     L3 -- ні --> L4{ValidateLength і довжина != n?}
     L4 -- так --> REJ
@@ -505,7 +567,7 @@ flowchart TB
     L7 --> L10
     L9 --> L10["expected = seq == 0xFFFF ? 1 : seq + 1"]
     L8b --> L11
-    L10 --> L11[Format за довжиною: 1028/516 Int16, 1444/388 Int24, інакше Unknown]
+    L10 --> L11["Format за довжиною: 1028/516 Int16, 1444/388 Int24, інакше Unknown"]
     L11 --> L12["handler(in info, buf[4..n])"]
     L12 --> L13{виняток?}
     L13 -- так --> HE[HandlerErrors++]
@@ -719,6 +781,11 @@ flowchart TB
 
 Усі винятки фреймворку успадковують `NetSdrException`.
 
+Таблиця вище описує `NetSdrControlClient`. Помилки `ResilientControlClient` (повтори після
+таймауту і обриву, `CommandTimeout`, збій `ConnectionRestored`, відмова від перепідключення,
+`DisposeAsync`) описані в спеці `2026-10-07-netsdr-resilience-logging-design.md`. Нових
+публічних типів винятків там немає: обрив лишається `IOException`.
+
 ## 9. Тестування
 
 Розробка через TDD: тест, провал, мінімальна реалізація, рефакторинг. Усі інтеграційні
@@ -773,7 +840,11 @@ flowchart TB
   додаванням прикладу.
 - UDP без проміжних буферів і каналів: callback у потоці прийому.
 - Таймаут за замовчуванням закриває з'єднання, бо протокол не має ідентифікаторів запитів.
-- Keepalive і перепідключення на боці застосунку.
+- Keepalive і перепідключення на боці застосунку. Рішення замінено 2026-10-07 спекою
+  `2026-10-07-netsdr-resilience-logging-design.md`: фреймворк має `ResilientControlClient` з
+  heartbeat, перепідключенням і callback `ConnectionRestored`. `NetSdrControlClient`
+  лишився без них, і для нього попереднє рішення чинне. Стан пристрою після перепідключення
+  відновлює застосунок у `ConnectionRestored`, фреймворк його не зберігає.
 
 ## 11. Приклад: власний протокол поверх базового (Vega)
 
@@ -846,7 +917,7 @@ public abstract class VegaReceiverBase : IAsyncDisposable
     public static Task<VegaReceiverBase> ConnectAsync(IPEndPoint endPoint, uint unlockKey,
         NetSdrControlClientOptions? options = null, CancellationToken ct = default);
 
-    public NetSdrControlClient Control { get; }      // стандартні пункти напряму
+    public INetSdrControlClient Control { get; }     // стандартні пункти напряму
     public DeviceIdentity Identity { get; }          // паспорт, зібраний при підключенні
 
     public Task SelectAntennaAsync(byte channel, AntennaPort port, CancellationToken ct = default);
@@ -866,12 +937,12 @@ public abstract class VegaReceiverBase : IAsyncDisposable
 
 public sealed class VegaV1Receiver : VegaReceiverBase   // BoardTemperatureV1
 {
-    public VegaV1Receiver(NetSdrControlClient control, DeviceIdentity identity);
+    public VegaV1Receiver(INetSdrControlClient control, DeviceIdentity identity);
 }
 
 public sealed class VegaV2Receiver : VegaReceiverBase   // BoardTemperatureV2
 {
-    public VegaV2Receiver(NetSdrControlClient control, DeviceIdentity identity);
+    public VegaV2Receiver(INetSdrControlClient control, DeviceIdentity identity);
 }
 
 public abstract record VegaEvent;
@@ -908,6 +979,9 @@ sequenceDiagram
   TCP-підключення каталог закриває клієнт і лише тоді кидає виняток.
   `DeviceNotRecognizedException` перетворюється на `VegaException`.
 - Конструктори версійних класів публічні: застосунок із власним каталогом створює їх сам.
+  Вони приймають `INetSdrControlClient`, тому працюють і поверх `ResilientControlClient`
+  через `DeviceCatalog.AttachAsync`. Статичний `ConnectAsync` створює звичайний
+  `NetSdrControlClient`.
 - Спільна логіка в базі, версійне лише `GetTemperatureAsync` і `TryParseEvent`.
   `OverloadEvent` розбирається в базі, бо однаковий в обох версіях.
 - `StartStreamAsync` надсилає по черзі `OutputSampleRate(0, sampleRate)`,

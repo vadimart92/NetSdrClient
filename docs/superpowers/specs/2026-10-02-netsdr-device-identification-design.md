@@ -4,6 +4,9 @@
 Статус: узгоджено в обговоренні, чекає на огляд письмової версії.
 Узгоджено з реалізацією 2026-10-02 (фінальний огляд гілки): розділ 8 називає шість кодів
 стандартних проб, не сім.
+Доповнено 2026-10-07 спекою `2026-10-07-netsdr-resilience-logging-design.md`: проби,
+`ReadAsync`, фабрики і `AttachAsync` каталогу приймають `INetSdrControlClient`,
+`IdentificationOptions` має `LoggerFactory` (розділи 2, 3.1, 4.1, 4.2, 5.1, 5.2 і 6.3).
 Базується на: `2026-10-02-netsdr-framework-design.md` (далі "базова спека")
 
 ## 1. Мета і межі
@@ -43,14 +46,14 @@ flowchart LR
         D2[VegaV2Receiver]
     end
     subgraph Ident["NetSdr.Identification"]
-        CAT["DeviceCatalog&lt;TDevice&gt;"]
+        CAT["DeviceCatalog#lt;TDevice#gt;"]
         ID["DeviceIdentity.ReadAsync"]
         PR[Стандартні проби]
         CAT --> ID
         ID --> PR
     end
     subgraph Core["NetSdr.Control"]
-        CC[NetSdrControlClient]
+        CC[INetSdrControlClient]
     end
     A -->|"ConnectAsync(host)"| CAT
     P -.->|реєстрація| CAT
@@ -133,7 +136,7 @@ public sealed record DeviceIdentity
     public TFact Get<TFact>() where TFact : notnull;   // KeyNotFoundException з іменем типу
     public IReadOnlyCollection<Type> FactTypes { get; } // для діагностики
 
-    public static Task<DeviceIdentity> ReadAsync(NetSdrControlClient client,
+    public static Task<DeviceIdentity> ReadAsync(INetSdrControlClient client,
         IdentificationOptions? options = null, CancellationToken ct = default);
 }
 
@@ -178,13 +181,14 @@ public sealed class DeviceIdentityBuilder
 ### 4.1. Типи
 
 ```csharp
-public delegate Task ProbeAsync(NetSdrControlClient client, DeviceIdentityBuilder builder,
+public delegate Task ProbeAsync(INetSdrControlClient client, DeviceIdentityBuilder builder,
     CancellationToken ct);
 
 public sealed class IdentificationOptions
 {
     public bool IncludeStandardProbes { get; set; } = true;
     public IList<ProbeAsync> Probes { get; } = new List<ProbeAsync>();
+    public ILoggerFactory LoggerFactory { get; set; } = NullLoggerFactory.Instance;  // null: ArgumentNullException
 }
 
 public static class Probes
@@ -198,6 +202,11 @@ public static class Probes
 
 `Probes.Item<T>` робить `GetAsync<T>` і кладе структуру в мішок як факт типу `T`. На
 `NetSdrNakException` викликає `MarkUnsupported(T.Code)` і нічого не кладе.
+
+Логування ідентифікації: `IdentificationOptions.LoggerFactory`, EventId 1300-1399, деталі в
+спеці 2026-10-07. Кожна проба і її результат на рівні Debug, прочитаний паспорт і обрана
+реєстрація каталогу на рівні Information, нерозпізнаний пристрій на рівні Warning.
+`DeviceCatalog` бере логер із тих самих опцій.
 
 ### 4.2. Порядок виконання
 
@@ -216,7 +225,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Q["GetAsync&lt;T&gt;"] --> X{результат}
+    Q["GetAsync#lt;T#gt;"] --> X{результат}
     X -- відповідь --> OK[поле паспорта]
     X -- NetSdrNakException --> U["null + Unsupported.Add(code)"]
     X -- "інший виняток" --> T[летить назовні з ReadAsync]
@@ -229,8 +238,8 @@ flowchart LR
   Порожній payload на будь-який ID трактується як відсутність.
 - Проби застосунку йдуть після стандартних у порядку списку. Так делегатна проба вже
   бачить `ProductId` і `FirmwareVersion` у `builder.Current`.
-- Усі запити йдуть через звичайний клієнт, тобто послідовно, під його семафором і з його
-  `ResponseTimeout`.
+- Усі запити йдуть через переданий клієнт (`NetSdrControlClient` або
+  `ResilientControlClient`), тобто послідовно і з його таймаутами.
 
 ### 4.3. Делегатна проба
 
@@ -250,22 +259,23 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
 
     public DeviceCatalog<TDevice> Register(string name,
         Func<DeviceIdentity, bool> matches,
-        Func<NetSdrControlClient, DeviceIdentity, TDevice> create);
+        Func<INetSdrControlClient, DeviceIdentity, TDevice> create);
     public DeviceCatalog<TDevice> Register(string name,
         Func<DeviceIdentity, bool> matches,
-        Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync);
+        Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync);
 
     public DeviceCatalog<TDevice> Default(
-        Func<NetSdrControlClient, DeviceIdentity, TDevice> create);
+        Func<INetSdrControlClient, DeviceIdentity, TDevice> create);
     public DeviceCatalog<TDevice> Default(
-        Func<NetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync);
+        Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>> createAsync);
 
     public IReadOnlyList<string> Registrations { get; }
     public bool HasDefault { get; }
 
+    // ConnectAsync створює звичайний NetSdrControlClient з clientOptions
     public Task<TDevice> ConnectAsync(string host, int port = 50000, CancellationToken ct = default);
     public Task<TDevice> ConnectAsync(IPEndPoint endPoint, CancellationToken ct = default);
-    public Task<TDevice> AttachAsync(NetSdrControlClient client, CancellationToken ct = default);
+    public Task<TDevice> AttachAsync(INetSdrControlClient client, CancellationToken ct = default);
 }
 
 public sealed class DeviceNotRecognizedException : NetSdrException
@@ -302,7 +312,7 @@ flowchart TB
   тримає.
 - `AttachAsync` робить те саме з уже підключеним клієнтом і ніколи його не закриває,
   навіть при `DeviceNotRecognizedException`. Власник лишається викликач. Потрібно для
-  тестів і коли застосунок підключається сам.
+  тестів і коли застосунок підключається сам, наприклад через `ResilientControlClient`.
 - `Register` і `Default` не потокобезпечні й призначені для старту застосунку.
   `ConnectAsync` і `AttachAsync` можна викликати паралельно, кожен виклик має свій клієнт.
 - Проби беруться з `identification.Probes` каталогу. Якщо кандидатам потрібні різні
@@ -380,7 +390,7 @@ classDiagram
     class VegaReceiverBase {
         <<abstract>>
         +ConnectAsync(host, port, key)$ Task~VegaReceiverBase~
-        +Control : NetSdrControlClient
+        +Control : INetSdrControlClient
         +Identity : DeviceIdentity
         +SelectAntennaAsync()
         +GetAntennaAsync()
@@ -406,7 +416,7 @@ classDiagram
   потік, події, `DisposeAsync`. Версійне: `GetTemperatureAsync` і розбір unsolicited у
   захищеному віртуальному `TryParseEvent`. `OverloadEvent` розбирається в базі, бо він
   однаковий.
-- Конструктори `VegaV1Receiver(NetSdrControlClient, DeviceIdentity)` і
+- Конструктори `VegaV1Receiver(INetSdrControlClient, DeviceIdentity)` і
   `VegaV2Receiver(...)` публічні, щоб каталог застосунку міг їх створювати напряму.
 - Статичний `VegaReceiverBase.ConnectAsync(host, port, key, options, ct)` зберігається
   як зручний шлях. Усередині це `DeviceCatalog<VegaReceiverBase>` з пробою

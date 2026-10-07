@@ -1,13 +1,16 @@
 # Архітектура NetSdr
 
-Огляд у нотації [C4](https://c4model.com): контекст, контейнери, компоненти і одна
-динамічна діаграма, що зшиває їх у робочий сценарій. Діаграми описують код у цьому
+Огляд у нотації [C4](https://c4model.com): контекст, контейнери, компоненти і дві
+динамічні діаграми, що зшивають їх у робочі сценарії. Діаграми описують код у цьому
 репозиторії. Деталі API і поведінки лежать у специфікаціях:
 
 - [Фреймворк](superpowers/specs/2026-10-02-netsdr-framework-design.md): кадрування,
   структури команд, канали керування і даних, тестовий сервер, приклад Vega.
 - [Ідентифікація пристрою](superpowers/specs/2026-10-02-netsdr-device-identification-design.md):
   паспорт, проби, каталог клієнтів, версії Vega.
+- [Стійкість і логування](superpowers/specs/2026-10-07-netsdr-resilience-logging-design.md):
+  `ResilientControlClient` з перепідключенням і heartbeat, `INetSdrControlClient`,
+  логування всієї бібліотеки.
 
 Рівень 4 (код) окремо не малюю. Класові діаграми ключових типів є в специфікаціях, а решту
 швидше прочитати в самому коді.
@@ -67,8 +70,10 @@ flowchart TB
     subgraph ship["Постачається в застосунок"]
         app["<b>Застосунок</b><br/>[.NET 10, код користувача]<br/>Власні Control Items, проби,<br/>клієнти пристроїв"]
         vega["<b>NetSdr.Examples.Vega</b><br/>[Бібліотека-приклад]<br/>Протокол Vega поверх базового,<br/>клієнти прошивок v1 і v2"]
-        core["<b>NetSdr</b><br/>[Бібліотека, лише BCL]<br/>Кадрування, структури команд,<br/>TCP-клієнт, UDP-приймач,<br/>ідентифікація"]
+        core["<b>NetSdr</b><br/>[Бібліотека, Polly.Core,<br/>Logging.Abstractions]<br/>Кадрування, структури команд,<br/>TCP-клієнт, стійкий клієнт,<br/>UDP-приймач, ідентифікація"]
     end
+
+    logs["<b>Провайдер логування</b><br/>[Зовнішня система, ILoggerFactory]<br/>Обирає застосунок:<br/>консоль, файл тощо"]
 
     subgraph testonly["Лише для тестів"]
         testing["<b>NetSdr.Testing</b><br/>[Бібліотека, без xUnit]<br/>NetSdrTestServer, ControlFrames,<br/>SampleSources, Eventually"]
@@ -76,7 +81,7 @@ flowchart TB
         vtests["<b>NetSdr.Examples.Vega.Tests</b><br/>[xUnit]<br/>Тести прикладу, VegaEmulator"]
     end
 
-    app -->|"посилається"| core
+    app -->|"посилається,<br/>ILoggerFactory в опціях"| core
     vega -->|"посилається"| core
     testing -->|"посилається"| core
     tests -->|"посилається,<br/>InternalsVisibleTo"| core
@@ -85,19 +90,27 @@ flowchart TB
     vtests -->|"посилається"| testing
     core <-->|"TCP 50000 + UDP"| rx
     testing -.->|"емулює приймач<br/>[TCP + UDP, loopback]"| core
+    core -->|"ILogger, EventId 1000-1399"| logs
 
     classDef container fill:#438DD5,stroke:#2E6295,color:#fff
     classDef external fill:#999999,stroke:#6B6B6B,color:#fff
     class app,vega,core,testing,tests,vtests container
-    class rx external
+    class rx,logs external
 ```
 
-- `NetSdr` не має залежностей поза BCL: `System.IO.Pipelines` і
-  `System.Threading.Channels` входять у runtime.
+- `NetSdr` залежить від двох пакетів поза BCL. `Polly.Core` дає повтори і backoff
+  усередині `ResilientControlClient`, у публічному API типів Polly немає.
+  `Microsoft.Extensions.Logging.Abstractions` дає `ILoggerFactory` в опціях і генератор
+  `[LoggerMessage]`. `System.IO.Pipelines` і `System.Threading.Channels` входять у runtime.
+- Логування за замовчуванням вимкнене: `NullLoggerFactory`. `NetSdr.Testing` не логує.
 - `NetSdr.Testing` окрема бібліотека без тестового фреймворку, тому тести застосунку
   беруть емулятор, не тягнучи xUnit у продакшн-код і не залежачи від тестів фреймворку.
 - `NetSdr.Tests` бачить внутрішній метод клієнта, що приймає `PipeReader` і `Stream`.
-  Так кадрування тестується на пам'яті, без сокетів.
+  Так кадрування тестується на пам'яті, без сокетів. Так само він бачить internal-опції
+  `TimeProvider`: backoff, відмова, `ResponseTimeout` і підсумки UDP тестуються на
+  `FakeTimeProvider`, решта стійкого клієнта на справжньому часі з короткими таймаутами,
+  логи на `FakeLogger` (пакети `Microsoft.Extensions.TimeProvider.Testing` і
+  `Microsoft.Extensions.Diagnostics.Testing`).
 - Приклад Vega показує, як будується застосунок: свої структури, своя проба, свої
   клієнти, свій емулятор поверх `NetSdrTestServer`.
 
@@ -107,39 +120,54 @@ flowchart TB
 flowchart TB
     app["<b>Застосунок</b><br/>[Контейнер]"]
     rx["<b>Приймач</b><br/>[Зовнішня система]"]
+    logs["<b>Провайдер логування</b><br/>[Зовнішня система, ILoggerFactory]"]
 
     subgraph core["NetSdr"]
         ident["<b>Identification</b><br/>[DeviceCatalog#lt;T#gt;, DeviceIdentity, Probes]<br/>Паспорт зі стандартних і власних проб,<br/>вибір клієнта за предикатами"]
+        resil["<b>Resilience</b><br/>[ResilientControlClient]<br/>Наглядач: перепідключення з backoff,<br/>heartbeat Get 0x0005, ConnectionRestored,<br/>повтори команд через Polly"]
         control["<b>Control</b><br/>[NetSdrControlClient]<br/>Цикл читання на PipeReader,<br/>один запит у польоті під SemaphoreSlim,<br/>unsolicited в обмеженому Channel"]
         data["<b>Data</b><br/>[NetSdrDataReceiver, DataSequence]<br/>Окремий Thread, ReceiveFrom у буфер 64 КБ,<br/>контроль sequence, виклик callback"]
         items["<b>Items</b><br/>[IControlItem#lt;T#gt;, UInt40, 25 структур]<br/>Команда це struct,<br/>байти кастяться через MemoryMarshal"]
         framing["<b>Framing</b><br/>[FrameHeader, RequestType, ReplyType]<br/>Заголовок: 13 біт довжини, 3 біти типу"]
     end
 
-    app -->|"Register, Default, ConnectAsync"| ident
+    app -->|"Register, Default,<br/>ConnectAsync, AttachAsync"| ident
+    app -->|"ConnectAsync, SetAsync,<br/>GetAsync, Unsolicited"| resil
     app -->|"SetAsync, GetAsync, Unsolicited"| control
     app -->|"Bind, Start, callback(info, samples)"| data
     app -.->|"власні структури команд"| items
-    ident -->|"проби: GetAsync, SetAsync"| control
+    ident -->|"проби через INetSdrControlClient"| control
+    ident -->|"проби через INetSdrControlClient"| resil
+    resil -->|"новий клієнт на кожне з'єднання,<br/>сирий SendAsync"| control
     ident -->|"стандартні пункти 0x0001..0x000A"| items
     control -->|"T.Write, T.Read"| items
     control -->|"запис і розбір кадрів"| framing
     data -->|"перевірка заголовка"| framing
     control <-->|"TCP 50000"| rx
     rx -->|"UDP Data Item 0"| data
+    control -->|"EventId 1000-1099"| logs
+    resil -->|"EventId 1100-1199"| logs
+    data -->|"EventId 1200-1299"| logs
+    ident -->|"EventId 1300-1399"| logs
 
     classDef component fill:#85BBF0,stroke:#5D82A8,color:#000
     classDef container fill:#438DD5,stroke:#2E6295,color:#fff
     classDef external fill:#999999,stroke:#6B6B6B,color:#fff
-    class ident,control,data,items,framing component
+    class ident,resil,control,data,items,framing component
     class app container
-    class rx external
+    class rx,logs external
 ```
 
 - `Control` і `Data` не знають одне про одного. Застосунок з'єднує їх сам: бере
   `LocalEndPoint` приймача і передає його пристрою командою 0x00C5.
 - `Identification` це надбудова над `Control`, а не частина клієнта. Паспортом можна
   користуватися без каталогу, а клієнтом без паспорта.
+- `Resilience` теж надбудова над `Control`. На кожне з'єднання він створює новий
+  `NetSdrControlClient`, і одночасно існує лише одне з'єднання. Обидва клієнти реалізують
+  `INetSdrControlClient`, тому `Identification` і клієнти пристроїв працюють з будь-яким.
+  Стан пристрою після перепідключення відновлює застосунок у `ConnectionRestored`.
+- Логування наскрізне. Кожен компонент бере `ILoggerFactory` зі своїх опцій, категорія це
+  повне ім'я класу, EventId стабільні й лежать у діапазоні компонента.
 - `Items` не залежить ні від чого, крім BCL. Нова команда застосунку це нова структура,
   без реєстрації: код береться зі статичного члена `Code`.
 
@@ -153,7 +181,12 @@ flowchart TB
 | Цикл читання TCP | Задача пулу, одна на клієнт | Розбирає кадри і `T.Read` прямо з буфера pipe |
 | Продовження після `await SetAsync` | Пул | `RunContinuationsAsynchronously`, код застосунку не блокує цикл читання |
 | Читання `Unsolicited` | Будь-який, один читач | Канал обмежений, при переповненні викидається найстаріше |
+| Наглядач `ResilientControlClient` | Задача пулу, одна на клієнт | Єдиний створює, перевіряє і публікує з'єднання. Чекає на `Completion` внутрішнього клієнта, перепідключається з backoff |
+| Heartbeat | Усередині наглядача, затримки через `TimeProvider` | Get 0x0005 лише на вільній лінії, коли від пристрою нічого не чути `HeartbeatInterval`; новий не йде, поки попередній без відповіді |
+| Callback `ConnectionRestored` | Наглядач, до публікації нового з'єднання | Не виконується паралельно сам із собою чи з heartbeat. Команди застосунку чекають, запити йдуть через `context.Client`; виклик самого `ResilientControlClient` звідси фатальний |
+| Перекачування `Unsolicited` у `ResilientControlClient` | Задача пулу на кожне з'єднання | Один канал на весь час життя клієнта, повідомлення в порядку з'єднань |
 | Callback `DataPacketHandler` | Виділений потік прийому UDP | Довга робота тут означає втрати в сокеті; span дійсний лише всередині виклику |
+| Підсумок статистики UDP у лог | Той самий потік прийому, раз на `StatisticsLogInterval` | Таймера немає: годинник читається раз на 256 пакетів, окремі пакети не логуються |
 
 ## 4. Компоненти `NetSdr.Testing`
 
@@ -211,7 +244,7 @@ flowchart TB
 
     subgraph core["NetSdr"]
         cat["<b>DeviceCatalog#lt;VegaReceiverBase#gt;</b>"]
-        ctl["<b>NetSdrControlClient</b>"]
+        ctl["<b>INetSdrControlClient</b><br/>NetSdrControlClient або<br/>ResilientControlClient"]
         icontrol["<b>IControlItem#lt;T#gt;</b>"]
     end
 
@@ -238,8 +271,9 @@ flowchart TB
 
 ## 6. Динамічна діаграма: підключення і запис I/Q
 
-Наскрізний сценарій через усі компоненти `NetSdr`. Послідовності окремих частин детальніше
-показано в специфікаціях.
+Наскрізний сценарій через компоненти `NetSdr` зі звичайним `NetSdrControlClient`. Обрив і
+відновлення з `ResilientControlClient` показано в розділі 7. Послідовності окремих частин
+детальніше показано в специфікаціях.
 
 ```mermaid
 sequenceDiagram
@@ -273,3 +307,51 @@ sequenceDiagram
     App->>DR: Dispose
     App->>CC: DisposeAsync
 ```
+
+## 7. Динамічна діаграма: обрив і відновлення керування
+
+Той самий застосунок із `ResilientControlClient`. Деталі в спеці
+[стійкості і логування](superpowers/specs/2026-10-07-netsdr-resilience-logging-design.md).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Застосунок
+    participant RC as ResilientControlClient
+    participant Sup as Наглядач
+    participant CC as NetSdrControlClient
+    participant Rx as Приймач
+
+    App->>RC: ConnectAsync(host, options із ConnectionRestored)
+    RC->>CC: new, ConnectAsync
+    CC->>Rx: TCP 50000, перевірка Get 0x0005
+    RC->>Sup: старт
+    App->>RC: catalog.AttachAsync(RC), далі команди
+    alt пристрій закрив TCP
+        Rx--xCC: обрив
+    else лінія мовчить
+        Sup->>CC: heartbeat Get 0x0005
+        Note over Sup,CC: без відповіді ResponseTimeout + LateReplyTimeout, з'єднання закрито
+    end
+    CC-->>Sup: Completion завершено
+    Note over RC,Sup: Warning у лог, нові команди чекають
+    loop перша спроба одразу, далі 1, 2, 4 ... 30 с
+        Sup->>CC: новий NetSdrControlClient, ConnectAsync
+        CC->>Rx: TCP 50000, перевірка Get 0x0005
+    end
+    Sup->>App: ConnectionRestored(context, ct)
+    App->>CC: context.Client: VendorUnlock, частоти, 0x00C5, ReceiverState.Start
+    App-->>Sup: callback завершився
+    Sup->>RC: Publish, Information у лог
+    RC->>CC: команди, що чекали, у порядку викликів
+    Note over App: розрив I/Q позначає context.LostAt
+```
+
+- Жодна команда застосунку не доходить до нового з'єднання, доки `ConnectionRestored` не
+  повернувся. Команду, яку перервав обрив, клієнт надсилає знову вже на новому з'єднанні.
+- Повільна відповідь це ще не обрив. Повтор чекає на запізнілу відповідь і не надсилає
+  запит удруге. З'єднання замінюється, лише коли запит лишився без відповіді
+  `ResponseTimeout + LateReplyTimeout`.
+- `NetSdrDataReceiver` не змінюється і тримає свій порт. Пристрій після `ReceiverState.Start`
+  починає sequence з 0, тому простій не потрапляє в `Lost`. Розрив застосунок позначає за
+  `context.LostAt`.
