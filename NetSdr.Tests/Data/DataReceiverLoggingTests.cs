@@ -124,7 +124,7 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 13, 8);                               // 2 lost
         Send(c.EndPoint, 25, 6);                               // 4 lost
         await ReceivedAsync(c.Receiver, 24);
-        Assert.Equal(new (string?, string?)[] { ("2", "13"), ("4", "25") },logs.Events(1204).Select(r => (r.Value("Gap"), r.Value("Sequence"))));
+        Assert.Equal(new (string?, string?)[] { ("2", "13"), ("4", "25") }, logs.Events(1204).Select(r => (r.Value("Gap"), r.Value("Sequence"))));
         Assert.All(logs.Events(1204), r => Assert.Equal(LogLevel.Debug, r.Level));
     }
 
