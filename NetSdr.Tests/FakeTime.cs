@@ -46,8 +46,10 @@ internal sealed class CountingTimeProvider(TimeProvider inner) : TimeProvider
 
     public override long GetTimestamp()
     {
+        long timestamp = inner.GetTimestamp();
+        // After the read: whoever sees the entry can move fake time without changing what this call returns.
         _timestampReaders.Enqueue(Thread.CurrentThread.Name);
-        return inner.GetTimestamp();
+        return timestamp;
     }
 
     public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();

@@ -18,15 +18,24 @@ public class DataReceiverLoggingTests
     static Task ReceivedAsync(NetSdrDataReceiver receiver, long count) =>
         Eventually.ThatAsync(() => receiver.Statistics.Received == count);
 
+    /// <summary>
+    /// Waits until the receive thread has looked at the clock <paramref name="checks"/> times, once per 256 datagrams.
+    /// The counters grow before the check of their datagram, so fake time moved as soon as they show it could still
+    /// change the outcome of that check.
+    /// </summary>
+    static Task CheckedAsync(CountingTimeProvider clock, int checks) =>
+        Eventually.ThatAsync(() => clock.TimestampReaders.Count(n => n == ReceiveThread) == checks);
+
     static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples) { }
 
     [Fact]
     public async Task Summary_CleanInterval_Debug1201()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
-        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time });
+        var clock = new CountingTimeProvider(time);
+        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         Send(c.EndPoint, 1, 256);
-        await ReceivedAsync(c.Receiver, 256);
+        await CheckedAsync(clock, 1);
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 257, 256);
         await Eventually.ThatAsync(() => logs.Events(1201).Count == 1);
@@ -38,10 +47,11 @@ public class DataReceiverLoggingTests
     public async Task Summary_LossInInterval_Warning1202()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
-        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time });
+        var clock = new CountingTimeProvider(time);
+        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         Send(c.EndPoint, 1, 100);
         Send(c.EndPoint, 105, 156);                            // 4 lost before 105
-        await ReceivedAsync(c.Receiver, 256);
+        await CheckedAsync(clock, 1);
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 261, 256);
         await Eventually.ThatAsync(() => logs.Events(1202).Count == 1);
@@ -57,10 +67,12 @@ public class DataReceiverLoggingTests
     public async Task Summary_Rejected_Warning1202()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
-        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time });
+        var clock = new CountingTimeProvider(time);
+        using var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         Send(c.EndPoint, 1, 200);
         for (int i = 0; i < 56; i++) UdpTestSender.Send(c.EndPoint, UdpTestSender.Datagram(1, 1028, type: 5));
-        await Eventually.ThatAsync(() => c.Receiver.Statistics is { Received: 200, Rejected: 56 });
+        await CheckedAsync(clock, 1);
+        Assert.Equal((200, 56), (c.Receiver.Statistics.Received, c.Receiver.Statistics.Rejected));
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 201, 256);
         await Eventually.ThatAsync(() => logs.Events(1202).Count == 1);
@@ -99,13 +111,15 @@ public class DataReceiverLoggingTests
     public async Task HandlerErrors_FirstPerIntervalLogged()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var clock = new CountingTimeProvider(time);
         using var receiver = new NetSdrDataReceiver(
             (in DataPacketInfo _, ReadOnlySpan<byte> _) => throw new InvalidOperationException("handler"),
-            new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time });
+            new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         receiver.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         receiver.Start();
         Send(receiver.LocalEndPoint, 1, 256);
-        await Eventually.ThatAsync(() => receiver.Statistics.HandlerErrors == 256);
+        await CheckedAsync(clock, 1);
+        Assert.Equal(256, receiver.Statistics.HandlerErrors);
         Assert.IsType<InvalidOperationException>(Assert.Single(logs.Events(1205)).Exception);
         time.Advance(TimeSpan.FromSeconds(10));
         Send(receiver.LocalEndPoint, 257, 256);
