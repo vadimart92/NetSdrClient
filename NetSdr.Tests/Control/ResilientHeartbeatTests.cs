@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using NetSdr.Control;
 using NetSdr.Items;
 using NetSdr.Testing;
@@ -7,18 +9,63 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientHeartbeatTests
 {
+    static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
+
     static int StatusRequests(NetSdrTestServer server) => server.Received.Count(r => r.Code == StatusCodes.Code);
+
+    /// <summary>Seam options on fake time with the heartbeat of <see cref="Resilient.Fast"/>.</summary>
+    static ResilientControlClientOptions FakeHeartbeat(FakeLoggerFactory logs, TimeProvider time)
+    {
+        var options = Resilient.Seam(logs, time);
+        options.HeartbeatInterval = Interval;
+        return options;
+    }
+
+    /// <summary>
+    /// How many times the heartbeat has waited for <see cref="Interval"/> of silence: its delay is the only timer of
+    /// that length (the inner response timeout is 150 ms, ConnectTimeout 5 s).
+    /// </summary>
+    static int SilenceWaits(CountingTimeProvider time) => time.TimerDueTimes.Count(due => due == Interval);
+
+    /// <summary>Records every request the device reads and NAKs the first <paramref name="answered"/> of them; the rest get no reply.</summary>
+    static async Task RecordAndNakAsync(PipeDevice device, ConcurrentQueue<byte[]> requests, int answered = int.MaxValue)
+    {
+        try
+        {
+            for (int n = 1; ; n++)
+            {
+                requests.Enqueue(await device.ReadRequestAsync());
+                if (n <= answered) await device.SendAsync(Resilient.Nak);
+            }
+        }
+        catch (Exception)
+        {
+            // The pipe is gone.
+        }
+    }
 
     [Fact]
     public async Task Heartbeat_IdleNak_Alive()
     {
-        var logs = new FakeLoggerFactory();
-        var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs));   // the bare server NAKs 0x0005
-        await using (server)
+        var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var time = new CountingTimeProvider(fake);
+        var requests = new ConcurrentQueue<byte[]>();
+        var (client, _) = await new PipeConnector(time) { Serve = d => RecordAndNakAsync(d, requests) }
+            .StartAsync(FakeHeartbeat(logs, time));
         await using (client)
         {
-            await Task.Delay(1000);                                                   // ten intervals of silence
-            Assert.InRange(StatusRequests(server) - 1, 5, 11);                        // minus the verification
+            // Ten intervals of silence. Time moves only while the heartbeat waits for its interval, so each interval
+            // sends exactly one Get 0x0005, and none goes out before the interval has passed.
+            for (int i = 1; i <= 10; i++)
+            {
+                await Eventually.ThatAsync(() => SilenceWaits(time) == i);
+                Assert.Equal(i, requests.Count);                                      // the verification and i - 1 heartbeats
+                fake.Advance(Interval);
+            }
+
+            await Eventually.ThatAsync(() => SilenceWaits(time) == 11);
+            Assert.Equal(11, requests.Count);
+            Assert.All(requests, r => Assert.Equal(Hex.Parse(Resilient.GetStatus), r));
             Assert.Empty(logs.Events(1101));
             Assert.Empty(logs.Events(1103));
         }
@@ -44,20 +91,30 @@ public class ResilientHeartbeatTests
     [Fact]
     public async Task Heartbeat_Silent_UnpluggedCable()
     {
-        var logs = new FakeLoggerFactory();
-        var (server, client) = await Resilient.StartAsync(Resilient.Fast(logs));
-        await using (server)
+        var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        var time = new CountingTimeProvider(fake);
+        var requests = new ConcurrentQueue<byte[]>();
+        int connections = 0;
+        // The first connection answers its verification and then falls silent; later ones answer nothing.
+        var connector = new PipeConnector(time)
+        {
+            Serve = d => RecordAndNakAsync(d, requests, answered: Interlocked.Increment(ref connections) == 1 ? 1 : 0),
+        };
+        var (client, _) = await connector.StartAsync(FakeHeartbeat(logs, time));
         await using (client)
         {
-            server.OnRequest(StatusCodes.Code, _ => ControlReply.Silent);           // after the verification passed
-            await Eventually.ThatAsync(() => logs.Events(1101).Count == 1);
-            int written = StatusRequests(server);
-            await Task.Delay(300);                                                    // still before the 750 ms deadline
-            Assert.Equal(written, StatusRequests(server));                            // no second heartbeat while one is unanswered
+            await Eventually.ThatAsync(() => SilenceWaits(time) == 1);
+            fake.Advance(Interval);                                                   // the heartbeat is written
+            await Eventually.ThatAsync(() => requests.Count == 2);
+            await fake.AdvanceUntilAsync(() => logs.Events(1101).Count == 1, TimeSpan.FromMilliseconds(10));
+            // Up to the deadline, 750 ms after the write, nothing else is written: no second heartbeat while one is
+            // unanswered. The next connection waits for the rest of the 1 s floor, so it cannot add a frame yet.
+            await fake.AdvanceUntilAsync(() => logs.Events(1102).Count == 1, TimeSpan.FromMilliseconds(10));
+            Assert.Equal(2, requests.Count);
             await Eventually.ThatAsync(() => logs.Events(1103).Count == 1);
-            Assert.Single(logs.Events(1102));
             Assert.Single(logs.Events(1101));
-            await Eventually.ThatAsync(() => logs.Events(1104).Any(r => r.Value("Phase") == "Verify"));
+            await fake.AdvanceUntilAsync(() => logs.Events(1104).Any(r => r.Value("Phase") == "Verify"), TimeSpan.FromMilliseconds(10));
+            Assert.Single(logs.Events(1102));
         }
     }
 

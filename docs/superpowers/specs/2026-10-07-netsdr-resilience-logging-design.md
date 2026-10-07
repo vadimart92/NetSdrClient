@@ -1629,10 +1629,10 @@ TDD, як і раніше. Кожне очікування в тестах об�
   Той самий шов змушує підключення одразу провалюватися: відмовлене підключення на loopback
   у Windows коштує близько 2 с.
 - У стійкому клієнті `FakeTimeProvider` (`options.TimeProvider`, `UseJitter = false`) лише для
-  тестів backoff, відмови і ритму через шов. Помічник `AdvanceUntilAsync`
+  тестів backoff, відмови, ритму heartbeat і скасування через шов. Помічник `AdvanceUntilAsync`
   (`NetSdr.Tests/FakeTime.cs`) просуває час кроками, бо таймери в очікуванні
   `FakeTimeProvider` не видно. Де важить, від якого моменту рахується таймер (розклад
-  backoff), тест загортає `FakeTimeProvider` у `CountingTimeProvider`, що записує строк кожного
+  backoff, ритм heartbeat), тест загортає `FakeTimeProvider` у `CountingTimeProvider`, що записує строк кожного
   створеного таймера, і рушає час лише тоді, коли потрібний таймер уже існує.
 - Запізнілі відповіді дає `ControlReply.After`. Сервер обробляє кадри по одному, тож його
   відповіді лишаються в порядку. Обробники з воротами звільняють їх у `finally`.
@@ -1711,14 +1711,17 @@ TDD, як і раніше. Кожне очікування в тестах об�
   1104) і вдається після закриття клієнта, що займав сервер.
 
 **Heartbeat**
-- `Heartbeat_IdleNak_Alive`: на голому сервері Get 0x0005 отримує NAK. За 10 інтервалів
-  немає 1101 і перепідключення. Heartbeat іде лише після `HeartbeatInterval` тиші.
+- `Heartbeat_IdleNak_Alive` (шов, `FakeTimeProvider`): пристрій відповідає NAK на кожен Get
+  0x0005. Час рушає на інтервал лише тоді, коли heartbeat чекає на свою затримку. За 10
+  інтервалів рівно 10 heartbeat, немає 1101 і перепідключення. Heartbeat іде лише після
+  `HeartbeatInterval` тиші.
 - `Heartbeat_SkippedWhileTrafficFlows`: команди кожні 50 мс при `HeartbeatInterval` 100 мс,
   після перевірки жодного запиту 0x0005.
-- `Heartbeat_Silent_UnpluggedCable`: `StatusCodes` мовчить після підключення (обробник
-  ставиться після підключення, щоб перевірка пройшла). Warning 1101 один раз, через
-  `LateReplyTimeout` 1102, далі 1103 і спроби перепідключення. Другий heartbeat не
-  записується, поки перший без відповіді.
+- `Heartbeat_Silent_UnpluggedCable` (шов, `FakeTimeProvider`): перше з'єднання відповідає на
+  перевірку і далі мовчить, наступні не відповідають ні на що. Warning 1101 один раз, через
+  `LateReplyTimeout` 1102, далі 1103 і спроба перепідключення з `Phase = Verify`. Аж до
+  дедлайну на лінію не пишеться нічого: другий heartbeat не записується, поки перший без
+  відповіді.
 - `Heartbeat_LateReply_NoReconnect`: heartbeat відповідається `After(ResponseTimeout +
   100 ms)`. Warning 1101 і Debug 1108, 1103 немає.
 - `Heartbeat_Disabled`: при `HeartbeatInterval = Infinite` після перевірки жодного 0x0005.
@@ -1777,8 +1780,9 @@ TDD, як і раніше. Кожне очікування в тестах об�
   розв'язується.
 - `Cancellation_BeforeWrite_NothingWritten`: скасування до виклику, в очікуванні admission,
   перепідключення або Wire дає `OperationCanceledException`, нічого не записано.
-- `Cancellation_AfterWrite_ReturnsAtOnce`: скасування після запису дає
-  `OperationCanceledException` одразу.
+- `Cancellation_AfterWrite_ReturnsAtOnce` (шов, `FakeTimeProvider`): скасування після запису
+  дає `OperationCanceledException`, поки фальшивий час стоїть, тобто без очікування
+  `ResponseTimeout` чи запізнілої відповіді.
 - `Cancellation_NextSetOfSameItem_GetsItsOwnEcho`: Set `AfGain` 1, скасування, Set `AfGain` 2
   повертає власне відлуння, ніколи скасоване.
 - `ConcurrentCommands_AcrossADrop_InCallOrder`: десять паралельних Set `AfGain` з унікальними

@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Net;
+using Microsoft.Extensions.Time.Testing;
 using NetSdr.Control;
 using NetSdr.Items;
 using NetSdr.Testing;
@@ -112,19 +112,19 @@ public class ResilientTimeoutTests
     [Fact]
     public async Task Cancellation_AfterWrite_ReturnsAtOnce()
     {
-        var options = Resilient.Fast();
+        var time = new FakeTimeProvider();
+        var options = Resilient.Seam(time: time);
         options.ResponseTimeout = TimeSpan.FromSeconds(2);
-        var (server, client) = await Resilient.StartAsync(options, s => s.OnRequest(ProductId.Code, _ => ControlReply.Silent));
-        await using (server)
+        var (client, device) = await new PipeConnector(time).StartAsync(options);
         await using (client)
         {
             using var cancel = new CancellationTokenSource();
             var call = client.GetAsync<ProductId>(cancel.Token);
-            await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == ProductId.Code));
-            var clock = Stopwatch.StartNew();
+            await device.ReadRequestAsync();                                          // written, and never answered
             cancel.Cancel();
+            // The client's clock stands still, so returning at all proves the call waited for nothing on it: neither the
+            // response timeout nor the late reply.
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call.WaitAsync(Limits.Test));
-            Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(500));
         }
     }
 
