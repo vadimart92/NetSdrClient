@@ -127,8 +127,21 @@ public sealed partial class ResilientControlClient
             while (true)
             {
                 watching = true;
-                await WatchAsync(link).ConfigureAwait(false);
+                CancellationToken wake = CurrentWake();
+                await WatchAsync(link, wake).ConfigureAwait(false);
                 watching = false;
+
+                // Woken by a manual reboot request on a live connection (reboot spec 5.4): the supervisor ends the
+                // connection itself, and that is not reported as a loss (no 1103).
+                bool woken = wake.IsCancellationRequested && !_lifetime.IsCancellationRequested && !link.Client.Completion.IsCompleted;
+                if (woken)
+                {
+                    lock (_sync)
+                    {
+                        link.LossCause ??= new IOException("Reboot requested.");
+                    }
+                }
+
                 Exception cause = link.LossCause
                     ?? link.Client.Completion.Exception?.InnerException
                     ?? new IOException("Connection closed.");
@@ -141,13 +154,16 @@ public sealed partial class ResilientControlClient
                     return;
                 }
 
-                try
+                if (!woken)
                 {
-                    ResilientClientLog.ConnectionLost(_logger, link.Client.RemoteEndPoint, cause);
-                }
-                catch (Exception)
-                {
-                    // A logging provider failed; the loss is marked, and the reconnection goes on.
+                    try
+                    {
+                        ResilientClientLog.ConnectionLost(_logger, link.Client.RemoteEndPoint, cause);
+                    }
+                    catch (Exception)
+                    {
+                        // A logging provider failed; the loss is marked, and the reconnection goes on.
+                    }
                 }
 
                 // The old connection is fully drained before the next one is made (spec 6.10 invariant 10).
@@ -155,22 +171,20 @@ public sealed partial class ResilientControlClient
                 await link.Pump.ConfigureAwait(false);
 
                 state = new ReconnectState(cause, lostAt, lostTimestamp);
-                ResilienceContext context = ResilienceContextPool.Shared.Get(_lifetime.Token);
-                try
-                {
-                    context.Properties.Set(ReconnectKey, state);
-                    link = await _reconnect.ExecuteAsync(ReconnectOnceAsync, context, state).ConfigureAwait(false);
-                }
-                finally
-                {
-                    ResilienceContextPool.Shared.Return(context);
-                }
+                link = await RecoverAsync(state).ConfigureAwait(false);
 
                 if (!Publish(link))
                 {
                     // Closed meanwhile: the connection is not wanted. Closed outside the lock, as Publish promises.
                     await CloseLinkAsync(link).ConfigureAwait(false);
+                    FailManualWaiters(state);
                     return;
+                }
+
+                // The callers of the manual reboots of this loss are connected again (reboot spec 4.2).
+                foreach (RebootRequest request in state.ManualWaiters)
+                {
+                    request.Completion.TrySetResult();
                 }
 
                 try
@@ -191,11 +205,14 @@ public sealed partial class ResilientControlClient
         catch (Exception) when (_lifetime.IsCancellationRequested)
         {
             // DisposeAsync ended a wait, or the client already gave up; never reported as a give-up.
+            FailManualWaiters(state);
         }
         catch (Exception ex)
         {
-            // The pipeline ran out of attempts, an attempt failed for good, or watching the published connection failed.
+            // The pipeline ran out of attempts, an attempt failed for good, the recovery policy gave up, or watching
+            // the published connection failed.
             GiveUp(ex, state?.Attempt ?? 0, watching);
+            FailManualWaiters(state);
 
             // After a failure of the heartbeat loop the watched connection is still open, and the Closed client never
             // uses it again: it is closed now rather than at DisposeAsync. After a failed reconnection it is the lost
@@ -212,28 +229,100 @@ public sealed partial class ResilientControlClient
     }
 
     /// <summary>
+    /// Reboot spec 4.1 and 5.3: the series of attempts of one loss, with the reboot steps between them. A series ends
+    /// with a connection, with a reboot that the policy scheduled (the step runs, then a new series), or woken by a
+    /// manual request, which the next turn takes; the attempt limit holds across all of them. Returns a verified
+    /// connection, or throws: the client gives up, or it was closed.
+    /// </summary>
+    private async Task<Link> RecoverAsync(ReconnectState state)
+    {
+        RebootKind? scheduled = null;
+        Exception? scheduledFailure = null;
+        while (true)
+        {
+            RebootRequest? request = TakeRebootRequest();
+            if (request is not null || scheduled is not null)
+            {
+                RebootKind kind = request?.Kind == RebootKind.Hard || scheduled == RebootKind.Hard ? RebootKind.Hard : RebootKind.Soft;
+                await RebootStepAsync(kind, state, request, scheduledFailure, _lifetime.Token).ConfigureAwait(false);
+                (scheduled, scheduledFailure) = (null, null);
+            }
+
+            CancellationToken wake = CurrentWake();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, wake);
+            ResilienceContext context = ResilienceContextPool.Shared.Get(linked.Token);
+            try
+            {
+                context.Properties.Set(ReconnectKey, state);
+                return await _reconnect.ExecuteAsync(ReconnectOnceAsync, context, state).ConfigureAwait(false);
+            }
+            catch (RebootScheduledException ex)
+            {
+                (scheduled, scheduledFailure) = (ex.Kind, ex.InnerException);
+            }
+            catch (Exception ex) when (
+                ex is not (RecoveryGaveUpException or FatalRestoreException)
+                && wake.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+            {
+                // The wake (Ruling C9): whatever the series ended with while a request woke it, the next turn takes
+                // the request; a wake is never a failed attempt (reboot spec 5.2).
+            }
+            finally
+            {
+                ResilienceContextPool.Shared.Return(context);
+            }
+        }
+    }
+
+    /// <summary>The client closed or gave up: the callers of the manual reboots of this loss fail as commands would (Ruling C13).</summary>
+    private void FailManualWaiters(ReconnectState? state)
+    {
+        if (state is null || state.ManualWaiters.Count == 0)
+        {
+            return;
+        }
+
+        Exception closed = ClosedException();
+        foreach (RebootRequest request in state.ManualWaiters)
+        {
+            request.Completion.TrySetException(closed);
+        }
+    }
+
+    /// <summary>
     /// Spec 7.3: probes the published connection with a <c>Get</c> of the status codes whenever nothing has been
     /// heard from the device for <see cref="ResilientControlClientOptions.HeartbeatInterval"/>, and returns when the
     /// inner client of <paramref name="link"/> has ended, for whatever reason, without throwing: the supervisor reads
     /// the cause from the client itself. A dead idle connection is found by the heartbeat's late-reply deadline
-    /// (<see cref="Expire"/>), which closes the inner client.
+    /// (<see cref="Expire"/>), which closes the inner client. Also returns when <paramref name="wake"/> is cancelled, by
+    /// a manual reboot request (reboot spec 5.4), without waiting for the inner client, which the supervisor then closes.
     /// </summary>
-    private async Task WatchAsync(Link link)
+    private async Task WatchAsync(Link link, CancellationToken wake)
     {
         Task completion = link.Client.Completion;
+        // The wake does not contain the lifetime (Ruling C7): every wait ends on either.
+        using var watch = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, wake);
+        CancellationToken stop = watch.Token;
         try
         {
-            while (!completion.IsCompleted && !_lifetime.IsCancellationRequested)
+            while (!completion.IsCompleted && !stop.IsCancellationRequested)
             {
-                await HeartbeatTurnAsync(link, completion).ConfigureAwait(false);
+                await HeartbeatTurnAsync(link, completion, stop).ConfigureAwait(false);
             }
         }
-        catch (Exception) when (_lifetime.IsCancellationRequested)
+        catch (Exception) when (stop.IsCancellationRequested)
         {
             // The disposal, or a give-up, cancelled a wait: the heartbeat stops, the end of the connection is still
             // awaited below, and the exchange on the line is resolved by Settle, the observer, Expire or the end of
             // the inner client, as any other. Every logger call of a turn is guarded, so anything else that escapes
             // is a failure of the heartbeat itself, which the supervisor reports by giving up instead of hiding it.
+            // A cancelled wake is not a failure of the heartbeat either.
+        }
+
+        if (wake.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+        {
+            // Woken: the inner client still runs, and the supervisor ends it.
+            return;
         }
 
         try
@@ -249,15 +338,16 @@ public sealed partial class ResilientControlClient
     /// <summary>
     /// One turn of the heartbeat loop: waits until the heartbeat is due, skips it while a request of somebody else is
     /// on the line, which is the probe then, and otherwise sends one and waits for its outcome. Every wait ends when
-    /// <paramref name="completion"/> completes or the client is disposed.
+    /// <paramref name="completion"/> completes or <paramref name="stop"/> is cancelled: the client is disposed, or a
+    /// manual reboot request woke the supervisor.
     /// </summary>
-    private async Task HeartbeatTurnAsync(Link link, Task completion)
+    private async Task HeartbeatTurnAsync(Link link, Task completion, CancellationToken stop)
     {
         TimeSpan interval = _options.HeartbeatInterval;
         if (interval == Timeout.InfiniteTimeSpan)
         {
-            // No heartbeat: only the end of the connection matters.
-            await Task.WhenAny(completion).ConfigureAwait(false);
+            // No heartbeat: only the end of the connection, the disposal or a wake matter.
+            await Task.WhenAny(completion, Task.Delay(Timeout.InfiniteTimeSpan, _time, stop)).ConfigureAwait(false);
             return;
         }
 
@@ -265,7 +355,7 @@ public sealed partial class ResilientControlClient
         TimeSpan untilDue = interval - _time.GetElapsedTime(Volatile.Read(ref link.LastHeard));
         if (untilDue > TimeSpan.Zero)
         {
-            await Task.WhenAny(completion, Task.Delay(untilDue, _time, _lifetime.Token)).ConfigureAwait(false);
+            await Task.WhenAny(completion, Task.Delay(untilDue, _time, stop)).ConfigureAwait(false);
             return;
         }
 
@@ -273,7 +363,7 @@ public sealed partial class ResilientControlClient
         // checking and taking the line is one atomic step.
         if (!link.Wire.Wait(0))
         {
-            await Task.WhenAny(completion, Task.Delay(interval, _time, _lifetime.Token)).ConfigureAwait(false);
+            await Task.WhenAny(completion, Task.Delay(interval, _time, stop)).ConfigureAwait(false);
             return;
         }
 
@@ -382,7 +472,7 @@ public sealed partial class ResilientControlClient
     /// Otherwise the state is Closed with the failure kept, <see cref="Completion"/> fails with it, event 1106 is written
     /// once, the queued commands wake up to fail with it, and <see cref="Unsolicited"/> ends.
     /// </summary>
-    /// <param name="ex">What the last attempt failed with, or what watching the connection failed with.</param>
+    /// <param name="ex">What the last attempt failed with, the give-up of the recovery policy around it (the same message, Ruling 6), or what watching the connection failed with.</param>
     /// <param name="attempts">How many attempts the current loss got; 0 when there is no loss.</param>
     /// <param name="watching">The failure came from watching the published connection (the heartbeat loop), not from reconnecting.</param>
     private void GiveUp(Exception ex, int attempts, bool watching)
@@ -390,7 +480,8 @@ public sealed partial class ResilientControlClient
         // Steps 1 and 2. A reentrant ConnectionRestored callback is named as the reason, with its own error as the
         // cause, and so is a failure of the heartbeat loop.
         bool reentered = ex is FatalRestoreException;
-        Exception cause = reentered ? ex.InnerException! : ex;
+        bool policyGaveUp = ex is RecoveryGaveUpException;
+        Exception cause = reentered || policyGaveUp ? ex.InnerException! : ex;
         var failure = new IOException(
             reentered
                 ? $"Gave up reconnecting to {_target}: ConnectionRestored called the ResilientControlClient instead of context.Client."
@@ -425,7 +516,10 @@ public sealed partial class ResilientControlClient
         {
             ResilientClientLog.ReconnectGaveUp(
                 _logger, _target, attempts,
-                reentered ? "ConnectionRestored called the ResilientControlClient" : watching ? "heartbeat failed" : "attempts exhausted",
+                reentered ? "ConnectionRestored called the ResilientControlClient"
+                    : watching ? "heartbeat failed"
+                    : policyGaveUp ? "recovery policy gave up"
+                    : "attempts exhausted",
                 failure);
         }
         catch (Exception)
@@ -448,21 +542,30 @@ public sealed partial class ResilientControlClient
     private async ValueTask<Link> ReconnectOnceAsync(ResilienceContext context, ReconnectState state)
     {
         CancellationToken ct = context.CancellationToken;
-        state.Attempt++;
+
+        // The attempt limit of the loss, across every series (reboot spec 5.3, Ruling C10): checked before the try, so
+        // the policy is never asked about an attempt that does not happen.
+        if (state.Attempt >= _options.ReconnectAttempts)
+        {
+            ExceptionDispatchInfo.Throw(state.LastFailure!);
+        }
+
         Link? link = null;
         try
         {
             // Step 1. Polly's jittered delay can be nearly zero, so the floor is kept here, at the start of every attempt.
+            // A reboot request ends it too; the attempt number is taken after it, so a wake consumes none (Ruling 4).
             TimeSpan remaining = AttemptFloor - _time.GetElapsedTime(_lastAttemptStart, _time.GetTimestamp());
             if (remaining > TimeSpan.Zero)
             {
                 await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
             }
 
+            state.Attempt++;
             _lastAttemptStart = _time.GetTimestamp();
 
-            // Steps 2-5, and step 9 for a failure inside them.
-            link = await OpenLinkAsync(phase => state.Phase = phase, ct).ConfigureAwait(false);
+            // Steps 2-5, and step 9 for a failure inside them. A reboot request does not interrupt a running attempt.
+            link = await OpenLinkAsync(phase => state.Phase = phase, _lifetime.Token).ConfigureAwait(false);
 
             // Step 6.
             if (_options.ConnectionRestored is { } restore)
@@ -480,7 +583,7 @@ public sealed partial class ResilientControlClient
             // Step 8.
             return link;
         }
-        catch
+        catch (Exception ex)
         {
             // Step 9 for a failure after the link was opened.
             if (link is not null)
@@ -488,7 +591,21 @@ public sealed partial class ResilientControlClient
                 await CloseLinkAsync(link).ConfigureAwait(false);
             }
 
-            throw;
+            // A wake or the disposal is not a failed attempt, and a reentrant callback is fatal: none asks the policy.
+            if (ex is FatalRestoreException
+                || (ex is OperationCanceledException && ct.IsCancellationRequested)
+                || _lifetime.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            Exception decided = DecideAfterFailure(state, ex, checkSlot: true);
+            if (ReferenceEquals(decided, ex))
+            {
+                throw;
+            }
+
+            throw decided;
         }
     }
 
@@ -521,7 +638,7 @@ public sealed partial class ResilientControlClient
             Task restored;
             try
             {
-                restored = callback(new ConnectionRestoredContext(session, state.Cause!, state.LostAt, null), _lifetime.Token)
+                restored = callback(new ConnectionRestoredContext(session, state.Cause!, state.LostAt, state.AfterReboot), _lifetime.Token)
                     ?? Task.FromException(new InvalidOperationException("ConnectionRestored returned null instead of a task."));
             }
             catch (Exception ex)

@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace NetSdr.Control;
 
 /// <summary>
@@ -11,6 +13,250 @@ public sealed partial class ResilientControlClient
     /// taken. Guarded by <see cref="_sync"/>.
     /// </summary>
     private CancellationTokenSource _rebootWake = new();
+
+    /// <summary>The manual reboot request waiting for the supervisor, or running; <see langword="null"/> when there is none. Guarded by <see cref="_sync"/>.</summary>
+    private RebootRequest? _rebootRequest;
+
+    /// <summary>
+    /// The remote end of the most recent attempt that established TCP (Ruling C23), for <see cref="RebootContext.LastRemoteEndPoint"/>;
+    /// <see langword="null"/> while no attempt has had TCP. Guarded by <see cref="_sync"/>.
+    /// </summary>
+    private IPEndPoint? _lastRemoteEndPoint;
+
+    /// <summary>
+    /// Spec 5.2: takes the request in the slot, if there is one, and marks it running; it stays in the slot, so later
+    /// requests join it. Always replaces the wake, so the next series or watch is not woken by the request just taken.
+    /// </summary>
+    private RebootRequest? TakeRebootRequest()
+    {
+        RebootRequest? request;
+        CancellationTokenSource previous;
+        lock (_sync)
+        {
+            request = _rebootRequest;
+            if (request is not null)
+            {
+                request.Running = true;
+            }
+
+            previous = _rebootWake;
+            _rebootWake = new CancellationTokenSource();
+        }
+
+        previous.Dispose();
+        return request;
+    }
+
+    /// <summary>The token that a manual reboot request cancels to wake the supervisor.</summary>
+    private CancellationToken CurrentWake()
+    {
+        lock (_sync)
+        {
+            return _rebootWake.Token;
+        }
+    }
+
+    /// <summary>Empties the slot when it still holds <paramref name="request"/>.</summary>
+    private void ClearRebootRequest(RebootRequest request)
+    {
+        lock (_sync)
+        {
+            if (ReferenceEquals(_rebootRequest, request))
+            {
+                _rebootRequest = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Spec 5.3: what a failed attempt ends with. Without a rebooter it is the failure itself. With one, a request in
+    /// the slot (when <paramref name="checkSlot"/>) schedules its reboot without asking the policy; otherwise the
+    /// policy decides: a reboot ends the series with <see cref="RebootScheduledException"/>, a give-up with
+    /// <see cref="RecoveryGaveUpException"/>, and Continue or a failing policy (event 1117) return the failure.
+    /// Called outside <see cref="_sync"/>.
+    /// </summary>
+    private Exception DecideAfterFailure(ReconnectState state, Exception failure, bool checkSlot)
+    {
+        state.LastFailure = failure;
+        if (_policy is null)
+        {
+            return failure;
+        }
+
+        if (checkSlot)
+        {
+            RebootKind? requested;
+            lock (_sync)
+            {
+                requested = _rebootRequest?.Kind;
+            }
+
+            if (requested is { } kind)
+            {
+                return new RebootScheduledException(kind, failure);
+            }
+        }
+
+        state.FailedAttemptsSinceReboot++;
+        RecoveryAction action;
+        try
+        {
+            action = _policy.OnAttemptFailed(new RecoveryContext(
+                state.Attempt, state.FailedAttemptsSinceReboot, state.Phase, failure,
+                _time.GetElapsedTime(state.LostTimestamp), state.SoftReboots, state.HardReboots));
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                ResilientClientLog.RecoveryPolicyFailed(_logger, ex);
+            }
+            catch (Exception)
+            {
+                // A logging provider failed; a failing policy still means Continue.
+            }
+
+            return failure;
+        }
+
+        return action.Kind switch
+        {
+            RecoveryActionKind.Reboot => new RebootScheduledException(action.RebootKind, failure),
+            RecoveryActionKind.GiveUp => new RecoveryGaveUpException(failure),
+            _ => failure,
+        };
+    }
+
+    /// <summary>
+    /// Spec 4.3: one reboot, for an escalation (<paramref name="request"/> is <see langword="null"/>) or a manual request.
+    /// The transport call is bounded by <see cref="ResilientControlClientOptions.RebootTimeout"/>; it and the boot wait
+    /// end with <paramref name="ct"/>, whose cancellation leaves as <see cref="OperationCanceledException"/>. A failed
+    /// reboot (the transport, its timeout, or an unusable boot time) is counted, written as 1115, and returns at once.
+    /// </summary>
+    /// <param name="lastFailure">The failure that led to an escalation, for event 1114.</param>
+    /// <param name="ct">The lifetime of the client, or the caller's token for the first connection.</param>
+    private async Task RebootStepAsync(
+        RebootKind kind, ReconnectState state, RebootRequest? request, Exception? lastFailure, CancellationToken ct)
+    {
+        // Step 1.
+        if (request is null)
+        {
+            try
+            {
+                ResilientClientLog.RebootEscalated(_logger, kind, _target, state.Attempt, state.Phase, lastFailure!);
+            }
+            catch (Exception)
+            {
+                // A logging provider failed; the reboot still runs.
+            }
+        }
+
+        // Step 2.
+        IPEndPoint? lastRemote;
+        lock (_sync)
+        {
+            lastRemote = _lastRemoteEndPoint ?? _link?.Client.RemoteEndPoint;
+        }
+
+        var context = new RebootContext(_target, lastRemote, request is not null);
+        Exception? failure = null;
+        using (var timer = new CancellationTokenSource(_options.RebootTimeout, _time))
+        using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timer.Token))
+        {
+            try
+            {
+                Task reboot = _rebooter!.RebootAsync(kind, context, linked.Token);
+                // A transport that ignores its token is left behind on a timeout or a disposal (Ruling 10); its fault is observed.
+                _ = reboot.ContinueWith(
+                    static t => _ = t.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                await reboot.WaitAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (timer.IsCancellationRequested)
+            {
+                failure = new TimeoutException($"The {kind} reboot of {_target} did not complete within {_options.RebootTimeout}.");
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        }
+
+        // Step 3: counted whether or not the transport succeeded, so the ladder can go on to a hard reboot.
+        if (kind == RebootKind.Hard)
+        {
+            state.HardReboots++;
+        }
+        else
+        {
+            state.SoftReboots++;
+        }
+
+        state.FailedAttemptsSinceReboot = 0;
+
+        // Step 5. An unusable boot time is a failed reboot (Ruling 7): Task.Delay would throw past Int32.MaxValue ms.
+        TimeSpan bootTime = TimeSpan.Zero;
+        if (failure is null)
+        {
+            try
+            {
+                bootTime = _rebooter!.GetBootTime(kind);
+                if (bootTime < TimeSpan.Zero || bootTime.TotalMilliseconds > int.MaxValue)
+                {
+                    failure = new InvalidOperationException(
+                        $"GetBootTime({kind}) returned {bootTime}, which is not between zero and Int32.MaxValue milliseconds.");
+                }
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        }
+
+        // Step 4.
+        if (failure is not null)
+        {
+            try
+            {
+                ResilientClientLog.RebootFailed(_logger, kind, _target, failure);
+            }
+            catch (Exception)
+            {
+                // A logging provider failed; a new series of attempts follows.
+            }
+
+            if (request is not null)
+            {
+                request.Completion.TrySetException(failure);
+                ClearRebootRequest(request);
+            }
+
+            return;
+        }
+
+        try
+        {
+            ResilientClientLog.RebootAccepted(_logger, _target, kind, bootTime);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed; the boot wait still runs.
+        }
+
+        state.AfterReboot = kind;
+
+        // Step 6. The 1 s floor between attempt starts is kept by the first attempt of the next series.
+        await Task.Delay(bootTime, _time, ct).ConfigureAwait(false);
+        if (request is not null)
+        {
+            ClearRebootRequest(request);
+            state.ManualWaiters.Add(request);
+        }
+    }
 
     /// <summary>A manual reboot request: its kind (Hard wins when requests merge) and the callers waiting for it.</summary>
     private sealed class RebootRequest

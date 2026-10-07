@@ -109,11 +109,14 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
                     Delay = TimeSpan.FromSeconds(1),
                     MaxDelay = TimeSpan.FromSeconds(30),
                     UseJitter = options.UseJitter,
-                    // Cancellation is the disposal, never a failed attempt; a reentrant ConnectionRestored callback is
-                    // fatal (spec 7.5), so the client gives up instead of trying again.
-                    ShouldHandle = static a => ValueTask.FromResult(
-                        a.Outcome.Exception is not (null or FatalRestoreException)
-                        && !a.Context.CancellationToken.IsCancellationRequested),
+                    // Cancellation is the disposal or a reboot request, never a failed attempt; a reentrant
+                    // ConnectionRestored callback is fatal (spec 7.5), so the client gives up instead of trying again;
+                    // a decision of the recovery policy ends the series (reboot spec 5.3); and the attempt limit holds
+                    // across every series of the loss (Ruling 3).
+                    ShouldHandle = a => ValueTask.FromResult(
+                        a.Outcome.Exception is not (null or FatalRestoreException or RebootScheduledException or RecoveryGaveUpException)
+                        && !a.Context.CancellationToken.IsCancellationRequested
+                        && a.Context.Properties.GetValue(ReconnectKey, null!).Attempt < options.ReconnectAttempts),
                     OnRetry = a =>
                     {
                         // OnRetryArguments carries no TState: the counter and the phase come from the context.
@@ -421,9 +424,11 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             link.Pump = PumpAsync(link);
 
             // Step 4. From here DisposeAsync sees the link and closes it; a client already closed takes no new link.
+            // The remote end is kept for the next reboot's context (Ruling C23).
             bool closed;
             lock (_sync)
             {
+                _lastRemoteEndPoint = inner.RemoteEndPoint ?? _lastRemoteEndPoint;
                 closed = _state == ClientState.Closed;
                 if (!closed)
                 {
