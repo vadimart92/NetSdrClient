@@ -542,23 +542,4 @@ public sealed partial class ResilientControlClient
             // A logging provider failed; the callback succeeded, and the connection is published.
         }
     }
-
-    /// <summary>The state of one loss across the attempts of the reconnection pipeline (spec 8).</summary>
-    private sealed class ReconnectState(Exception cause, DateTimeOffset lostAt, long lostTimestamp)
-    {
-        /// <summary>Why the connection was lost.</summary>
-        public Exception Cause { get; } = cause;
-
-        /// <summary>When it was lost, as <see cref="ConnectionRestoredContext"/> reports it.</summary>
-        public DateTimeOffset LostAt { get; } = lostAt;
-
-        /// <summary>The timestamp of the loss, for the downtime of event 1105.</summary>
-        public long LostTimestamp { get; } = lostTimestamp;
-
-        /// <summary>How many attempts this loss has had, the running one included.</summary>
-        public int Attempt { get; set; }
-
-        /// <summary>The phase the running attempt is in, for event 1104.</summary>
-        public ReconnectPhase Phase { get; set; }
-    }
 }

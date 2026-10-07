@@ -94,12 +94,15 @@ NetSdr/
   NetSdr.csproj                         + Polly.Core 8.8.0, Microsoft.Extensions.Logging.Abstractions 10.0.12
   Control/
     INetSdrControlClient.cs             новий
-    ResilientControlClient.cs           новий: API, шлях команди, Link, Exchange, CommandExecution
+    ResilientControlClient.cs           новий: API, шлях команди, Settle, спостерігач, Expire
+    ResilientControlClient.Types.cs     новий: вкладені приватні типи Link, Exchange, CommandExecution,
+                                        ReconnectState, Resolution і переліки станів
     ResilientControlClient.Supervisor.cs  новий: наглядач, heartbeat, перепідключення, відмова, DisposeAsync
     ResilientControlClient.Log.cs       новий: ResilientClientLog (1100-1199)
     ResilientControlClientOptions.cs    новий
     ConnectionRestoredContext.cs        новий
-    RestoreSession.cs                   новий: приватний вкладений клас ResilientControlClient.RestoreSession (partial-файл)
+    RestoreSession.cs                   новий: приватний вкладений клас ResilientControlClient.RestoreSession (partial-файл),
+                                        поруч із ним RestoreScope і FatalRestoreException
     NetSdrControlClient.cs              змінено: інтерфейс, логування, внутрішні гачки (4.2)
     NetSdrControlClient.Log.cs          новий: ControlClientLog (1000-1099)
     NetSdrControlClientOptions.cs       змінено: LoggerFactory, internal TimeProvider і Supervised
