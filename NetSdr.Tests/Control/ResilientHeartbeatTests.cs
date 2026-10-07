@@ -161,23 +161,26 @@ public class ResilientHeartbeatTests
     [Fact]
     public async Task Heartbeat_LoopFails_GivesUp_AndClosesTheConnection()
     {
-        var logs = new FakeLoggerFactory();
-        var time = new FailingTimersTimeProvider();
-        var options = Resilient.Seam(logs, time);
-        options.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
-        var (client, device) = await new PipeConnector { Serve = d => d.NakEverythingAsync() }.StartAsync(options);
+        var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
+        // Only the heartbeat's waits fail: the inner response timeout (150 ms) and ConnectTimeout are longer.
+        var time = new FailingTimersTimeProvider(fake, failUpTo: Interval);
+        var requests = new ConcurrentQueue<byte[]>();
+        var (client, device) = await new PipeConnector(time) { Serve = d => RecordAndNakAsync(d, requests) }
+            .StartAsync(FakeHeartbeat(logs, time));
         await using (client)
         {
-            time.Armed = true;                                                        // the heartbeat's next wait fails
+            time.Armed = true;                                                        // the first wait exists already
+            fake.Advance(Interval);                                                   // one probe, its NAK, then the next wait fails
             var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.IsType<InvalidOperationException>(failure.InnerException);
             await device.Client.Completion.WaitAsync(Limits.Test);                    // the watched connection is closed
+            Assert.Equal(2, requests.Count);                                          // the verification and the one probe
             Assert.Single(logs.Events(1106));
         }
     }
 
-    /// <summary>The system clock, except that once <see cref="Armed"/> every new timer fails.</summary>
-    private sealed class FailingTimersTimeProvider : TimeProvider
+    /// <summary><c>inner</c>, except that once <see cref="Armed"/> every new timer due within <c>failUpTo</c> fails.</summary>
+    private sealed class FailingTimersTimeProvider(TimeProvider inner, TimeSpan failUpTo) : TimeProvider
     {
         private volatile bool _armed;
 
@@ -187,8 +190,18 @@ public class ResilientHeartbeatTests
             set => _armed = value;
         }
 
+        public override long TimestampFrequency => inner.TimestampFrequency;
+
+        public override TimeZoneInfo LocalTimeZone => inner.LocalTimeZone;
+
+        public override long GetTimestamp() => inner.GetTimestamp();
+
+        public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
-            _armed ? throw new InvalidOperationException("The clock failed.") : System.CreateTimer(callback, state, dueTime, period);
+            _armed && dueTime <= failUpTo
+                ? throw new InvalidOperationException("The clock failed.")
+                : inner.CreateTimer(callback, state, dueTime, period);
     }
 
     [Fact]
