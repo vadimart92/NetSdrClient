@@ -855,8 +855,8 @@ Closed відхиляє всі пізніші переходи.
 
 | Перехід | Хто | Що робить |
 |---|---|---|
-| `MarkLost(link)` | лише наглядач | Діє лише при `Connected` і `_link == link`. Записує `_lastLoss` і `LostAt`, розв'язує поточний обмін цього Link як `Lost`, що звільняє Wire |
-| `Publish(link)` | лише наглядач | Очищає `_restoring`. При Closed закриває Link (поза замком) і повертає `false`. Інакше `_link = link`, стан `Connected` |
+| `MarkLost(link, cause)` | лише наглядач | Діє лише при `Connected` і `_link == link`: стан `Reconnecting`, записує `_lastLoss`, розв'язує поточний обмін цього Link як `Lost`, що звільняє Wire, і повертає `true`. Інакше повертає `false`: клієнт у Closed, кінець з'єднання спричинили `DisposeAsync` або відмова, і наглядач завершується без 1103 (7.1). `LostAt` наглядач бере перед викликом |
+| `Publish(link)` | наглядач і перший `ConnectAsync` | Очищає `_restoring`. При Closed повертає `false`, і викликач закриває Link поза замком (`CloseLinkAsync`). Інакше `_link = link`, стан `Connected` і `_lastLoss = null`: втрату подолано, тож команда, чий дедлайн мине на новому з'єднанні, не називає її причиною (6.5, крок 7) |
 | `GiveUp(cause)` | лише наглядач, лише не в Closed | Перший перемагає. Closed з причиною `GaveUp`, `_failure`, `Completion` з позначеною спостереженою помилкою. Error 1106 пише лише переможець |
 | `Dispose` | будь-який потік, лише перший виклик | Closed з причиною `Disposed`. Після відмови лише прапорець |
 
@@ -976,8 +976,9 @@ a. Перейняття. Якщо `exec.Outstanding is { } e`: `exec.Outstanding
    - `Reply(m)`: Debug 1107 (`Outcome = Reply`), повернути `m`. Нічого не надсилається вдруге.
    - `Nak`: Debug 1107 (`Outcome = Nak`), потім `throw new NetSdrNakException(code, type)`.
      Ніколи не повторюється.
-   - `Lost(cause)`: `IOException("The connection to {target} was lost before {type}
-     0x{code:X4} was answered.", cause)`. Повторюється на наступному з'єднанні.
+   - `Lost(cause)`: у стані Closed кінцевий виняток (`ObjectDisposedException` або `IOException`
+     відмови), як у 4e. Інакше `IOException("The connection to {target} was lost before {type}
+     0x{code:X4} was answered.", cause)`, що повторюється на наступному з'єднанні.
    - `OperationCanceledException` від `t` під час очікування: та сама передача, що в 4e.
      Запит лишається на лінії й тримає Wire, а продовження на `e.Late` пише Debug 1108
      (`CancelledCaller`), якщо обмін закінчиться запізнілою відповіддю.
@@ -995,8 +996,10 @@ b. Link. `link = await WaitForLinkAsync(t)`:
 c. Лінія. `await link.Wire.WaitAsync(t)`.
    - Wire тримається, поки будь-який попередній обмін у польоті або без відповіді, тож
      отримати його означає, що лінія чиста.
-   - Якщо `!link.Client.IsConnected`: звільнити Wire і кинути `IOException`. Нічого не
-     надіслано, спроба повториться.
+   - Якщо `!link.Client.IsConnected`: звільнити Wire. У стані Closed кинути кінцевий виняток
+     (`ObjectDisposedException` або `IOException` відмови), як у 4e. Інакше
+     `IOException("The connection to {target} was lost.", LossCauseOf(link))` (7.4, крок 7).
+     Нічого не надіслано, спроба повториться.
 
 d. Надсилання.
    - Під `_sync`: `link.Current = e = new Exchange(type, code, item, sentAt)`.
@@ -1060,8 +1063,9 @@ e. `await e.Request.WaitAsync(t)`:
 - Link мертвий: `Resolve(e, Lost(cause))`.
 
 **Спостерігач `OnLateReply(link, msg, isNak)`** виконується в циклі читання без внутрішнього
-замка і до `Publish`. Під `_sync` бере `e = link.Current`. Якщо `e` не розв'язаний,
-`Resolve(e, isNak ? Nak : Reply(msg))`, потім `Heard()`. Ніколи не блокує і не кидає: лише
+замка і до `Publish`. Під `_sync` бере `e = link.Current`. Якщо обмін є, спершу `Heard()`, потім
+`Resolve(e, isNak ? Nak : Reply(msg))`: хто прокинеться на розв'язаному обміні або візьме
+звільнений Wire (heartbeat, 7.3), уже бачить свіжий `LastHeard`. Ніколи не блокує і не кидає: лише
 завершує `TaskCompletionSource` з `RunContinuationsAsynchronously` і звільняє `SemaphoreSlim`,
 чиї асинхронні очікувачі теж продовжуються асинхронно. Запізніла відповідь може прийти ще до
 того, як `Settle` позначив обмін `Unanswered`. Спостерігач тоді розв'язує обмін сам, а
@@ -1177,7 +1181,9 @@ sequenceDiagram
 
 1. Гігієна лінії. На кожному з'єднанні запит пише лише той, хто тримає Wire цього
    з'єднання. Wire звільняється лише при розв'язанні запиту: відповідь, NAK, запізніла
-   відповідь або втрата з'єднання. Це стосується команд, heartbeat, перевірки й запитів
+   відповідь або втрата з'єднання. Хто взяв Wire і нічого не записав, звільняє його сам: спроба
+   команди на мертвому з'єднанні (6.5, крок 4c) і heartbeat, якому після перечитування
+   `LastHeard` ще рано (7.3). Це стосується команд, heartbeat, перевірки й запитів
    колбеку, і діє навіть після скасування викликачем. Тому на з'єднанні щонайбільше один
    запит без обліку, і поки він є, нічого не пишеться.
 2. Кожна відповідь і кожен NAK приписуються запиту, що їх спричинив, якщо пристрій відповідає
@@ -1250,20 +1256,27 @@ sequenceDiagram
 SuperviseAsync(Link link):
   try {
     while (true) {
+      watching = true;
       await WatchAsync(link);                              // повертається, коли завершився link.Client.Completion
+      watching = false;
       cause = link.LossCause ?? link.Client.Completion.Exception?.InnerException
               ?? new IOException("Connection closed.");
-      lostAt = tp.GetUtcNow(); MarkLost(link, cause);      // Reconnecting; обмін стає Lost
+      lostAt = tp.GetUtcNow(); lostTimestamp = tp.GetTimestamp();
+      if (!MarkLost(link, cause)) return;                  // Closed: DisposeAsync або відмова, не втрата (7.7 пише лише 1112)
       Log.ConnectionLost(1103, link.RemoteEndPoint, cause);
       await link.Client.DisposeAsync(); await link.Pump;   // старе з'єднання повністю вичерпано
-      state = new ReconnectState(cause, lostAt);           // TState і ctx.Properties[ReconnectKey] (розділ 8)
+      state = new ReconnectState(cause, lostAt, lostTimestamp);  // TState і ctx.Properties[ReconnectKey] (розділ 8)
       link = await _reconnect.ExecuteAsync(ReconnectOnceAsync, ctx(_lifetime.Token, state), state);
-      if (!Publish(link)) return;
-      Log.Reconnected(1105, remote, local, state.Attempt, now - lostAt);
+      if (!Publish(link)) { await CloseLinkAsync(link); return; }
+      Log.Reconnected(1105, remote, local, state.Attempt, now - lostTimestamp);
+      state = null;                                        // втрату подолано: пізніша відмова не її (7.6)
     }
   }
   catch (Exception) when (_lifetime.IsCancellationRequested) { }   // DisposeAsync, ніколи не відмова
-  catch (Exception ex) { GiveUp(ex); await CloseLinkAsync(link); } // pipeline здався, повторний вхід, збій heartbeat
+  catch (Exception ex) {                                           // pipeline здався, повторний вхід, збій heartbeat
+    GiveUp(ex, state?.Attempt ?? 0, watching);
+    try { await CloseLinkAsync(link); } catch { }                  // наглядач ніколи не кидає
+  }
 ```
 
 Після збою циклу heartbeat `link` це ще живе опубліковане з'єднання. Клієнт у Closed ним уже
@@ -1298,10 +1311,11 @@ SuperviseAsync(Link link):
     звільнене місце першому асинхронному очікувачу.
   - Вона також не спрацює, поки запит без відповіді, бо Wire тримається. Перевірка і
     захоплення лінії це одна атомарна операція, гонки "перевірив, потім зробив" немає.
-  - Узявши Wire, перечитати `LastHeard`. Обмін, що щойно звільнив лінію (наприклад, перевірка
-    нового з'єднання), міг почути пристрій уже після першого читання: `Settle` пише
-    `LastHeard` раніше, ніж звільняє Wire. Якщо heartbeat ще не настав, звільнити Wire і почати
-    цикл спочатку. Так heartbeat не йде одразу після кадру, що щойно прийшов.
+  - Узявши Wire, перечитати `LastHeard`. Обмін, що щойно звільнив лінію (наприклад, команда або
+    останній запит колбеку), міг почути пристрій уже після першого читання: `Settle` і
+    спостерігач (6.6) пишуть `LastHeard` раніше, ніж звільняють Wire. Якщо heartbeat ще не
+    настав, звільнити Wire і почати цикл спочатку. Так heartbeat не йде одразу після відповіді,
+    що щойно звільнила лінію.
 - `e = StartExchange(link, Get, 0x0005, empty)`: Wire переходить до обміну. Потім
   `await e.Request` з межею `ResponseTimeout`:
   - Response або NAK означає "живий". Голий `NetSdrTestServer` відповідає на цей Get NAK.
