@@ -286,6 +286,55 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         return CommandAsync(type, code, CopyPayload(type, payload), null, ct, null);
     }
 
+    /// <summary>
+    /// Reboots the device through <see cref="ResilientControlClientOptions.Rebooter"/> and completes once the client is
+    /// connected again after the reboot. On a live connection the client ends it itself (no 1103): the request in flight
+    /// is retried after the restore, as after any loss. A request made while another has not started yet merges with it
+    /// (Hard wins); one made while a reboot runs or its boot wait lasts joins that reboot, whatever its kind.
+    /// </summary>
+    /// <param name="kind">How to reboot the device.</param>
+    /// <param name="ct">Cancels only this caller's wait: once accepted, the reboot itself still happens.</param>
+    /// <exception cref="InvalidOperationException">
+    /// Called from inside <see cref="ResilientControlClientOptions.ConnectionRestored"/> (the client gives up), no
+    /// <see cref="ResilientControlClientOptions.Rebooter"/> is configured, or the client gave up reconnecting (the cause
+    /// is the inner exception).
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
+    /// <exception cref="TimeoutException">In the task: the transport did not complete within <see cref="ResilientControlClientOptions.RebootTimeout"/>.</exception>
+    /// <exception cref="OperationCanceledException">In the task: <paramref name="ct"/> was cancelled.</exception>
+    /// <remarks>
+    /// The task also fails with whatever the transport threw, with <see cref="ObjectDisposedException"/> when the client
+    /// is disposed meanwhile, and with the give-up failure when the client gives up. A failed reboot leaves the
+    /// connection closed, and the client goes on reconnecting.
+    /// </remarks>
+    public Task RebootAsync(RebootKind kind, CancellationToken ct = default)
+    {
+        ThrowIfReentrant();
+        ThrowIfClosed();
+        if (_rebooter is null)
+        {
+            throw new InvalidOperationException("No Rebooter is configured; set ResilientControlClientOptions.Rebooter.");
+        }
+
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled(ct);
+        }
+
+        Task completion = RegisterRebootRequest(kind);
+        try
+        {
+            ResilientClientLog.RebootRequested(_logger, kind, _target);
+        }
+        catch (Exception)
+        {
+            // A logging provider failed; the request is registered and runs.
+        }
+
+        // Cancelling ct cancels only this caller's task, never the reboot (reboot spec 4.2).
+        return completion.WaitAsync(ct);
+    }
+
     /// <summary>Rejects options outside their ranges and returns a copy the client keeps.</summary>
     private static ResilientControlClientOptions Validated(ResilientControlClientOptions? options)
     {

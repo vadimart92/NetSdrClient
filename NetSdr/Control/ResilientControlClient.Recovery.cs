@@ -25,9 +25,12 @@ public sealed partial class ResilientControlClient
 
     /// <summary>
     /// Spec 5.2: takes the request in the slot, if there is one, and marks it running; it stays in the slot, so later
-    /// requests join it. Always replaces the wake, so the next series or watch is not woken by the request just taken.
+    /// requests join it. With an <paramref name="escalation"/> and an empty slot a running placeholder takes the slot
+    /// for the length of the reboot step, so a manual request joins the escalation's reboot too (Ruling C11); a request
+    /// already in the slot takes the escalation's kind when it is Hard. Always replaces the wake, so the next series or
+    /// watch is not woken by the request just taken.
     /// </summary>
-    private RebootRequest? TakeRebootRequest()
+    private RebootRequest? TakeRebootRequest(RebootKind? escalation = null)
     {
         RebootRequest? request;
         CancellationTokenSource previous;
@@ -37,6 +40,14 @@ public sealed partial class ResilientControlClient
             if (request is not null)
             {
                 request.Running = true;
+                if (escalation == RebootKind.Hard)
+                {
+                    request.Kind = RebootKind.Hard;
+                }
+            }
+            else if (escalation is { } kind)
+            {
+                request = _rebootRequest = new RebootRequest { Kind = kind, Running = true, Escalation = true };
             }
 
             previous = _rebootWake;
@@ -45,6 +56,77 @@ public sealed partial class ResilientControlClient
 
         previous.Dispose();
         return request;
+    }
+
+    /// <summary>
+    /// Spec 5.2 and the merge rule of 4.2: an empty slot gets a new request, a request that has not started merges with
+    /// this one (Hard wins), and a running one is joined unchanged. Only the first two wake the supervisor. Returns the
+    /// task every caller of the request shares.
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">The client was disposed after the caller's Closed check (Ruling C12).</exception>
+    /// <exception cref="InvalidOperationException">The client gave up after the caller's Closed check; the cause is the inner exception.</exception>
+    private Task RegisterRebootRequest(RebootKind kind)
+    {
+        RebootRequest request;
+        CancellationTokenSource? wake = null;
+        lock (_sync)
+        {
+            // Ruling C12: checked in the section that writes the slot, which DisposeAsync and GiveUp empty under the
+            // same lock, so no request is left in a slot nobody completes.
+            if (_state == ClientState.Closed)
+            {
+                throw _failure is null
+                    ? new ObjectDisposedException(nameof(ResilientControlClient))
+                    : new InvalidOperationException("The client gave up reconnecting; create a new client.", _failure);
+            }
+
+            if (_rebootRequest is null)
+            {
+                request = _rebootRequest = new RebootRequest { Kind = kind };
+                wake = _rebootWake;
+            }
+            else
+            {
+                request = _rebootRequest;
+                if (!request.Running)
+                {
+                    if (kind == RebootKind.Hard)
+                    {
+                        request.Kind = RebootKind.Hard;
+                    }
+
+                    wake = _rebootWake;
+                }
+            }
+        }
+
+        if (wake is not null)
+        {
+            try
+            {
+                wake.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ruling C8: TakeRebootRequest replaced and disposed this wake meanwhile, so the request is already taken.
+            }
+        }
+
+        return request.Completion.Task;
+    }
+
+    /// <summary>
+    /// Takes the request out of the slot and empties it, for <see cref="DisposeAsync"/> and <see cref="GiveUp"/>, which
+    /// fail it outside the lock. They call it inside their own <see cref="_sync"/> section, the one that closes the client.
+    /// </summary>
+    private RebootRequest? DropRebootRequest()
+    {
+        lock (_sync)
+        {
+            RebootRequest? request = _rebootRequest;
+            _rebootRequest = null;
+            return request;
+        }
     }
 
     /// <summary>The token that a manual reboot request cancels to wake the supervisor.</summary>
@@ -128,7 +210,9 @@ public sealed partial class ResilientControlClient
     }
 
     /// <summary>
-    /// Spec 4.3: one reboot, for an escalation (<paramref name="request"/> is <see langword="null"/>) or a manual request.
+    /// Spec 4.3: one reboot, for an escalation (<paramref name="request"/> is <see langword="null"/> or a placeholder,
+    /// Ruling C11) or a manual request; the callers of <paramref name="request"/> fail with a failed reboot, and wait for
+    /// the next <c>Publish</c> after an accepted one.
     /// The transport call is bounded by <see cref="ResilientControlClientOptions.RebootTimeout"/>; it and the boot wait
     /// end with <paramref name="ct"/>, whose cancellation leaves as <see cref="OperationCanceledException"/>. A failed
     /// reboot (the transport, its timeout, or an unusable boot time) is counted, written as 1115, and returns at once.
@@ -139,7 +223,8 @@ public sealed partial class ResilientControlClient
         RebootKind kind, ReconnectState state, RebootRequest? request, Exception? lastFailure, CancellationToken ct)
     {
         // Step 1.
-        if (request is null)
+        bool manual = request is { Escalation: false };
+        if (!manual)
         {
             try
             {
@@ -158,7 +243,7 @@ public sealed partial class ResilientControlClient
             lastRemote = _lastRemoteEndPoint ?? _link?.Client.RemoteEndPoint;
         }
 
-        var context = new RebootContext(_target, lastRemote, request is not null);
+        var context = new RebootContext(_target, lastRemote, manual);
         Exception? failure = null;
         using (var timer = new CancellationTokenSource(_options.RebootTimeout, _time))
         using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timer.Token))
@@ -231,7 +316,7 @@ public sealed partial class ResilientControlClient
 
             if (request is not null)
             {
-                request.Completion.TrySetException(failure);
+                Fail(request, failure);
                 ClearRebootRequest(request);
             }
 
@@ -258,6 +343,15 @@ public sealed partial class ResilientControlClient
         }
     }
 
+    /// <summary>Fails the callers of <paramref name="request"/>; the failure is observed, as nobody may be waiting for it.</summary>
+    private static void Fail(RebootRequest request, Exception failure)
+    {
+        if (request.Completion.TrySetException(failure))
+        {
+            _ = request.Completion.Task.Exception;
+        }
+    }
+
     /// <summary>A manual reboot request: its kind (Hard wins when requests merge) and the callers waiting for it.</summary>
     private sealed class RebootRequest
     {
@@ -268,6 +362,9 @@ public sealed partial class ResilientControlClient
 
         /// <summary>Whether the reboot step has started; a request that runs is joined, not merged.</summary>
         public bool Running { get; set; }
+
+        /// <summary>Whether this is the placeholder of an escalation's reboot, which manual requests join (Ruling C11).</summary>
+        public bool Escalation { get; init; }
     }
 
     /// <summary>Ends an attempt series because the recovery policy decided on a reboot; never leaves the client.</summary>

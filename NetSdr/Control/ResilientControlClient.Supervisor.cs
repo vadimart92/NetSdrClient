@@ -41,6 +41,7 @@ public sealed partial class ResilientControlClient
         TaskCompletionSource changed;
         Link link;
         Link? restoring;
+        RebootRequest? reboot;
         lock (_sync)
         {
             if (_disposed)
@@ -54,9 +55,16 @@ public sealed partial class ResilientControlClient
             changed = SwapChanged();
             link = _link;
             restoring = _restoring;
+            reboot = DropRebootRequest();
         }
 
         changed.TrySetResult();
+        if (reboot is not null)
+        {
+            // Reboot spec 4.2: the callers of a manual reboot that never got its connection see the disposal.
+            Fail(reboot, new ObjectDisposedException(nameof(ResilientControlClient)));
+        }
+
         bool fromCallback = _restoreScope.Value is { Active: true } scope && ReferenceEquals(scope.Owner, this);
         return new ValueTask(DisposeCoreAsync(link, restoring, waitForSupervisor: !fromCallback));
     }
@@ -240,11 +248,11 @@ public sealed partial class ResilientControlClient
         Exception? scheduledFailure = null;
         while (true)
         {
-            RebootRequest? request = TakeRebootRequest();
-            if (request is not null || scheduled is not null)
+            // A scheduled reboot takes the slot as a placeholder, unless a request is there; either carries the kind (Hard wins).
+            RebootRequest? request = TakeRebootRequest(scheduled);
+            if (request is not null)
             {
-                RebootKind kind = request?.Kind == RebootKind.Hard || scheduled == RebootKind.Hard ? RebootKind.Hard : RebootKind.Soft;
-                await RebootStepAsync(kind, state, request, scheduledFailure, _lifetime.Token).ConfigureAwait(false);
+                await RebootStepAsync(request.Kind, state, request, scheduledFailure, _lifetime.Token).ConfigureAwait(false);
                 (scheduled, scheduledFailure) = (null, null);
             }
 
@@ -285,7 +293,7 @@ public sealed partial class ResilientControlClient
         Exception closed = ClosedException();
         foreach (RebootRequest request in state.ManualWaiters)
         {
-            request.Completion.TrySetException(closed);
+            Fail(request, closed);
         }
     }
 
@@ -492,6 +500,7 @@ public sealed partial class ResilientControlClient
 
         // Step 3.
         TaskCompletionSource changed;
+        RebootRequest? reboot;
         lock (_sync)
         {
             if (_state == ClientState.Closed)
@@ -502,10 +511,17 @@ public sealed partial class ResilientControlClient
             _state = ClientState.Closed;
             _failure = failure;
             changed = SwapChanged();
+            reboot = DropRebootRequest();
         }
 
         // Step 4.
         changed.TrySetResult();
+        if (reboot is not null)
+        {
+            // Reboot spec 4.2: the callers of a manual reboot fail with the give-up failure.
+            Fail(reboot, failure);
+        }
+
         if (_completion.TrySetException(failure))
         {
             // Reading Exception marks it observed, so a client nobody awaits does not raise an unobserved task exception.

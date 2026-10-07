@@ -54,7 +54,7 @@ public sealed class ResilientControlClientOptions
 
     /// <summary>
     /// Reboots the device when reconnecting does not help, as <see cref="RecoveryPolicy"/> decides, and on
-    /// <c>ResilientControlClient.RebootAsync</c>. Without it the recovery policy is never called and the client behaves
+    /// <see cref="ResilientControlClient.RebootAsync"/>. Without it the recovery policy is never called and the client behaves
     /// exactly as without reboot support. <see langword="null"/> by default.
     /// </summary>
     public IDeviceRebooter? Rebooter { get; set; }

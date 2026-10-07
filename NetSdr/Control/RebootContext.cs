@@ -8,7 +8,7 @@ public sealed class RebootContext
     /// <summary>Creates a context.</summary>
     /// <param name="target">What <see cref="ResilientControlClient"/> connects to: "host:port" or the end point.</param>
     /// <param name="lastRemoteEndPoint">The device end of the most recent connection, null if none.</param>
-    /// <param name="requested">True for <c>ResilientControlClient.RebootAsync</c>, false for an escalation of the policy.</param>
+    /// <param name="requested">True for <see cref="ResilientControlClient.RebootAsync"/>, false for an escalation of the policy.</param>
     public RebootContext(string target, IPEndPoint? lastRemoteEndPoint, bool requested)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -23,6 +23,6 @@ public sealed class RebootContext
     /// <summary>The device end of the most recent connection, null if none.</summary>
     public IPEndPoint? LastRemoteEndPoint { get; }
 
-    /// <summary>True for <c>ResilientControlClient.RebootAsync</c>, false for an escalation of the policy.</summary>
+    /// <summary>True for <see cref="ResilientControlClient.RebootAsync"/>, false for an escalation of the policy.</summary>
     public bool Requested { get; }
 }
