@@ -489,6 +489,10 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         {
             // The device is there and answers; it just has no status codes to report.
         }
+
+        // Settle runs apart from the request it settles. Waiting for it here publishes the link with Wire free and
+        // LastHeard fresh, so the first heartbeat turn neither finds the line held nor takes the device for silent.
+        await exchange.Late.Task.WaitAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>Spec 6.8: moves everything the inner client publishes to <see cref="Unsolicited"/> until the inner client ends its channel.</summary>
@@ -1059,8 +1063,8 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
     }
 
     /// <summary>
-    /// Resolves an exchange exactly once: the state changes under <see cref="_sync"/>, then <see cref="Exchange.Late"/>
-    /// completes and Wire is released outside it. Returns <see langword="true"/> only for the call that resolved it.
+    /// Resolves an exchange exactly once: the state changes under <see cref="_sync"/>, then Wire is released and
+    /// <see cref="Exchange.Late"/> completes outside it. Returns <see langword="true"/> only for the call that resolved it.
     /// </summary>
     private bool Resolve(Exchange exchange, Resolution resolution)
     {
@@ -1083,8 +1087,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
 
         deadline?.Dispose();
-        exchange.Late.TrySetResult(resolution);
-        exchange.Link.Wire.Release();
+        try
+        {
+            // The line first: whoever Late wakes (the heartbeat, an adoption, a drain) never finds it still held.
+            exchange.Link.Wire.Release();
+        }
+        finally
+        {
+            exchange.Late.TrySetResult(resolution);
+        }
+
         return true;
     }
 
