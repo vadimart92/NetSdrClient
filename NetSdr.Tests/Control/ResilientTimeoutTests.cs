@@ -8,7 +8,7 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientTimeoutTests
 {
-    [Fact]
+    [Test]
     public async Task CommandTimeout_DuringOutage()
     {
         var connector = new PipeConnector { Before = (n, _) => n == 1 ? Task.CompletedTask : Resilient.Refused() };
@@ -19,13 +19,13 @@ public class ResilientTimeoutTests
         {
             device.CloseRemote();
             await Eventually.ThatAsync(() => !client.IsConnected);
-            var timeout = await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
-            Assert.StartsWith("Get of item 0x0003 did not complete within", timeout.Message);
-            Assert.IsAssignableFrom<IOException>(timeout.InnerException);           // the cause of the loss, not null
+            var timeout = Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
+            Assert.That(timeout.Message, Does.StartWith("Get of item 0x0003 did not complete within"));
+            Assert.That(timeout.InnerException, Is.InstanceOf<IOException>());      // the cause of the loss, not null
         }
     }
 
-    [Fact]
+    [Test]
     public async Task CommandTimeout_WhileQueuedBehindUnanswered()
     {
         var logs = new FakeLoggerFactory();
@@ -43,19 +43,18 @@ public class ResilientTimeoutTests
             var a = client.GetAsync<ProductId>(cancelA.Token);
             await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == ProductId.Code));
             cancelA.Cancel();                                                         // A's request stays on the line
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => a.WaitAsync(Limits.Test));
-            await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => a.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
+            await Assert.ThatAsync(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
             await Eventually.ThatAsync(() => logs.Events(1108).Count == 1);           // A's late reply settled the line
-            Assert.Equal(529, (await client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test)).Version);
-            Assert.Equal(1, server.Received.Count(r => r.Code == InterfaceVersion.Code));
+            Assert.That((await client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test)).Version, Is.EqualTo(529));
+            Assert.That(server.Received.Count(r => r.Code == InterfaceVersion.Code), Is.EqualTo(1));
         }
     }
 
-    [Theory]
-    [InlineData("before the call")]
-    [InlineData("on admission")]
-    [InlineData("on the line")]
-    [InlineData("waiting for a reconnect")]
+    [TestCase("before the call")]
+    [TestCase("on admission")]
+    [TestCase("on the line")]
+    [TestCase("waiting for a reconnect")]
     public async Task Cancellation_BeforeWrite_NothingWritten(string where)
     {
         var (server, client) = await Resilient.StartAsync(Resilient.Fast(), s =>
@@ -83,7 +82,7 @@ public class ResilientTimeoutTests
                         var a = client.GetAsync<ProductId>(cancelA.Token);
                         await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == ProductId.Code));
                         cancelA.Cancel();
-                        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => a.WaitAsync(Limits.Test));
+                        await Assert.ThatAsync(() => a.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
                     }
 
                     break;
@@ -102,15 +101,15 @@ public class ResilientTimeoutTests
                 cancel.Cancel();
             }
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => b.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => b.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
             if (blocker is not null)
                 await blocker.DisposeAsync().AsTask().WaitAsync(Limits.Test);
             await Task.Delay(600);                                                    // A's late reply or the reconnect has come
-            Assert.DoesNotContain(server.Received, r => r.Code == InterfaceVersion.Code);
+            Assert.That(server.Received.Select(r => r.Code), Does.Not.Contain(InterfaceVersion.Code));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Cancellation_AfterWrite_ReturnsAtOnce()
     {
         var time = new FakeTimeProvider();
@@ -125,11 +124,11 @@ public class ResilientTimeoutTests
             cancel.Cancel();
             // The client's clock stands still, so returning at all proves the call waited for nothing on it: neither the
             // response timeout nor the late reply.
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Cancellation_NextSetOfSameItem_GetsItsOwnEcho()
     {
         var logs = new FakeLoggerFactory();
@@ -142,14 +141,16 @@ public class ResilientTimeoutTests
             var first = client.SetAsync(new AfGain(0, 1), cancel.Token);
             await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == AfGain.Code));
             cancel.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.WaitAsync(Limits.Test));
-            Assert.Equal(2, (await client.SetAsync(new AfGain(0, 2)).WaitAsync(Limits.Test)).Level);
+            await Assert.ThatAsync(() => first.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
+            Assert.That((await client.SetAsync(new AfGain(0, 2)).WaitAsync(Limits.Test)).Level, Is.EqualTo(2));
             await Eventually.ThatAsync(() => logs.Events(1108).Count == 1);
-            Assert.Equal(("CancelledCaller", "Reply"), (logs.Events(1108)[0].Value("Owner"), logs.Events(1108)[0].Value("Outcome")));
+            Assert.That(
+                (logs.Events(1108)[0].Value("Owner"), logs.Events(1108)[0].Value("Outcome")),
+                Is.EqualTo(("CancelledCaller", "Reply")));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Stress_CommandsHeartbeatsRandomDisconnects()
     {
         var logs = new FakeLoggerFactory();
@@ -176,10 +177,10 @@ public class ResilientTimeoutTests
                 {
                     byte level = (byte)(caller * 50 + i);
                     var call = client.SetAsync(new AfGain(0, level));
-                    Assert.Same(call, await Task.WhenAny(call, Task.Delay(Limits.Test)));
+                    Assert.That(await Task.WhenAny(call, Task.Delay(Limits.Test)), Is.SameAs(call));
                     try
                     {
-                        Assert.Equal(level, (await call).Level);                      // never somebody else's echo
+                        Assert.That((await call).Level, Is.EqualTo(level));           // never somebody else's echo
                     }
                     catch (Exception e) when (e is IOException or TimeoutException)
                     {
@@ -190,6 +191,6 @@ public class ResilientTimeoutTests
             await Task.WhenAll(callers);                                              // each call is capped at Limits.Test above
         }
 
-        Assert.Empty(logs.Events(1106));
+        Assert.That(logs.Events(1106), Is.Empty);
     }
 }

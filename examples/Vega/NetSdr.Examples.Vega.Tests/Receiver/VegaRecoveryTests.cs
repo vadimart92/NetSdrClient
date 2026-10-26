@@ -36,7 +36,7 @@ public class VegaRecoveryTests
         return client;
     }
 
-    [Fact]
+    [Test]
     public async Task FirmwareHang_SoftRebootRecovers_UnlockRestored()
     {
         await using var emulator = new VegaEmulator();
@@ -45,11 +45,13 @@ public class VegaRecoveryTests
         emulator.Hang(VegaHang.Firmware);
         await Eventually.ThatAsync(() => emulator.RebootRequests.Count == 1);           // the hang was found and escalated
         await Eventually.ThatAsync(() => client.IsConnected);
-        Assert.Equal(new[] { (RebootKind.Soft, true) }, emulator.RebootRequests);
-        Assert.Equal("", (await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value);   // served only when unlocked: the callback ran
+        Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Soft, true) }));
+        Assert.That(
+            (await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value,
+            Is.EqualTo(""));   // served only when unlocked: the callback ran
     }
 
-    [Fact]
+    [Test]
     public async Task BoardHang_SoftThenHard()
     {
         await using var emulator = new VegaEmulator();
@@ -58,11 +60,11 @@ public class VegaRecoveryTests
         emulator.Hang(VegaHang.Board);
         await Eventually.ThatAsync(() => emulator.RebootRequests.Count == 2);
         await Eventually.ThatAsync(() => client.IsConnected);
-        Assert.Equal(new[] { (RebootKind.Soft, true), (RebootKind.Hard, true) }, emulator.RebootRequests);
-        Assert.Equal("", (await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value);
+        Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Soft, true), (RebootKind.Hard, true) }));
+        Assert.That((await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value, Is.EqualTo(""));
     }
 
-    [Fact]
+    [Test]
     public async Task ManualHardReboot_ClearsDeviceState()
     {
         await using var emulator = new VegaEmulator();
@@ -70,12 +72,14 @@ public class VegaRecoveryTests
         await using var client = await ConnectAsync(emulator, Recovering(emulator));
         await client.SetAsync(new DeviceLabel("night shift")).WaitAsync(Limits.Test);
         await client.RebootAsync(RebootKind.Hard).WaitAsync(Limits.Test);
-        Assert.Equal(new[] { (RebootKind.Hard, true) }, emulator.RebootRequests);
-        Assert.Equal("", (await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value);
-        Assert.Equal(VegaProtocol.ProductId, (await client.GetAsync<ProductId>().WaitAsync(Limits.Test)).Value);   // preloaded again
+        Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Hard, true) }));
+        Assert.That((await client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test)).Value, Is.EqualTo(""));
+        Assert.That(
+            (await client.GetAsync<ProductId>().WaitAsync(Limits.Test)).Value,
+            Is.EqualTo(VegaProtocol.ProductId));   // preloaded again
     }
 
-    [Fact]
+    [Test]
     public async Task WrongServiceKey_RebootFails_1115()
     {
         // The failure reaches the caller as the VegaException of the service, and 1115 carries it (Ruling C22).
@@ -85,23 +89,25 @@ public class VegaRecoveryTests
         var options = Recovering(emulator, serviceKey: 0x0BAD_0BAD);
         options.LoggerFactory = logs;
         await using var client = await ConnectAsync(emulator, options);
-        var ex = await Assert.ThrowsAsync<VegaException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
-        Assert.Contains("wrong unlock key", ex.Message);
-        Assert.Equal(new[] { (RebootKind.Soft, false) }, emulator.RebootRequests);
+        var ex = Assert.ThrowsAsync<VegaException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
+        Assert.That(ex.Message, Does.Contain("wrong unlock key"));
+        Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Soft, false) }));
         await Eventually.ThatAsync(() => client.IsConnected);                            // the requested loss is reconnected as any other
-        var failed = Assert.Single(logs.Entries, entry => entry.EventId == 1115);
-        Assert.Same(ex, failed.Exception);
+        var failed = logs.Entries.Where(entry => entry.EventId == 1115).Sole();
+        Assert.That(failed.Exception, Is.SameAs(ex));
     }
 
-    [Fact]
+    [Test]
     public async Task HungAtStartup_FirstConnectRecoversBySoftReboot()
     {
         await using var emulator = new VegaEmulator();
         await emulator.StartAsync();
         emulator.Hang(VegaHang.Firmware);
         await using var client = await ResilientControlClient.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), Recovering(emulator)).WaitAsync(Limits.Test);
-        Assert.True(client.IsConnected);
-        Assert.Equal(new[] { (RebootKind.Soft, true) }, emulator.RebootRequests);
-        await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test));   // locked: ConnectionRestored did not run
+        Assert.That(client.IsConnected, Is.True);
+        Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Soft, true) }));
+        await Assert.ThatAsync(
+            () => client.GetAsync<DeviceLabel>().WaitAsync(Limits.Test),
+            Throws.TypeOf<NetSdrNakException>());   // locked: ConnectionRestored did not run
     }
 }

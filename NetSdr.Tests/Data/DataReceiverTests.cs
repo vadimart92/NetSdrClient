@@ -16,87 +16,86 @@ public class DataReceiverTests
 
     private static DataPacketInfo[] Infos(PacketCollector c) => c.Packets.Select(p => p.Info).ToArray();
 
-    [Fact]
+    [Test]
     public void Bind_Port0_AssignsPort()
     {
         using var c = new PacketCollector();
-        Assert.Equal(IPAddress.Loopback, c.EndPoint.Address);
-        Assert.NotEqual(0, c.EndPoint.Port);
+        Assert.That(c.EndPoint.Address, Is.EqualTo(IPAddress.Loopback));
+        Assert.That(c.EndPoint.Port, Is.Not.EqualTo(0));
     }
 
-    [Theory]
-    [InlineData(1028, SampleFormat.Int16)]
-    [InlineData(516, SampleFormat.Int16)]
-    [InlineData(1444, SampleFormat.Int24)]
-    [InlineData(388, SampleFormat.Int24)]
-    [InlineData(104, SampleFormat.Unknown)]
+    [TestCase(1028, SampleFormat.Int16)]
+    [TestCase(516, SampleFormat.Int16)]
+    [TestCase(1444, SampleFormat.Int24)]
+    [TestCase(388, SampleFormat.Int24)]
+    [TestCase(104, SampleFormat.Unknown)]
     public async Task Format_FromDatagramLength(int length, SampleFormat format)
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, length));
         await Eventually.ThatAsync(() => c.Packets.Count == 1);
         var (info, samples) = c.Packets.Single();
-        Assert.Equal(format, info.Format);
-        Assert.Equal(length - 4, samples.Length);
-        Assert.Equal(UdpTestSender.Datagram(0, length)[4..], samples);
+        Assert.That(info.Format, Is.EqualTo(format));
+        Assert.That(samples, Has.Length.EqualTo(length - 4));
+        Assert.That(samples, Is.EqualTo(UdpTestSender.Datagram(0, length)[4..]));
     }
 
-    [Fact]
+    [Test]
     public async Task Gap_CountsLostAndGapBefore()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(4, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 3);
-        Assert.Equal(new[] { 0, 0, 2 }, Infos(c).Select(i => i.GapBefore));
-        Assert.Equal(new[] { true, false, false }, Infos(c).Select(i => i.IsCaptureStart));
-        Assert.Equal(2, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.GapBefore), Is.EqualTo(new[] { 0, 0, 2 }));
+        Assert.That(Infos(c).Select(i => i.IsCaptureStart), Is.EqualTo(new[] { true, false, false }));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(2));
     }
 
-    [Fact]
+    [Test]
     public async Task Wrap_FFFF_To_1_IsNotAGap()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0xFFFE, 1028), UdpTestSender.Datagram(0xFFFF, 1028),
             UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(2, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 4);
-        Assert.All(Infos(c), i => Assert.Equal(0, i.GapBefore));
-        Assert.Equal(0, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.GapBefore), Has.All.EqualTo(0));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task ZeroMidStream_StartsNewCapture()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(5, 1028), UdpTestSender.Datagram(6, 1028),
             UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 4);
-        Assert.Equal(new[] { false, false, true, false }, Infos(c).Select(i => i.IsCaptureStart));
-        Assert.Equal(0, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.IsCaptureStart), Is.EqualTo(new[] { false, false, true, false }));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task Reordered_IsNotCountedAsLost()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(2, 1028),
             UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(3, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 5);
-        Assert.All(Infos(c), i => Assert.Equal(0, i.GapBefore));
-        Assert.Equal(0, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.GapBefore), Has.All.EqualTo(0));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task LateBurst_IsDeliveredWithoutGapAndNotCountedAsLost()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(4, 1028),
             UdpTestSender.Datagram(5, 1028), UdpTestSender.Datagram(2, 1028), UdpTestSender.Datagram(3, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 6);
-        Assert.Equal(new[] { 0, 0, 2, 0, 0, 0 }, Infos(c).Select(i => i.GapBefore));
-        Assert.Equal(2, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.GapBefore), Is.EqualTo(new[] { 0, 0, 2, 0, 0, 0 }));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(2));
     }
 
-    [Fact]
+    [Test]
     public async Task LargeForwardJump_IsCountedAsLoss()
     {
         using var c = new PacketCollector();
@@ -104,12 +103,12 @@ public class DataReceiverTests
         Send(c, UdpTestSender.Datagram(40101, 1028), UdpTestSender.Datagram(40102, 1028), UdpTestSender.Datagram(40108, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 104);
         var gaps = Infos(c).Select(i => i.GapBefore).ToArray();
-        Assert.Equal(new[] { 40000, 0, 5 }, gaps[101..]);
-        Assert.All(gaps[..101], gap => Assert.Equal(0, gap));
-        Assert.Equal(40005, c.Receiver.Statistics.Lost);
+        Assert.That(gaps[101..], Is.EqualTo(new[] { 40000, 0, 5 }));
+        Assert.That(gaps[..101], Has.All.EqualTo(0));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(40005));
     }
 
-    [Fact]
+    [Test]
     public async Task ReorderWindow_EndsAtAThousandPacketsBehind()
     {
         using var c = new PacketCollector();
@@ -117,21 +116,21 @@ public class DataReceiverTests
         // late; one 1024 behind it (3977) is too far back to be told from a jump almost a full cycle ahead.
         Send(c, UdpTestSender.Datagram(5000, 1028), UdpTestSender.Datagram(3978, 1028), UdpTestSender.Datagram(3977, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 3);
-        Assert.Equal(new[] { 0, 0, 64511 }, Infos(c).Select(i => i.GapBefore));
-        Assert.Equal(64511, c.Receiver.Statistics.Lost);
+        Assert.That(Infos(c).Select(i => i.GapBefore), Is.EqualTo(new[] { 0, 0, 64511 }));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(64511));
     }
 
-    [Fact]
+    [Test]
     public async Task Rejects_ForeignTypeShortAndWrongLength()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, 1028, type: 5), [0x04, 0x80, 0x00],
             UdpTestSender.Datagram(0, 1000, headerLength: 1028), UdpTestSender.Datagram(0, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 1);
-        Assert.Equal(3, c.Receiver.Statistics.Rejected);
+        Assert.That(c.Receiver.Statistics.Rejected, Is.EqualTo(3));
     }
 
-    [Fact]
+    [Test]
     public async Task Jumbo9000_DeliveredOnlyWithoutValidation()
     {
         using var strict = new PacketCollector();
@@ -139,11 +138,11 @@ public class DataReceiverTests
         Send(strict, UdpTestSender.Datagram(0, 9000));
         Send(loose, UdpTestSender.Datagram(0, 9000));
         await Eventually.ThatAsync(() => loose.Packets.Count == 1 && strict.Receiver.Statistics.Rejected == 1);
-        Assert.Equal(8996, loose.Packets.Single().Samples.Length);
-        Assert.Equal(SampleFormat.Unknown, loose.Packets.Single().Info.Format);
+        Assert.That(loose.Packets.Single().Samples, Has.Length.EqualTo(8996));
+        Assert.That(loose.Packets.Single().Info.Format, Is.EqualTo(SampleFormat.Unknown));
     }
 
-    [Fact]
+    [Test]
     public async Task RemoteAddress_Filters()
     {
         using var other = new PacketCollector(new DataReceiverOptions { RemoteAddress = IPAddress.Parse("127.0.0.2") });
@@ -151,49 +150,49 @@ public class DataReceiverTests
         Send(other, UdpTestSender.Datagram(0, 1028));
         Send(same, UdpTestSender.Datagram(0, 1028));
         await Eventually.ThatAsync(() => same.Packets.Count == 1 && other.Receiver.Statistics.Rejected == 1);
-        Assert.Empty(other.Packets);
+        Assert.That(other.Packets, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task RemoteAddress_AcceptsEveryPacketFromTheAddress()
     {
         using var c = new PacketCollector(new DataReceiverOptions { RemoteAddress = IPAddress.Loopback });
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028), UdpTestSender.Datagram(2, 1028));
         await Eventually.ThatAsync(() => c.Packets.Count == 3);
-        Assert.Equal(0, c.Receiver.Statistics.Rejected);
+        Assert.That(c.Receiver.Statistics.Rejected, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task HandlerException_IsCountedAndReceptionContinues()
     {
         var calls = 0;
         using var c = new PacketCollector(onPacket: _ => { if (Interlocked.Increment(ref calls) == 1) throw new InvalidOperationException(); });
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028));
         await Eventually.ThatAsync(() => Volatile.Read(ref calls) == 2);
-        Assert.Equal(1, c.Receiver.Statistics.HandlerErrors);
+        Assert.That(c.Receiver.Statistics.HandlerErrors, Is.EqualTo(1));
     }
 
-    [Fact]
+    [Test]
     public async Task Statistics_CountReceivedAndSampleBytes()
     {
         using var c = new PacketCollector();
         Send(c, UdpTestSender.Datagram(0, 1028), UdpTestSender.Datagram(1, 1028));
         await Eventually.ThatAsync(() => c.Receiver.Statistics.Received == 2);
-        Assert.Equal(2048, c.Receiver.Statistics.Bytes);
+        Assert.That(c.Receiver.Statistics.Bytes, Is.EqualTo(2048));
     }
 
-    [Fact]
+    [Test]
     public void SetReceiveBuffer_FromDuration()
     {
         // A small initial buffer, so the assertion below holds only if the call enlarged it.
         using var receiver = new NetSdrDataReceiver(
             (in DataPacketInfo _, ReadOnlySpan<byte> _) => { }, new DataReceiverOptions { InitialReceiveBufferBytes = 8192 });
-        Assert.True(receiver.ActualReceiveBufferSize < 200_000);
+        Assert.That(receiver.ActualReceiveBufferSize < 200_000, Is.True);
         receiver.SetReceiveBuffer(TimeSpan.FromMilliseconds(200), 1_000_000);
-        Assert.True(receiver.ActualReceiveBufferSize >= 200_000);
+        Assert.That(receiver.ActualReceiveBufferSize >= 200_000, Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_FromHandler_DoesNotDeadlock()
     {
         var disposed = new TaskCompletionSource();
@@ -202,38 +201,40 @@ public class DataReceiverTests
         await disposed.Task.WaitAsync(Limits.Test);
     }
 
-    [Fact]
+    [Test]
     public void StartRules()
     {
         using var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) => { });
-        Assert.Throws<InvalidOperationException>(() => receiver.Start());
+        Assert.That(() => receiver.Start(), Throws.TypeOf<InvalidOperationException>());
         receiver.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         receiver.Start();
-        Assert.Throws<InvalidOperationException>(() => receiver.Start());
+        Assert.That(() => receiver.Start(), Throws.TypeOf<InvalidOperationException>());
     }
 
-    [Fact]
+    [Test]
     public void BindRules()
     {
         using var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) => { });
-        Assert.Throws<InvalidOperationException>(() => receiver.LocalEndPoint);
-        Assert.Throws<ArgumentException>(() => receiver.Bind(new IPEndPoint(IPAddress.IPv6Loopback, 0)));
+        Assert.That(() => receiver.LocalEndPoint, Throws.TypeOf<InvalidOperationException>());
+        Assert.That(() => receiver.Bind(new IPEndPoint(IPAddress.IPv6Loopback, 0)), Throws.TypeOf<ArgumentException>());
         receiver.Bind(0);
-        Assert.Equal(IPAddress.Any, receiver.LocalEndPoint.Address);
-        Assert.NotEqual(0, receiver.LocalEndPoint.Port);
-        Assert.Throws<InvalidOperationException>(() => receiver.Bind(0));
+        Assert.That(receiver.LocalEndPoint.Address, Is.EqualTo(IPAddress.Any));
+        Assert.That(receiver.LocalEndPoint.Port, Is.Not.EqualTo(0));
+        Assert.That(() => receiver.Bind(0), Throws.TypeOf<InvalidOperationException>());
     }
 
-    [Fact]
+    [Test]
     public void Constructor_Rules()
     {
-        Assert.Throws<ArgumentNullException>(() => new NetSdrDataReceiver(null!));
-        Assert.Throws<ArgumentException>(() => new NetSdrDataReceiver(
-            (in DataPacketInfo _, ReadOnlySpan<byte> _) => { },
-            new DataReceiverOptions { RemoteAddress = IPAddress.IPv6Loopback }));
+        Assert.That(() => new NetSdrDataReceiver(null!), Throws.TypeOf<ArgumentNullException>());
+        Assert.That(
+            () => new NetSdrDataReceiver(
+                (in DataPacketInfo _, ReadOnlySpan<byte> _) => { },
+                new DataReceiverOptions { RemoteAddress = IPAddress.IPv6Loopback }),
+            Throws.TypeOf<ArgumentException>());
     }
 
-    [Fact]
+    [Test]
     public void Dispose_IsIdempotent_AndEndsUse()
     {
         var receiver = new NetSdrDataReceiver((in DataPacketInfo _, ReadOnlySpan<byte> _) => { });
@@ -241,39 +242,39 @@ public class DataReceiverTests
         receiver.Start();
         receiver.Dispose();
         receiver.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => receiver.Start());
-        Assert.Throws<ObjectDisposedException>(() => receiver.LocalEndPoint);
+        Assert.That(() => receiver.Start(), Throws.TypeOf<ObjectDisposedException>());
+        Assert.That(() => receiver.LocalEndPoint, Throws.TypeOf<ObjectDisposedException>());
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_WaitsForTheRunningHandler()
     {
         using var inHandler = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         using var c = new PacketCollector(onPacket: _ => { inHandler.Set(); release.Wait(Limits.Test); });
         Send(c, UdpTestSender.Datagram(0, 1028));
-        Assert.True(inHandler.Wait(Limits.Test));
+        Assert.That(inHandler.Wait(Limits.Test), Is.True);
 
         var dispose = Task.Run(c.Dispose);
-        Assert.NotSame(dispose, await Task.WhenAny(dispose, Task.Delay(200)));
+        Assert.That(await Task.WhenAny(dispose, Task.Delay(200)), Is.Not.SameAs(dispose));
 
         release.Set();
         await dispose.WaitAsync(Limits.Test);
     }
 
-    [Fact]
+    [Test]
     public Task ReceiveLoop_DoesNotAllocatePerPacket() =>
         AssertNoPerPacketAllocationAsync(new DataReceiverOptions(), time: null);
 
     // The receive thread's own logging allocates nothing either. Every level is enabled on a logger that itself
     // allocates nothing, and the measured window writes a sequence gap (1204) and a summary that is due (1202), besides
     // the clock read of every 256th datagram.
-    [Fact]
+    [Test]
     public async Task ReceiveLoop_DoesNotAllocatePerPacket_WithLoggingEnabled()
     {
         var (logs, time) = (new CountingLoggerFactory(), new FakeTimeProvider());
         await AssertNoPerPacketAllocationAsync(new DataReceiverOptions { LoggerFactory = logs, TimeProvider = time }, time);
-        Assert.Equal((2, 2, 0), (logs.Count(1204), logs.Count(1202), logs.Count(1201)));   // one gap and one summary per half
+        Assert.That((logs.Count(1204), logs.Count(1202), logs.Count(1201)), Is.EqualTo((2, 2, 0)));   // one gap and one summary per half
     }
 
     /// <param name="time">Advanced by a whole summary interval before each half, so its 256th datagram logs a summary.</param>
@@ -309,7 +310,7 @@ public class DataReceiverTests
         // The handler itself allocates nothing, so the receive thread must allocate nothing between two calls.
         for (int i = WarmUp; i < PacketCount; i++)
         {
-            Assert.Equal(allocated[i - 1], allocated[i]);
+            Assert.That(allocated[i], Is.EqualTo(allocated[i - 1]));
         }
     }
 

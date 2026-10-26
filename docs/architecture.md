@@ -79,9 +79,9 @@ flowchart TB
     logs["<b>Провайдер логування</b><br/>[Зовнішня система, ILoggerFactory]<br/>Обирає застосунок:<br/>консоль, файл тощо"]
 
     subgraph testonly["Лише для тестів"]
-        testing["<b>NetSdr.Testing</b><br/>[Бібліотека, без xUnit]<br/>NetSdrTestServer, ControlFrames,<br/>SampleSources, Eventually"]
-        tests["<b>NetSdr.Tests</b><br/>[xUnit]<br/>Тести фреймворку"]
-        vtests["<b>NetSdr.Examples.Vega.Tests</b><br/>[xUnit]<br/>Тести прикладу, VegaEmulator"]
+        testing["<b>NetSdr.Testing</b><br/>[Бібліотека, без тестового фреймворку]<br/>NetSdrTestServer, ControlFrames,<br/>SampleSources, Eventually"]
+        tests["<b>NetSdr.Tests</b><br/>[NUnit]<br/>Тести фреймворку"]
+        vtests["<b>NetSdr.Examples.Vega.Tests</b><br/>[NUnit]<br/>Тести прикладу, VegaEmulator"]
     end
 
     app -->|"посилається,<br/>ILoggerFactory в опціях"| core
@@ -107,7 +107,7 @@ flowchart TB
   `[LoggerMessage]`. `System.IO.Pipelines` і `System.Threading.Channels` входять у runtime.
 - Логування за замовчуванням вимкнене: `NullLoggerFactory`. `NetSdr.Testing` не логує.
 - `NetSdr.Testing` окрема бібліотека без тестового фреймворку, тому тести застосунку
-  беруть емулятор, не тягнучи xUnit у продакшн-код і не залежачи від тестів фреймворку.
+  беруть емулятор, не тягнучи тестовий фреймворк у продакшн-код і не залежачи від тестів фреймворку.
 - `NetSdr.Tests` бачить внутрішній метод клієнта, що приймає `PipeReader` і `Stream`.
   Так кадрування тестується на пам'яті, без сокетів. Так само він бачить internal-опції
   `TimeProvider`: backoff, відмова, `ResponseTimeout` і підсумки UDP тестуються на
@@ -197,7 +197,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    test["<b>Тест</b><br/>[xUnit]"]
+    test["<b>Тест</b><br/>[NUnit]"]
     client["<b>NetSdrControlClient</b><br/>[NetSdr]"]
     recv["<b>NetSdrDataReceiver</b><br/>[NetSdr]"]
 

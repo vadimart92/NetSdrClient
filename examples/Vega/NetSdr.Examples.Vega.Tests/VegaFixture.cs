@@ -32,7 +32,8 @@ internal static class VegaFixture
     {
         await using var next = new NetSdrControlClient();
         await next.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
-        await Assert.ThrowsAsync<NetSdrNakException>(
-            () => next.SendAsync(RequestType.Get, 0x7FFF, ReadOnlyMemory<byte>.Empty).WaitAsync(Limits.Test));
+        await Assert.ThatAsync(
+            () => next.SendAsync(RequestType.Get, 0x7FFF, ReadOnlyMemory<byte>.Empty).WaitAsync(Limits.Test),
+            Throws.TypeOf<NetSdrNakException>());
     }
 }

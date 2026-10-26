@@ -6,77 +6,82 @@ namespace NetSdr.Examples.Vega.Tests.Items;
 
 public class VegaItemTests
 {
-    [Fact]
+    [Test]
     public void VendorUnlock_Frame() =>
-        Assert.Equal(Hex.Parse("08 00 00 80 C5 5E DE C0"), ControlFrames.Request(RequestType.Set, new VendorUnlock(0xC0DE_5EC5)));
+        Assert.That(
+            ControlFrames.Request(RequestType.Set, new VendorUnlock(0xC0DE_5EC5)),
+            Is.EqualTo(Hex.Parse("08 00 00 80 C5 5E DE C0")));
 
-    [Fact]
+    [Test]
     public void AntennaSelect_SetAndGetFrames()
     {
-        Assert.Equal(Hex.Parse("06 00 01 80 00 01"), ControlFrames.Request(RequestType.Set, new AntennaSelect(0, AntennaPort.B)));
-        Assert.Equal(Hex.Parse("05 20 01 80 01"), ControlFrames.Encode((byte)RequestType.Get, AntennaSelect.Code, [1]));
+        Assert.That(
+            ControlFrames.Request(RequestType.Set, new AntennaSelect(0, AntennaPort.B)),
+            Is.EqualTo(Hex.Parse("06 00 01 80 00 01")));
+        Assert.That(ControlFrames.Encode((byte)RequestType.Get, AntennaSelect.Code, [1]), Is.EqualTo(Hex.Parse("05 20 01 80 01")));
     }
 
-    [Fact]
+    [Test]
     public void BoardTemperatureV1_NegativeUnsolicited()
     {
         var frame = ControlFrames.Reply(ReplyType.Unsolicited, BoardTemperatureV1.FromCelsius(TemperatureSensor.Adc, -12.5));
-        Assert.Equal(Hex.Parse("07 20 02 80 01 1E FB"), frame);
-        Assert.Equal(-12.5, ControlFrames.Decode<BoardTemperatureV1>(frame).Celsius);
+        Assert.That(frame, Is.EqualTo(Hex.Parse("07 20 02 80 01 1E FB")));
+        Assert.That(ControlFrames.Decode<BoardTemperatureV1>(frame).Celsius, Is.EqualTo(-12.5));
     }
 
-    [Fact]
+    [Test]
     public void BoardTemperatureV2_NegativeUnsolicited()
     {
         var frame = ControlFrames.Reply(ReplyType.Unsolicited, BoardTemperatureV2.FromCelsius(TemperatureSensor.Adc, -12.5));
-        Assert.Equal(Hex.Parse("0A 20 02 80 01 2C CF FF FF 00"), frame);
+        Assert.That(frame, Is.EqualTo(Hex.Parse("0A 20 02 80 01 2C CF FF FF 00")));
         var item = ControlFrames.Decode<BoardTemperatureV2>(frame);
-        Assert.Equal((-12.5, (byte)0), (item.Celsius, item.Status));
-        Assert.Equal(BoardTemperatureV1.Code, BoardTemperatureV2.Code);
+        Assert.That((item.Celsius, item.Status), Is.EqualTo((-12.5, (byte)0)));
+        Assert.That(BoardTemperatureV2.Code, Is.EqualTo(BoardTemperatureV1.Code));
     }
 
-    [Fact]
+    [Test]
     public void VegaFirmwareInfo_Frame() =>
-        Assert.Equal(Hex.Parse("06 00 05 80 C8 00"), ControlFrames.Reply(ReplyType.Response, new VegaFirmwareInfo(200)));
+        Assert.That(ControlFrames.Reply(ReplyType.Response, new VegaFirmwareInfo(200)), Is.EqualTo(Hex.Parse("06 00 05 80 C8 00")));
 
-    [Fact]
+    [Test]
     public void OverloadEvent_Frame() =>
-        Assert.Equal(Hex.Parse("06 20 04 80 01 03"),
-            ControlFrames.Reply(ReplyType.Unsolicited, new OverloadEvent(1, OverloadFlags.Adc | OverloadFlags.Rf)));
+        Assert.That(
+            ControlFrames.Reply(ReplyType.Unsolicited, new OverloadEvent(1, OverloadFlags.Adc | OverloadFlags.Rf)),
+            Is.EqualTo(Hex.Parse("06 20 04 80 01 03")));
 
-    [Fact]
+    [Test]
     public void DeviceLabel_RoundTrip()
     {
         var frame = ControlFrames.Request(RequestType.Set, new DeviceLabel("VEGA-1"));
-        Assert.Equal(Hex.Parse("0B 00 03 80 56 45 47 41 2D 31 00"), frame);
-        Assert.Equal("VEGA-1", ControlFrames.Decode<DeviceLabel>(frame).Value);
+        Assert.That(frame, Is.EqualTo(Hex.Parse("0B 00 03 80 56 45 47 41 2D 31 00")));
+        Assert.That(ControlFrames.Decode<DeviceLabel>(frame).Value, Is.EqualTo("VEGA-1"));
     }
 
-    [Fact]
+    [Test]
     public void DeviceLabel_Limits()
     {
-        Assert.Equal(32, new DeviceLabel(new string('x', 32)).Value.Length);
-        Assert.Throws<ArgumentException>(() => new DeviceLabel(new string('x', 33)));
-        Assert.Throws<ArgumentException>(() => new DeviceLabel("Вега"));
-        Assert.Equal("", default(DeviceLabel).Value);
-        Assert.Equal("AB", ControlFrames.Decode<DeviceLabel>(Hex.Parse("06 00 03 80 41 42")).Value);
+        Assert.That(new DeviceLabel(new string('x', 32)).Value.Length, Is.EqualTo(32));
+        Assert.That(() => new DeviceLabel(new string('x', 33)), Throws.TypeOf<ArgumentException>());
+        Assert.That(() => new DeviceLabel("Вега"), Throws.TypeOf<ArgumentException>());
+        Assert.That(default(DeviceLabel).Value, Is.EqualTo(""));
+        Assert.That(ControlFrames.Decode<DeviceLabel>(Hex.Parse("06 00 03 80 41 42")).Value, Is.EqualTo("AB"));
     }
 
-    [Fact]
+    [Test]
     public void DeviceLabel_OverLongFromWire_IsRead_ButNeverWritten()
     {
         // Reading is lenient: a device may report a label longer than the host would ever send.
         var overLong = ControlFrames.Decode<DeviceLabel>(Hex.Parse("25 00 03 80 " + string.Concat(Enumerable.Repeat("78", 33))));
-        Assert.Equal(new string('x', 33), overLong.Value);
+        Assert.That(overLong.Value, Is.EqualTo(new string('x', 33)));
 
         // Writing is not: an over-long label must not reach the wire.
-        Assert.Throws<ArgumentException>(() => ControlFrames.Request(RequestType.Set, overLong));
-        Assert.Throws<ArgumentException>(() => DeviceLabel.Write(overLong, new byte[64]));
+        Assert.That(() => ControlFrames.Request(RequestType.Set, overLong), Throws.TypeOf<ArgumentException>());
+        Assert.That(() => DeviceLabel.Write(overLong, new byte[64]), Throws.TypeOf<ArgumentException>());
 
         // The limit itself is still written, zero included.
         var atLimit = new DeviceLabel(new string('x', VegaProtocol.MaxLabelLength));
         var payload = new byte[DeviceLabel.GetSize(atLimit)];
         DeviceLabel.Write(atLimit, payload);
-        Assert.Equal(0, payload[^1]);
+        Assert.That(payload[^1], Is.EqualTo(0));
     }
 }

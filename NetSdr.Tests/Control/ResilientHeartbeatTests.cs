@@ -45,7 +45,7 @@ public class ResilientHeartbeatTests
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Heartbeat_IdleNak_Alive()
     {
         var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -60,19 +60,19 @@ public class ResilientHeartbeatTests
             for (int i = 1; i <= 10; i++)
             {
                 await Eventually.ThatAsync(() => SilenceWaits(time) == i);
-                Assert.Equal(i, requests.Count);                                      // the verification and i - 1 heartbeats
+                Assert.That(requests, Has.Count.EqualTo(i));                          // the verification and i - 1 heartbeats
                 fake.Advance(Interval);
             }
 
             await Eventually.ThatAsync(() => SilenceWaits(time) == 11);
-            Assert.Equal(11, requests.Count);
-            Assert.All(requests, r => Assert.Equal(Hex.Parse(Resilient.GetStatus), r));
-            Assert.Empty(logs.Events(1101));
-            Assert.Empty(logs.Events(1103));
+            Assert.That(requests, Has.Count.EqualTo(11));
+            Assert.That(requests, Has.All.EqualTo(Hex.Parse(Resilient.GetStatus)));
+            Assert.That(logs.Events(1101), Is.Empty);
+            Assert.That(logs.Events(1103), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Heartbeat_SkippedWhileTrafficFlows()
     {
         var (server, client) = await Resilient.StartAsync(Resilient.Fast(), s => s.Preload(new InterfaceVersion(529)));
@@ -85,11 +85,11 @@ public class ResilientHeartbeatTests
                 await Task.Delay(50);
             }
 
-            Assert.Equal(1, StatusRequests(server));
+            Assert.That(StatusRequests(server), Is.EqualTo(1));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Heartbeat_Silent_UnpluggedCable()
     {
         var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -117,16 +117,16 @@ public class ResilientHeartbeatTests
             // no second heartbeat while one is unanswered, and the next connection waits for the rest of the 1 s floor.
             await Eventually.ThatAsync(() => time.TimerDueTimes.Contains(TimeSpan.FromMilliseconds(600)));
             fake.Advance(TimeSpan.FromMilliseconds(600));
-            Assert.Single(logs.Events(1102));                                         // Expire runs inside Advance
-            Assert.Equal(2, requests.Count);                                          // the verification and the one heartbeat
+            Assert.That(logs.Events(1102), Has.Exactly(1).Items);                     // Expire runs inside Advance
+            Assert.That(requests, Has.Count.EqualTo(2));                              // the verification and the one heartbeat
             await Eventually.ThatAsync(() => logs.Events(1103).Count == 1);
-            Assert.Single(logs.Events(1101));
+            Assert.That(logs.Events(1101), Has.Exactly(1).Items);
             await fake.AdvanceUntilAsync(() => logs.Events(1104).Any(r => r.Value("Phase") == "Verify"), TimeSpan.FromMilliseconds(10));
-            Assert.Single(logs.Events(1102));
+            Assert.That(logs.Events(1102), Has.Exactly(1).Items);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Heartbeat_LateReply_NoReconnect()
     {
         var logs = new FakeLoggerFactory();
@@ -136,14 +136,14 @@ public class ResilientHeartbeatTests
         {
             server.OnRequest(StatusCodes.Code, _ => ControlReply.Bytes(new[] { StatusCodes.Idle }).After(TimeSpan.FromMilliseconds(250)));
             await Eventually.ThatAsync(() => logs.Events(1108).Count >= 1);
-            Assert.Equal(("Heartbeat", "Reply"), (logs.Events(1108)[0].Value("Owner"), logs.Events(1108)[0].Value("Outcome")));
-            Assert.NotEmpty(logs.Events(1101));
+            Assert.That((logs.Events(1108)[0].Value("Owner"), logs.Events(1108)[0].Value("Outcome")), Is.EqualTo(("Heartbeat", "Reply")));
+            Assert.That(logs.Events(1101), Is.Not.Empty);
             await Task.Delay(500);
-            Assert.Empty(logs.Events(1103));
+            Assert.That(logs.Events(1103), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Heartbeat_Disabled()
     {
         var options = Resilient.Fast();
@@ -153,13 +153,13 @@ public class ResilientHeartbeatTests
         await using (client)
         {
             await Task.Delay(500);
-            Assert.Equal(1, StatusRequests(server));
+            Assert.That(StatusRequests(server), Is.EqualTo(1));
         }
     }
 
     // Any failure of the heartbeat loop other than the disposal makes the client give up (spec 7.1), and the connection
     // it was watching is still open then: it is closed at once, not left to DisposeAsync.
-    [Fact]
+    [Test]
     public async Task Heartbeat_LoopFails_GivesUp_AndClosesTheConnection()
     {
         var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -172,19 +172,19 @@ public class ResilientHeartbeatTests
         {
             time.Armed = true;                                                        // the first wait exists already
             fake.Advance(Interval);                                                   // one probe, its NAK, then the next wait fails
-            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-            Assert.IsType<InvalidOperationException>(failure.InnerException);
+            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.That(failure.InnerException, Is.TypeOf<InvalidOperationException>());
             await device.Client.Completion.WaitAsync(Limits.Test);                    // the watched connection is closed
-            Assert.Equal(2, requests.Count);                                          // the verification and the one probe
-            Assert.Equal("Gave up on pipe: watching the connection failed.", failure.Message);
-            var gaveUp = Assert.Single(logs.Events(1106));
-            Assert.Equal(("heartbeat failed", "0"), (gaveUp.Value("Reason"), gaveUp.Value("Attempts")));
+            Assert.That(requests, Has.Count.EqualTo(2));                              // the verification and the one probe
+            Assert.That(failure.Message, Is.EqualTo("Gave up on pipe: watching the connection failed."));
+            var gaveUp = logs.Events(1106).Sole();
+            Assert.That((gaveUp.Value("Reason"), gaveUp.Value("Attempts")), Is.EqualTo(("heartbeat failed", "0")));
         }
     }
 
     // A loss that was recovered from is over: a later failure of the heartbeat names neither its attempts nor
     // "attempts exhausted".
-    [Fact]
+    [Test]
     public async Task Heartbeat_LoopFails_AfterAReconnection_GivesUpForTheHeartbeat()
     {
         var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -195,13 +195,13 @@ public class ResilientHeartbeatTests
         {
             device.CloseRemote();
             await fake.AdvanceUntilAsync(() => logs.Events(1105).Count == 1, TimeSpan.FromMilliseconds(50));
-            Assert.Equal("1", logs.Events(1105)[0].Value("Attempts"));
+            Assert.That(logs.Events(1105)[0].Value("Attempts"), Is.EqualTo("1"));
             time.Armed = true;
             await fake.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(10));
-            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-            Assert.Equal("Gave up on pipe: watching the connection failed.", failure.Message);
-            var gaveUp = Assert.Single(logs.Events(1106));
-            Assert.Equal(("heartbeat failed", "0"), (gaveUp.Value("Reason"), gaveUp.Value("Attempts")));
+            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.That(failure.Message, Is.EqualTo("Gave up on pipe: watching the connection failed."));
+            var gaveUp = logs.Events(1106).Sole();
+            Assert.That((gaveUp.Value("Reason"), gaveUp.Value("Attempts")), Is.EqualTo(("heartbeat failed", "0")));
         }
     }
 
@@ -230,7 +230,7 @@ public class ResilientHeartbeatTests
                 : inner.CreateTimer(callback, state, dueTime, period);
     }
 
-    [Fact]
+    [Test]
     public async Task ResilientLogging_LevelsEventIdsCategories()
     {
         const string Outer = "NetSdr.Control.ResilientControlClient", Inner = "NetSdr.Control.NetSdrControlClient";
@@ -243,7 +243,7 @@ public class ResilientHeartbeatTests
         {
             await client.SetAsync(new RfGain(0, -20)).WaitAsync(Limits.Test);
             // Echoed at once: the inner client writes Debug 1003 and 1004 with Item = RfGain.
-            Assert.Equal(-10, (await client.SetAsync(new RfGain(0, -10)).WaitAsync(Limits.Test)).GainDb);
+            Assert.That((await client.SetAsync(new RfGain(0, -10)).WaitAsync(Limits.Test)).GainDb, Is.EqualTo(-10));
             server.OnRequest(StatusCodes.Code, Resilient.FirstTimes(2, ControlReply.Silent, ControlReply.Nak));
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
             await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
@@ -251,8 +251,8 @@ public class ResilientHeartbeatTests
 
         void Expect(FakeLoggerFactory from, int id, LogLevel level, string category)
         {
-            Assert.NotEmpty(from.Events(id));
-            Assert.All(from.Events(id), r => Assert.Equal((level, category), (r.Level, r.Category)));
+            Assert.That(from.Events(id), Is.Not.Empty);
+            Assert.That(from.Events(id).Select(r => (r.Level, r.Category)), Has.All.EqualTo((level, category)));
         }
 
         foreach (int id in new[] { 1100, 1101, 1102, 1103, 1104 })
@@ -262,11 +262,13 @@ public class ResilientHeartbeatTests
         Expect(logs, 1107, LogLevel.Debug, Outer);
         foreach (int id in new[] { 1000, 1001, 1003, 1004, 1005, 1006 })
             Expect(logs, id, LogLevel.Debug, Inner);
-        Assert.Contains(logs.Events(1003), r => r.Value("Item") == "RfGain");
-        Assert.Contains(logs.Events(1004), r => r.Value("Item") == "RfGain");
-        Assert.Empty(logs.Events(1010).Concat(logs.Events(1011)).Concat(logs.Events(1106)));
-        Assert.Single(logs.Events(1103));                                             // the unresponsive line only: the disposal is not a loss
-        Assert.Single(logs.Events(1112));
+        Assert.That(logs.Events(1003).Select(r => r.Value("Item")), Does.Contain("RfGain"));
+        Assert.That(logs.Events(1004).Select(r => r.Value("Item")), Does.Contain("RfGain"));
+        Assert.That(logs.Events(1010).Concat(logs.Events(1011)).Concat(logs.Events(1106)), Is.Empty);
+        Assert.That(
+            logs.Events(1103),
+            Has.Exactly(1).Items);                                             // the unresponsive line only: the disposal is not a loss
+        Assert.That(logs.Events(1112), Has.Exactly(1).Items);
 
         // The device closes the connection: the inner fault is Debug; Trace shows the frames.
         var traced = new FakeLoggerFactory(LogLevel.Trace);
@@ -279,9 +281,11 @@ public class ResilientHeartbeatTests
         }
 
         Expect(traced, 1002, LogLevel.Debug, Inner);
-        Assert.NotEmpty(traced.Events(1010));
-        Assert.NotEmpty(traced.Events(1011));
-        Assert.Single(traced.Events(1103));                                           // the device's drop only, not the disposal
+        Assert.That(traced.Events(1010), Is.Not.Empty);
+        Assert.That(traced.Events(1011), Is.Not.Empty);
+        Assert.That(
+            traced.Events(1103),
+            Has.Exactly(1).Items);                                           // the device's drop only, not the disposal
 
         // Giving up: Error 1106 exactly once.
         var gaveUp = new FakeLoggerFactory();
@@ -289,9 +293,9 @@ public class ResilientHeartbeatTests
         options.ReconnectAttempts = 1;
         var (lost, device) = await new PipeConnector { Before = (n, _) => n == 1 ? Task.CompletedTask : Resilient.Refused() }.StartAsync(options);
         device.CloseRemote();
-        await Assert.ThrowsAsync<IOException>(() => lost.Completion.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => lost.Completion.WaitAsync(Limits.Test), Throws.TypeOf<IOException>());
         await lost.DisposeAsync().AsTask().WaitAsync(Limits.Test);
         Expect(gaveUp, 1106, LogLevel.Error, Outer);
-        Assert.Single(gaveUp.Events(1106));
+        Assert.That(gaveUp.Events(1106), Has.Exactly(1).Items);
     }
 }

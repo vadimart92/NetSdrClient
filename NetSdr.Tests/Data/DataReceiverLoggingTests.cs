@@ -29,7 +29,7 @@ public class DataReceiverLoggingTests
 
     private static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples) { }
 
-    [Fact]
+    [Test]
     public async Task Summary_CleanInterval_Debug1201()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -40,11 +40,11 @@ public class DataReceiverLoggingTests
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 257, 256);
         await Eventually.ThatAsync(() => logs.Events(1201).Count == 1);
-        Assert.Equal(("512", LogLevel.Debug), (logs.Events(1201)[0].Value("Received"), logs.Events(1201)[0].Level));
-        Assert.Empty(logs.Events(1202));
+        Assert.That((logs.Events(1201)[0].Value("Received"), logs.Events(1201)[0].Level), Is.EqualTo(("512", LogLevel.Debug)));
+        Assert.That(logs.Events(1202), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task Summary_LossInInterval_Warning1202()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -57,14 +57,14 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 261, 256);
         await Eventually.ThatAsync(() => logs.Events(1202).Count == 1);
         var loss = logs.Events(1202)[0];
-        Assert.Equal(("4", "512", LogLevel.Warning), (loss.Value("Lost"), loss.Value("Received"), loss.Level));
+        Assert.That((loss.Value("Lost"), loss.Value("Received"), loss.Level), Is.EqualTo(("4", "512", LogLevel.Warning)));
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 517, 256);
         await Eventually.ThatAsync(() => logs.Events(1201).Count == 1);
-        Assert.Equal("256", logs.Events(1201)[0].Value("Received"));
+        Assert.That(logs.Events(1201)[0].Value("Received"), Is.EqualTo("256"));
     }
 
-    [Fact]
+    [Test]
     public async Task Summary_Rejected_Warning1202()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -74,14 +74,14 @@ public class DataReceiverLoggingTests
         for (int i = 0; i < 56; i++)
             UdpTestSender.Send(c.EndPoint, UdpTestSender.Datagram(1, 1028, type: 5));
         await CheckedAsync(clock, 1);
-        Assert.Equal((200, 56), (c.Receiver.Statistics.Received, c.Receiver.Statistics.Rejected));
+        Assert.That((c.Receiver.Statistics.Received, c.Receiver.Statistics.Rejected), Is.EqualTo((200, 56)));
         time.Advance(TimeSpan.FromSeconds(10));
         Send(c.EndPoint, 201, 256);
         await Eventually.ThatAsync(() => logs.Events(1202).Count == 1);
-        Assert.Equal("56", logs.Events(1202)[0].Value("Rejected"));
+        Assert.That(logs.Events(1202)[0].Value("Rejected"), Is.EqualTo("56"));
     }
 
-    [Fact]
+    [Test]
     public async Task Summary_ClockReadOncePer256Datagrams()
     {
         var clock = new CountingTimeProvider(new FakeTimeProvider());
@@ -89,11 +89,11 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 1, 1024);
         await ReceivedAsync(c.Receiver, 1024);
         c.Dispose();                                           // joins the receive thread: every read is done
-        Assert.Equal(4, clock.TimestampReaders.Count(n => n == ReceiveThread));
-        Assert.Equal(6, clock.TimestampReaders.Count);          // plus one in Start and one in Dispose
+        Assert.That(clock.TimestampReaders.Count(n => n == ReceiveThread), Is.EqualTo(4));
+        Assert.That(clock.TimestampReaders, Has.Count.EqualTo(6));   // plus one in Start and one in Dispose
     }
 
-    [Fact]
+    [Test]
     public async Task Summary_Disabled_NoClockReadsOnReceiveThread()
     {
         var logs = new FakeLoggerFactory();
@@ -107,11 +107,11 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 1, 1024);
         await ReceivedAsync(c.Receiver, 1024);
         c.Dispose();
-        Assert.DoesNotContain(ReceiveThread, clock.TimestampReaders);
-        Assert.Empty(logs.Events(1201).Concat(logs.Events(1202)));
+        Assert.That(clock.TimestampReaders, Does.Not.Contain(ReceiveThread));
+        Assert.That(logs.Events(1201).Concat(logs.Events(1202)), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task HandlerErrors_FirstPerIntervalLogged()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -123,17 +123,17 @@ public class DataReceiverLoggingTests
         receiver.Start();
         Send(receiver.LocalEndPoint, 1, 256);
         await CheckedAsync(clock, 1);
-        Assert.Equal(256, receiver.Statistics.HandlerErrors);
-        Assert.IsType<InvalidOperationException>(Assert.Single(logs.Events(1205)).Exception);
+        Assert.That(receiver.Statistics.HandlerErrors, Is.EqualTo(256));
+        Assert.That(logs.Events(1205).Sole().Exception, Is.TypeOf<InvalidOperationException>());
         time.Advance(TimeSpan.FromSeconds(10));
         Send(receiver.LocalEndPoint, 257, 256);
         await Eventually.ThatAsync(() => logs.Events(1202).Count == 1);
-        Assert.Equal("512", logs.Events(1202)[0].Value("HandlerErrors"));
+        Assert.That(logs.Events(1202)[0].Value("HandlerErrors"), Is.EqualTo("512"));
         Send(receiver.LocalEndPoint, 513, 1);                  // the next interval logs its first error again
         await Eventually.ThatAsync(() => logs.Events(1205).Count == 2);
     }
 
-    [Fact]
+    [Test]
     public async Task SequenceGap_DebugPerGap()
     {
         var logs = new FakeLoggerFactory();
@@ -142,11 +142,13 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 13, 8);                               // 2 lost
         Send(c.EndPoint, 25, 6);                               // 4 lost
         await ReceivedAsync(c.Receiver, 24);
-        Assert.Equal(new (string?, string?)[] { ("2", "13"), ("4", "25") }, logs.Events(1204).Select(r => (r.Value("Gap"), r.Value("Sequence"))));
-        Assert.All(logs.Events(1204), r => Assert.Equal(LogLevel.Debug, r.Level));
+        Assert.That(
+            logs.Events(1204).Select(r => (r.Value("Gap"), r.Value("Sequence"))),
+            Is.EqualTo(new (string?, string?)[] { ("2", "13"), ("4", "25") }));
+        Assert.That(logs.Events(1204).Select(r => r.Level), Has.All.EqualTo(LogLevel.Debug));
     }
 
-    [Fact]
+    [Test]
     public async Task NoPerPacketEntries_EvenAtTrace()
     {
         var logs = new FakeLoggerFactory(LogLevel.Trace);
@@ -155,37 +157,37 @@ public class DataReceiverLoggingTests
         await ReceivedAsync(c.Receiver, 1000);
         c.Dispose();
         var ids = logs.Collector.GetSnapshot().Select(r => r.Id.Id).ToArray();
-        Assert.All(ids, id => Assert.Contains(id, new[] { 1200, 1201, 1202, 1203 }));
-        Assert.Equal((1, 1), (ids.Count(id => id == 1200), ids.Count(id => id == 1203)));
+        Assert.That(ids, Is.SubsetOf(new[] { 1200, 1201, 1202, 1203 }));
+        Assert.That((ids.Count(id => id == 1200), ids.Count(id => id == 1203)), Is.EqualTo((1, 1)));
     }
 
-    [Fact]
+    [Test]
     public async Task StartAndDispose_Information()
     {
         var logs = new FakeLoggerFactory();
         var c = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs });
-        var started = Assert.Single(logs.Events(1200));
-        Assert.Equal((LogLevel.Information, c.EndPoint.ToString()), (started.Level, started.Value("LocalEndPoint")));
+        var started = logs.Events(1200).Sole();
+        Assert.That((started.Level, started.Value("LocalEndPoint")), Is.EqualTo((LogLevel.Information, c.EndPoint.ToString())));
         Send(c.EndPoint, 1, 3);
         await ReceivedAsync(c.Receiver, 3);
         c.Dispose();
-        var stopped = Assert.Single(logs.Events(1203));
-        Assert.Equal(("3", LogLevel.Information), (stopped.Value("Received"), stopped.Level));
+        var stopped = logs.Events(1203).Sole();
+        Assert.That((stopped.Value("Received"), stopped.Level), Is.EqualTo(("3", LogLevel.Information)));
     }
 
-    [Theory]
-    [InlineData(0L)]
-    [InlineData(-10_000_000L)]                                 // -1 s
-    [InlineData((int.MaxValue + 1L) * TimeSpan.TicksPerMillisecond)]
+    [TestCase(0L)]
+    [TestCase(-10_000_000L)]                                 // -1 s
+    [TestCase((int.MaxValue + 1L) * TimeSpan.TicksPerMillisecond)]
     public void StatisticsLogInterval_Invalid_Throws(long ticks) =>
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = TimeSpan.FromTicks(ticks) }));
+        Assert.That(
+            () => new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = TimeSpan.FromTicks(ticks) }),
+            Throws.TypeOf<ArgumentOutOfRangeException>());
 
-    [Fact]
+    [Test]
     public void StatisticsLogInterval_Infinite_Accepted() =>
         new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = Timeout.InfiniteTimeSpan }).Dispose();
 
-    [Fact]
+    [Test]
     public async Task Dispose_FromHandler_StoppedLoggedLast_WithThatHandlersError()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -201,28 +203,28 @@ public class DataReceiverLoggingTests
         Send(c.EndPoint, 1, 256);
         await Eventually.ThatAsync(() => logs.Events(1203).Count == 1);
         c.Dispose();                                           // joins the receive thread: all it logged is collected
-        var stopped = Assert.Single(logs.Events(1203));
-        Assert.Equal(("256", "1"), (stopped.Value("Received"), stopped.Value("HandlerErrors")));
-        Assert.Equal(1203, logs.Collector.GetSnapshot().Last().Id.Id);
-        Assert.Empty(logs.Events(1201).Concat(logs.Events(1202)));
+        var stopped = logs.Events(1203).Sole();
+        Assert.That((stopped.Value("Received"), stopped.Value("HandlerErrors")), Is.EqualTo(("256", "1")));
+        Assert.That(logs.Collector.GetSnapshot().Last().Id.Id, Is.EqualTo(1203));
+        Assert.That(logs.Events(1201).Concat(logs.Events(1202)), Is.Empty);
     }
 
     // Review Focus 5.
-    [Fact]
+    [Test]
     public void Dispose_Twice_StoppedLoggedOnce_NeverStarted_Silent()
     {
         var logs = new FakeLoggerFactory();
         var started = new PacketCollector(new DataReceiverOptions { LoggerFactory = logs });
         started.Dispose();
         started.Dispose();
-        Assert.Single(logs.Events(1203));
+        Assert.That(logs.Events(1203), Has.Exactly(1).Items);
 
         var clock = new CountingTimeProvider(TimeProvider.System);
         var idle = new NetSdrDataReceiver(Ignore, new DataReceiverOptions { LoggerFactory = logs, TimeProvider = clock });
         idle.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         idle.Dispose();
         idle.Dispose();
-        Assert.Single(logs.Events(1203));
-        Assert.Empty(clock.TimestampReaders);
+        Assert.That(logs.Events(1203), Has.Exactly(1).Items);
+        Assert.That(clock.TimestampReaders, Is.Empty);
     }
 }

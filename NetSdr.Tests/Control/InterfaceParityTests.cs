@@ -20,9 +20,8 @@ public class InterfaceParityTests
         return (server, client);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [TestCase(false)]
+    [TestCase(true)]
     public async Task InterfaceParity_Commands(bool resilient)
     {
         var (server, client) = await StartAsync(resilient, s =>
@@ -34,46 +33,45 @@ public class InterfaceParityTests
         await using (server)
         await using (client)
         {
-            Assert.Equal(-20, (await client.SetAsync(new RfGain(0, -20))).GainDb);
-            Assert.Equal(529, (await client.GetAsync<InterfaceVersion>()).Version);
-            Assert.Equal(120, (await client.GetAsync<FirmwareVersion, byte>(1)).Version);
-            Assert.Equal(-20, (await client.GetRangeAsync<RfGain, byte>(0)).GainDb);
+            Assert.That((await client.SetAsync(new RfGain(0, -20))).GainDb, Is.EqualTo(-20));
+            Assert.That((await client.GetAsync<InterfaceVersion>()).Version, Is.EqualTo(529));
+            Assert.That((await client.GetAsync<FirmwareVersion, byte>(1)).Version, Is.EqualTo(120));
+            Assert.That((await client.GetRangeAsync<RfGain, byte>(0)).GainDb, Is.EqualTo(-20));
             var raw = await client.SendAsync(RequestType.Get, InterfaceVersion.Code, ReadOnlyMemory<byte>.Empty);
-            Assert.Equal((ReplyType.Response, "1102"), (raw.Type, Convert.ToHexString(raw.Payload.Span)));
-            Assert.Equal(ProductId.Code, (await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>())).Code);
+            Assert.That((raw.Type, Convert.ToHexString(raw.Payload.Span)), Is.EqualTo((ReplyType.Response, "1102")));
+            Assert.That(Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>()).Code, Is.EqualTo(ProductId.Code));
             await server.SendUnsolicitedAsync(new AfGain(0, 9));
             ControlItemMessage pushed;
             do
                 pushed = await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
             while (pushed.Type != ReplyType.Unsolicited);
-            Assert.Equal(AfGain.Code, pushed.Code);
-            Assert.True(client.IsConnected);
-            Assert.Equal(server.Port, client.RemoteEndPoint!.Port);
+            Assert.That(pushed.Code, Is.EqualTo(AfGain.Code));
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(client.RemoteEndPoint!.Port, Is.EqualTo(server.Port));
         }
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [TestCase(false)]
+    [TestCase(true)]
     public async Task InterfaceParity_InvalidArguments_ThrowSynchronously_NothingSent(bool resilient)
     {
         var (server, client) = await StartAsync(resilient);
         await using (server)
         await using (client)
         {
-            var oversize = Assert.Throws<ArgumentOutOfRangeException>(
-                () => { _ = client.SendAsync(RequestType.Set, 0x7000, new byte[NetSdrControlClient.MaxPayloadSize + 1]); });
-            Assert.Contains($"the limit is {NetSdrControlClient.MaxPayloadSize} bytes", oversize.Message);
-            Assert.Throws<ArgumentOutOfRangeException>(() => { _ = client.SendAsync(RequestType.Data0, 0x7000, ReadOnlyMemory<byte>.Empty); });
-            Assert.Throws<ArgumentException>(() => { _ = client.SetAsync(new StatusCodes(new[] { StatusCodes.Idle })); });
+            var oversize = Assert.Throws<ArgumentOutOfRangeException>(() => { _ = client.SendAsync(RequestType.Set, 0x7000, new byte[NetSdrControlClient.MaxPayloadSize + 1]); });
+            Assert.That(oversize.Message, Does.Contain($"the limit is {NetSdrControlClient.MaxPayloadSize} bytes"));
+            Assert.That(
+                () => { _ = client.SendAsync(RequestType.Data0, 0x7000, ReadOnlyMemory<byte>.Empty); },
+                Throws.TypeOf<ArgumentOutOfRangeException>());
+            Assert.That(() => { _ = client.SetAsync(new StatusCodes(new[] { StatusCodes.Idle })); }, Throws.TypeOf<ArgumentException>());
             await Task.Delay(100);
-            Assert.DoesNotContain(server.Received, r => r.Code == 0x7000 || r.Type == RequestType.Set);
+            Assert.That(server.Received, Has.None.Matches<ControlRequest>(r => r.Code == 0x7000 || r.Type == RequestType.Set));
         }
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [TestCase(false)]
+    [TestCase(true)]
     public async Task InterfaceParity_IdentificationAndCatalog(bool resilient)
     {
         var (server, client) = await StartAsync(resilient, s => s.Preload(new InterfaceVersion(529)));
@@ -81,10 +79,10 @@ public class InterfaceParityTests
         await using (client)
         {
             var identity = await DeviceIdentity.ReadAsync(client);
-            Assert.Equal(new Version(5, 29), identity.InterfaceVersion);
-            Assert.Equal(5, identity.Unsupported.Count);
+            Assert.That(identity.InterfaceVersion, Is.EqualTo(new Version(5, 29)));
+            Assert.That(identity.Unsupported, Has.Count.EqualTo(5));
             var device = await new DeviceCatalog<DeviceIdentity>().Default((c, id) => id).AttachAsync(client);
-            Assert.Equal(identity.InterfaceVersion, device.InterfaceVersion);
+            Assert.That(device.InterfaceVersion, Is.EqualTo(identity.InterfaceVersion));
         }
     }
 }

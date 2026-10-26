@@ -7,23 +7,21 @@ namespace NetSdr.Tests;
 
 public class LoggingOptionsTests
 {
-    [Theory]
-    [InlineData("NetSdrControlClient")]
-    [InlineData("DeviceCatalog")]
-    [InlineData("DeviceIdentity.ReadAsync")]
-    [InlineData("NetSdrDataReceiver")]
-    [InlineData("ResilientControlClient")]
+    [TestCase("NetSdrControlClient")]
+    [TestCase("DeviceCatalog")]
+    [TestCase("DeviceIdentity.ReadAsync")]
+    [TestCase("NetSdrDataReceiver")]
+    [TestCase("ResilientControlClient")]
     public Task LoggerFactory_Null_Throws(string component) =>
-        Assert.ThrowsAsync<ArgumentNullException>(() => CreateAsync(component, nullLoggerFactory: true));
+        Assert.ThatAsync(() => CreateAsync(component, nullLoggerFactory: true), Throws.TypeOf<ArgumentNullException>());
 
-    [Theory]
-    [InlineData("NetSdrControlClient")]
-    [InlineData("NetSdrDataReceiver")]
-    [InlineData("ResilientControlClient")]
+    [TestCase("NetSdrControlClient")]
+    [TestCase("NetSdrDataReceiver")]
+    [TestCase("ResilientControlClient")]
     public Task TimeProvider_Null_Throws(string component) =>
-        Assert.ThrowsAsync<ArgumentNullException>(() => CreateAsync(component, nullLoggerFactory: false));
+        Assert.ThatAsync(() => CreateAsync(component, nullLoggerFactory: false), Throws.TypeOf<ArgumentNullException>());
 
-    // Exactly one of the two options is null; a synchronous throw is caught by ThrowsAsync like a faulted task.
+    // Exactly one of the two options is null; a synchronous throw is caught by ThatAsync like a faulted task.
     private static Task CreateAsync(string component, bool nullLoggerFactory) => component switch
     {
         "NetSdrControlClient" => Run(() => new NetSdrControlClient(nullLoggerFactory

@@ -11,7 +11,7 @@ namespace NetSdr.Tests.Control;
 
 public class ResilientReconnectTests
 {
-    [Fact]
+    [Test]
     public async Task LostDuringCommand_RetriedAfterRestore()
     {
         var logs = new FakeLoggerFactory();
@@ -21,14 +21,14 @@ public class ResilientReconnectTests
         await using (server)
         await using (client)
         {
-            Assert.Equal(7, (await client.SetAsync(new AfGain(0, 7)).WaitAsync(Limits.Test)).Level);
-            Assert.Equal(new[] { AfGain.Code, RfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
-            Assert.Equal("ConnectionLost", Assert.Single(logs.Events(1100)).Value("Reason"));
-            Assert.Single(logs.Events(1105));
+            Assert.That((await client.SetAsync(new AfGain(0, 7)).WaitAsync(Limits.Test)).Level, Is.EqualTo(7));
+            Assert.That(server.Received.WithoutStatus().Select(r => r.Code), Is.EqualTo(new[] { AfGain.Code, RfGain.Code, AfGain.Code }));
+            Assert.That(logs.Events(1100).Sole().Value("Reason"), Is.EqualTo("ConnectionLost"));
+            Assert.That(logs.Events(1105), Has.Exactly(1).Items);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task DeviceDroppedRequest_ConnectionReplaced_CommandResent()
     {
         var logs = new FakeLoggerFactory();
@@ -43,16 +43,16 @@ public class ResilientReconnectTests
         await using (server)
         await using (client)
         {
-            Assert.Equal(3, (await client.SetAsync(new AfGain(0, 3)).WaitAsync(Limits.Test)).Level);
-            Assert.Single(logs.Events(1102));
-            Assert.Single(logs.Events(1103));
-            Assert.Single(logs.Events(1105));
-            Assert.Equal(1, restored);
-            Assert.Equal(new[] { AfGain.Code, RfGain.Code, AfGain.Code }, server.Received.WithoutStatus().Select(r => r.Code));
+            Assert.That((await client.SetAsync(new AfGain(0, 3)).WaitAsync(Limits.Test)).Level, Is.EqualTo(3));
+            Assert.That(logs.Events(1102), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1103), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1105), Has.Exactly(1).Items);
+            Assert.That(restored, Is.EqualTo(1));
+            Assert.That(server.Received.WithoutStatus().Select(r => r.Code), Is.EqualTo(new[] { AfGain.Code, RfGain.Code, AfGain.Code }));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task IdleDrop_ReconnectsProactively()
     {
         var logs = new FakeLoggerFactory();
@@ -67,13 +67,13 @@ public class ResilientReconnectTests
             int oldPort = client.LocalEndPoint!.Port;
             await server.DisconnectClientAsync();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
-            Assert.True(client.IsConnected);
-            Assert.NotEqual(oldPort, client.LocalEndPoint!.Port);
-            Assert.Equal(LogLevel.Warning, Assert.Single(logs.Events(1103)).Level);
-            Assert.Equal((LogLevel.Information, "1"), (logs.Events(1105)[0].Level, logs.Events(1105)[0].Value("Attempts")));
-            Assert.Equal(1, restored);
-            Assert.NotEqual(default, seen!.LostAt);
-            Assert.IsAssignableFrom<IOException>(seen.Cause);
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(client.LocalEndPoint!.Port, Is.Not.EqualTo(oldPort));
+            Assert.That(logs.Events(1103).Sole().Level, Is.EqualTo(LogLevel.Warning));
+            Assert.That((logs.Events(1105)[0].Level, logs.Events(1105)[0].Value("Attempts")), Is.EqualTo((LogLevel.Information, "1")));
+            Assert.That(restored, Is.EqualTo(1));
+            Assert.That(seen!.LostAt, Is.Not.Default);
+            Assert.That(seen.Cause, Is.InstanceOf<IOException>());
         }
     }
 
@@ -86,7 +86,7 @@ public class ResilientReconnectTests
         return blocker;
     }
 
-    [Fact]
+    [Test]
     public async Task Verification_OneClientServerBusy()
     {
         var logs = new FakeLoggerFactory();
@@ -96,13 +96,13 @@ public class ResilientReconnectTests
         {
             var blocker = await OccupyAsync(server);
             await Eventually.ThatAsync(() => logs.Events(1104).Any(r => r.Value("Phase") == "Verify"));
-            Assert.False(client.IsConnected);
+            Assert.That(client.IsConnected, Is.False);
             await blocker.DisposeAsync();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task IsConnected_And_EndPoints()
     {
         var logs = new FakeLoggerFactory();
@@ -113,16 +113,16 @@ public class ResilientReconnectTests
             var (local, remote) = (client.LocalEndPoint, client.RemoteEndPoint);
             var blocker = await OccupyAsync(server);
             await Eventually.ThatAsync(() => logs.Events(1104).Count >= 1);
-            Assert.False(client.IsConnected);
-            Assert.Equal((local, remote), (client.LocalEndPoint, client.RemoteEndPoint));   // the lost connection's ends
+            Assert.That(client.IsConnected, Is.False);
+            Assert.That((client.LocalEndPoint, client.RemoteEndPoint), Is.EqualTo((local, remote)));   // the lost connection's ends
             await blocker.DisposeAsync();
             await Eventually.ThatAsync(() => client.IsConnected);
-            Assert.NotEqual(local!.Port, client.LocalEndPoint!.Port);
-            Assert.Equal(remote, client.RemoteEndPoint);
+            Assert.That(client.LocalEndPoint!.Port, Is.Not.EqualTo(local!.Port));
+            Assert.That(client.RemoteEndPoint, Is.EqualTo(remote));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Unsolicited_SpansReconnects_InOrder()
     {
         var logs = new FakeLoggerFactory();
@@ -144,14 +144,14 @@ public class ResilientReconnectTests
                     levels.Add(m.As<AfGain>().Level);
             }
 
-            Assert.Equal(new byte[] { 1, 2, 3, 4 }, levels);
-            Assert.False(client.Unsolicited.Completion.IsCompleted);
+            Assert.That(levels, Is.EqualTo(new byte[] { 1, 2, 3, 4 }));
+            Assert.That(client.Unsolicited.Completion.IsCompleted, Is.False);
             await client.DisposeAsync();
             await client.Unsolicited.Completion.WaitAsync(Limits.Test);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task ConcurrentCommands_AcrossADrop_InCallOrder()
     {
         int sets = 0;
@@ -167,13 +167,14 @@ public class ResilientReconnectTests
         {
             var calls = Enumerable.Range(1, 10).Select(i => client.SetAsync(new AfGain(0, (byte)i))).ToArray();
             var echoes = await Task.WhenAll(calls).WaitAsync(Limits.Test);
-            Assert.Equal(Enumerable.Range(1, 10).Select(i => (byte)i), echoes.Select(e => e.Level));
-            Assert.Equal(new byte[] { 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10 },
-                server.Received.Where(r => r.Code == AfGain.Code).Select(r => r.Payload.Span[1]));
+            Assert.That(echoes.Select(e => e.Level), Is.EqualTo(Enumerable.Range(1, 10).Select(i => (byte)i)));
+            Assert.That(
+                server.Received.Where(r => r.Code == AfGain.Code).Select(r => r.Payload.Span[1]),
+                Is.EqualTo(new byte[] { 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10 }));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Backoff_Schedule_And_AntiFlap()
     {
         var (logs, fake) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -194,8 +195,8 @@ public class ResilientReconnectTests
             var starts = connector.AttemptTimes.Skip(1).Take(5).ToArray();
             double[] gaps = [1, 2, 4, 8];
             for (int i = 1; i < 5; i++)
-                Assert.InRange((starts[i] - starts[i - 1]).TotalSeconds, gaps[i - 1], gaps[i - 1] + 0.3);
-            Assert.Equal(new[] { 1.0, 2, 4, 8 }, logs.Events(1104).Take(4).Select(r => r.Span("Delay").TotalSeconds));
+                Assert.That((starts[i] - starts[i - 1]).TotalSeconds, Is.InRange(gaps[i - 1], gaps[i - 1] + 0.3));
+            Assert.That(logs.Events(1104).Take(4).Select(r => r.Span("Delay").TotalSeconds), Is.EqualTo(new[] { 1.0, 2, 4, 8 }));
         }
 
         // A device that accepts, answers the verification and drops at once gets at most one connection a fake second.
@@ -219,11 +220,11 @@ public class ResilientReconnectTests
                 await Task.Delay(5);
             }
 
-            Assert.InRange(flapping.Attempts, 2, 11);
+            Assert.That(flapping.Attempts, Is.InRange(2, 11));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task GiveUp_ReconnectAttemptsExhausted()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -237,21 +238,23 @@ public class ResilientReconnectTests
         await Eventually.ThatAsync(() => !client.IsConnected);
         var waiting = client.GetAsync<InterfaceVersion>();
         await time.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(100));
-        Assert.Equal(new[] { 1.0, 2 }, logs.Events(1104).Select(r => r.Span("Delay").TotalSeconds));
-        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-        Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => waiting.WaitAsync(Limits.Test)));
-        Assert.IsType<SocketException>(failure.InnerException);
-        Assert.Contains("after 3 attempt(s)", failure.Message);
-        Assert.Same(failure, Assert.Throws<InvalidOperationException>(() => { _ = client.GetAsync<InterfaceVersion>(); }).InnerException);
-        Assert.False(client.IsConnected);
+        Assert.That(logs.Events(1104).Select(r => r.Span("Delay").TotalSeconds), Is.EqualTo(new[] { 1.0, 2 }));
+        var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        Assert.That(Assert.ThrowsAsync<IOException>(() => waiting.WaitAsync(Limits.Test)), Is.SameAs(failure));
+        Assert.That(failure.InnerException, Is.TypeOf<SocketException>());
+        Assert.That(failure.Message, Does.Contain("after 3 attempt(s)"));
+        Assert.That(
+            Assert.Throws<InvalidOperationException>(() => { _ = client.GetAsync<InterfaceVersion>(); }).InnerException,
+            Is.SameAs(failure));
+        Assert.That(client.IsConnected, Is.False);
         await client.Unsolicited.Completion.WaitAsync(Limits.Test);
         await client.DisposeAsync();
-        Assert.Same(failure, client.Completion.Exception!.InnerException);
-        var gaveUp = Assert.Single(logs.Events(1106));
-        Assert.Equal((LogLevel.Error, "attempts exhausted"), (gaveUp.Level, gaveUp.Value("Reason")));
+        Assert.That(client.Completion.Exception!.InnerException, Is.SameAs(failure));
+        var gaveUp = logs.Events(1106).Sole();
+        Assert.That((gaveUp.Level, gaveUp.Value("Reason")), Is.EqualTo((LogLevel.Error, "attempts exhausted")));
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_DuringBackoff()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -261,11 +264,11 @@ public class ResilientReconnectTests
         device.CloseRemote();
         await time.AdvanceUntilAsync(() => logs.Events(1104).Count == 1, TimeSpan.FromMilliseconds(100));
         await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);   // fake time stands still: Polly waits its 1 s
-        Assert.True(client.Completion.IsCompletedSuccessfully);
-        Assert.Empty(logs.Events(1106));
+        Assert.That(client.Completion.IsCompletedSuccessfully, Is.True);
+        Assert.That(logs.Events(1106), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_RacingLoss_200Iterations()
     {
         int unobserved = 0;
@@ -285,14 +288,14 @@ public class ResilientReconnectTests
                 var client = await ResilientControlClient.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), Resilient.Fast(logs))
                     .WaitAsync(Limits.Test);
                 await Task.WhenAll(server.DisconnectClientAsync(), client.DisposeAsync().AsTask()).WaitAsync(Limits.Test);
-                Assert.True(client.Completion.IsCompletedSuccessfully);
+                Assert.That(client.Completion.IsCompletedSuccessfully, Is.True);
             }
 
-            Assert.Empty(logs.Events(1106));
+            Assert.That(logs.Events(1106), Is.Empty);
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
-            Assert.Equal(0, unobserved);
+            Assert.That(unobserved, Is.EqualTo(0));
         }
         finally
         {
@@ -301,25 +304,25 @@ public class ResilientReconnectTests
     }
 
     // Review Focus 1.
-    [Fact]
+    [Test]
     public async Task HostName_ReconnectsByName_EndPointsStayIPv4()
     {
         var logs = new FakeLoggerFactory();
         await using var server = new NetSdrTestServer();
         await server.StartAsync();
         var client = await ResilientControlClient.ConnectAsync("127.0.0.1", server.Port, Resilient.Fast(logs)).WaitAsync(Limits.Test);
-        Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
+        Assert.That(client.LocalEndPoint!.Address, Is.EqualTo(IPAddress.Loopback));
         await server.DisconnectClientAsync();
         await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
-        Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
-        Assert.Equal(new IPEndPoint(IPAddress.Loopback, server.Port), client.RemoteEndPoint);
+        Assert.That(client.LocalEndPoint!.Address, Is.EqualTo(IPAddress.Loopback));
+        Assert.That(client.RemoteEndPoint, Is.EqualTo(new IPEndPoint(IPAddress.Loopback, server.Port)));
         _ = DataOutputUdpAddress.For(new IPEndPoint(client.LocalEndPoint.Address, 50_001));   // what a ConnectionRestored callback builds
         await client.DisposeAsync();
-        Assert.Equal($"127.0.0.1:{server.Port}", Assert.Single(logs.Events(1112)).Value("Target"));
+        Assert.That(logs.Events(1112).Sole().Value("Target"), Is.EqualTo($"127.0.0.1:{server.Port}"));
     }
 
     // Review Focus 2.
-    [Fact]
+    [Test]
     public async Task LongOutage_SeventyAttempts_DelayCappedThenRecovers()
     {
         var (logs, time) = (new FakeLoggerFactory(), new FakeTimeProvider());
@@ -338,17 +341,17 @@ public class ResilientReconnectTests
             device.CloseRemote();
             for (int chunk = 1; chunk <= 7; chunk++)             // each AdvanceUntilAsync stays within Limits.Test
                 await time.AdvanceUntilAsync(() => logs.Events(1104).Count >= chunk * 10, TimeSpan.FromSeconds(30));
-            Assert.All(logs.Events(1104), r => Assert.InRange(r.Span("Delay"), TimeSpan.Zero, TimeSpan.FromSeconds(30)));
+            Assert.That(logs.Events(1104).Select(r => r.Span("Delay")), Has.All.InRange(TimeSpan.Zero, TimeSpan.FromSeconds(30)));
             Volatile.Write(ref back, true);
             await time.AdvanceUntilAsync(() => logs.Events(1105).Count == 1, TimeSpan.FromSeconds(30));
-            Assert.True(client.IsConnected);
-            Assert.Equal((logs.Events(1104).Count + 1).ToString(), logs.Events(1105)[0].Value("Attempts"));
-            Assert.Empty(logs.Events(1106));
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(logs.Events(1105)[0].Value("Attempts"), Is.EqualTo((logs.Events(1104).Count + 1).ToString()));
+            Assert.That(logs.Events(1106), Is.Empty);
         }
     }
 
     // Review Focus 3.
-    [Fact]
+    [Test]
     public async Task Dispose_FailsWaitingCommands_WithObjectDisposed()
     {
         var connector = new PipeConnector { Before = (n, _) => n == 1 ? Task.CompletedTask : Resilient.Refused() };
@@ -360,14 +363,14 @@ public class ResilientReconnectTests
         var waitingForLink = client.GetAsync<InterfaceVersion>();
         var queued = client.GetAsync<ProductId>();
         await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => waitingForLink.WaitAsync(Limits.Test));
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => queued.WaitAsync(Limits.Test));
-        Assert.Throws<ObjectDisposedException>(() => { _ = client.GetAsync<InterfaceVersion>(); });
+        await Assert.ThatAsync(() => waitingForLink.WaitAsync(Limits.Test), Throws.TypeOf<ObjectDisposedException>());
+        await Assert.ThatAsync(() => queued.WaitAsync(Limits.Test), Throws.TypeOf<ObjectDisposedException>());
+        Assert.That(() => { _ = client.GetAsync<InterfaceVersion>(); }, Throws.TypeOf<ObjectDisposedException>());
 
         var (live, pipe) = await new PipeConnector().StartAsync(Resilient.Seam());
         var inFlight = live.GetAsync<ProductId>();
         await pipe.ReadRequestAsync();
         await live.DisposeAsync().AsTask().WaitAsync(Limits.Test);
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => inFlight.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => inFlight.WaitAsync(Limits.Test), Throws.TypeOf<ObjectDisposedException>());
     }
 }

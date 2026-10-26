@@ -18,9 +18,8 @@ public class VegaEventTests
         return events;
     }
 
-    [Theory]
-    [InlineData(VegaFirmware.V1)]
-    [InlineData(VegaFirmware.V2)]
+    [TestCase(VegaFirmware.V1)]
+    [TestCase(VegaFirmware.V2)]
     public async Task Events_ParsedPerFirmware_InOrder(VegaFirmware firmware)
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
@@ -29,12 +28,12 @@ public class VegaEventTests
         await emulator.SendTemperatureAsync(TemperatureSensor.Board, 36.6);
         await emulator.SendOverloadAsync(1, OverloadFlags.Rf);
         byte? status = firmware == VegaFirmware.V2 ? (byte)0 : null;
-        Assert.Equal(
-            new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6, status), new OverloadDetected(1, OverloadFlags.Rf) },
-            await TakeAsync(vega, 2));
+        Assert.That(
+            await TakeAsync(vega, 2),
+            Is.EqualTo(new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6, status), new OverloadDetected(1, OverloadFlags.Rf) }));
     }
 
-    [Fact]
+    [Test]
     public async Task EventDuringActiveRequest_DoesNotBreakIt()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
@@ -45,11 +44,11 @@ public class VegaEventTests
             emulator.SendOverloadAsync(0, OverloadFlags.Adc).GetAwaiter().GetResult();
             return ControlReply.Item(BoardTemperatureV2.FromCelsius(r.Key<TemperatureSensor>(), 30));
         });
-        Assert.Equal(30.0, await vega.GetTemperatureAsync(TemperatureSensor.Board));
-        Assert.Equal(new VegaEvent[] { new OverloadDetected(0, OverloadFlags.Adc) }, await TakeAsync(vega, 1));
+        Assert.That(await vega.GetTemperatureAsync(TemperatureSensor.Board), Is.EqualTo(30.0));
+        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(0, OverloadFlags.Adc) }));
     }
 
-    [Fact]
+    [Test]
     public async Task MalformedAndUnknown_AreSkipped()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
@@ -58,6 +57,6 @@ public class VegaEventTests
         await emulator.Server.SendUnsolicitedAsync(VegaProtocol.BoardTemperatureCode, new byte[] { 1 });
         await emulator.Server.SendUnsolicitedAsync(0x9999, new byte[] { 1, 2 });
         await emulator.SendOverloadAsync(2, OverloadFlags.Adc);
-        Assert.Equal(new VegaEvent[] { new OverloadDetected(2, OverloadFlags.Adc) }, await TakeAsync(vega, 1));
+        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(2, OverloadFlags.Adc) }));
     }
 }
