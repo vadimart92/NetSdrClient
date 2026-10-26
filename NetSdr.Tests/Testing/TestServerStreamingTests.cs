@@ -14,7 +14,7 @@ public class TestServerStreamingTests
 {
     private static short[] Shorts(byte[] samples) => MemoryMarshal.Cast<byte, short>(samples).ToArray();
 
-    [Fact]
+    [Test]
     public async Task ManualStream_Int16_CounterData()
     {
         await using var server = new NetSdrTestServer();
@@ -24,14 +24,16 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 2);
         await server.StopStreamingAsync();
         var packets = c.Packets.ToArray();
-        Assert.Equal((SampleFormat.Int16, (ushort)0, true), (packets[0].Info.Format, packets[0].Info.Sequence, packets[0].Info.IsCaptureStart));
-        Assert.Equal(1024, packets[0].Samples.Length);
+        Assert.That(
+            (packets[0].Info.Format, packets[0].Info.Sequence, packets[0].Info.IsCaptureStart),
+            Is.EqualTo((SampleFormat.Int16, (ushort)0, true)));
+        Assert.That(packets[0].Samples, Has.Length.EqualTo(1024));
         var first = Shorts(packets[0].Samples);
-        Assert.Equal((0, -1, 255, -256), (first[0], first[1], first[510], first[511]));
-        Assert.Equal(256, Shorts(packets[1].Samples)[0]);
+        Assert.That((first[0], first[1], first[510], first[511]), Is.EqualTo((0, -1, 255, -256)));
+        Assert.That(Shorts(packets[1].Samples)[0], Is.EqualTo(256));
     }
 
-    [Fact]
+    [Test]
     public async Task ManualStream_Int24_CounterData()
     {
         await using var server = new NetSdrTestServer();
@@ -41,11 +43,11 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 2);
         await server.StopStreamingAsync();
         var second = c.Packets.ElementAt(1);
-        Assert.Equal((SampleFormat.Int24, 1440), (second.Info.Format, second.Samples.Length));
-        Assert.Equal(Hex.Parse("F0 00 00 0F FF FF"), second.Samples[..6]);   // sample 240
+        Assert.That((second.Info.Format, second.Samples.Length), Is.EqualTo((SampleFormat.Int24, 1440)));
+        Assert.That(second.Samples[..6], Is.EqualTo(Hex.Parse("F0 00 00 0F FF FF")));   // sample 240
     }
 
-    [Fact]
+    [Test]
     public async Task DropPacket_ProducesGap()
     {
         await using var server = new NetSdrTestServer();
@@ -56,12 +58,12 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Any(p => p.Info.Sequence == 5));
         await server.StopStreamingAsync();
         var five = c.Packets.Single(p => p.Info.Sequence == 5);
-        Assert.Equal(2, five.Info.GapBefore);
-        Assert.Equal(5 * 256, Shorts(five.Samples)[0]);
-        Assert.Equal(2, c.Receiver.Statistics.Lost);
+        Assert.That(five.Info.GapBefore, Is.EqualTo(2));
+        Assert.That(Shorts(five.Samples)[0], Is.EqualTo(5 * 256));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(2));
     }
 
-    [Fact]
+    [Test]
     public async Task Jumbo_DeliveredWithoutValidation()
     {
         await using var server = new NetSdrTestServer();
@@ -74,15 +76,14 @@ public class TestServerStreamingTests
         await server.StartStreamingAsync(strict.EndPoint, options);
         await Eventually.ThatAsync(() => strict.Receiver.Statistics.Rejected >= 1);
         await server.StopStreamingAsync();
-        Assert.Equal(8996, loose.Packets.First().Samples.Length);
-        Assert.Empty(strict.Packets);
+        Assert.That(loose.Packets.First().Samples, Has.Length.EqualTo(8996));
+        Assert.That(strict.Packets, Is.Empty);
     }
 
-    [Theory]
-    [InlineData(false, DataOutputPacketSize.Large, 1028)]
-    [InlineData(false, DataOutputPacketSize.Small, 516)]
-    [InlineData(true, DataOutputPacketSize.Large, 1444)]
-    [InlineData(true, DataOutputPacketSize.Small, 388)]
+    [TestCase(false, DataOutputPacketSize.Large, 1028)]
+    [TestCase(false, DataOutputPacketSize.Small, 516)]
+    [TestCase(true, DataOutputPacketSize.Large, 1444)]
+    [TestCase(true, DataOutputPacketSize.Small, 388)]
     public async Task AutoStream_PacketSizeFromState(bool bits24, byte size, int datagramLength)
     {
         var (server, client) = await Loopback.StartAsync();
@@ -94,11 +95,11 @@ public class TestServerStreamingTests
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24));
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
-        Assert.Equal(datagramLength - 4, c.Packets.First().Samples.Length);
-        Assert.Equal(bits24 ? SampleFormat.Int24 : SampleFormat.Int16, c.Packets.First().Info.Format);
+        Assert.That(c.Packets.First().Samples, Has.Length.EqualTo(datagramLength - 4));
+        Assert.That(c.Packets.First().Info.Format, Is.EqualTo(bits24 ? SampleFormat.Int24 : SampleFormat.Int16));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StopEndsStream()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -112,10 +113,10 @@ public class TestServerStreamingTests
         await Task.Delay(100);
         var count = c.Packets.Count;
         await Task.Delay(300);
-        Assert.Equal(count, c.Packets.Count);
+        Assert.That(c.Packets, Has.Count.EqualTo(count));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_ZeroIp_UsesClientAddress()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -127,7 +128,7 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_ExplicitOptionsWin()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Stream.PayloadSize = 200);
@@ -137,10 +138,10 @@ public class TestServerStreamingTests
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
-        Assert.Equal(200, c.Packets.First().Samples.Length);
+        Assert.That(c.Packets.First().Samples, Has.Length.EqualTo(200));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_Disabled_NoData()
     {
         var (server, client) = await Loopback.StartAsync(s => s.AutoStream = false);
@@ -150,10 +151,10 @@ public class TestServerStreamingTests
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
         await Task.Delay(300);
-        Assert.Empty(c.Packets);
+        Assert.That(c.Packets, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task RealTimePacing_LimitsRate()
     {
         await using var server = new NetSdrTestServer();
@@ -162,29 +163,29 @@ public class TestServerStreamingTests
         await server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = 2_560 });   // 10 packets/s
         await Task.Delay(500);
         await server.StopStreamingAsync();
-        Assert.InRange(c.Packets.Count, 2, 10);
+        Assert.That(c.Packets.Count, Is.InRange(2, 10));
     }
 
     // The tests below go beyond the brief: the carried client-left and dispose rules, and the rules the brief
     // states but its tests do not exercise.
 
-    [Fact]
+    [Test]
     public async Task StreamOptions_And_Server_Defaults()
     {
         await using var server = new NetSdrTestServer();
-        Assert.True(server.AutoStream);
+        Assert.That(server.AutoStream, Is.True);
         var options = new StreamOptions();
-        Assert.Null(options.Format);
-        Assert.Null(options.PayloadSize);
-        Assert.Null(options.SampleRate);
-        Assert.Null(options.DropPacket);
-        Assert.Equal((1, Pacing.RealTime), (options.Channels, options.Pacing));
+        Assert.That(options.Format, Is.Null);
+        Assert.That(options.PayloadSize, Is.Null);
+        Assert.That(options.SampleRate, Is.Null);
+        Assert.That(options.DropPacket, Is.Null);
+        Assert.That((options.Channels, options.Pacing), Is.EqualTo((1, Pacing.RealTime)));
         var b = new byte[4];
         options.Source(b, 5, SampleFormat.Int16);
-        Assert.Equal(Hex.Parse("05 00 FA FF"), b);
+        Assert.That(b, Is.EqualTo(Hex.Parse("05 00 FA FF")));
     }
 
-    [Fact]
+    [Test]
     public async Task Unthrottled_SendsWithoutWaitingForTheSampleRate()
     {
         await using var server = new NetSdrTestServer();
@@ -196,7 +197,7 @@ public class TestServerStreamingTests
         await server.StopStreamingAsync();
     }
 
-    [Fact]
+    [Test]
     public async Task RealTimePacing_ChannelsShareTheSampleRate()
     {
         await using var server = new NetSdrTestServer();
@@ -208,10 +209,10 @@ public class TestServerStreamingTests
         await server.StopStreamingAsync();
         var arrivals = c.ArrivalTimestamps.ToArray();
         var elapsed = Stopwatch.GetElapsedTime(arrivals[0], arrivals[9]);
-        Assert.InRange(elapsed.TotalMilliseconds, 300, 700);   // 450 ms; 900 ms for one channel
+        Assert.That(elapsed.TotalMilliseconds, Is.InRange(300, 700));   // 450 ms; 900 ms for one channel
     }
 
-    [Fact]
+    [Test]
     public async Task ManualStream_WithoutOptions_UsesServerStreamOptions()
     {
         await using var server = new NetSdrTestServer();
@@ -223,11 +224,11 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
         await server.StopStreamingAsync();
         // 200 bytes hold 33 whole 24-bit samples (198 bytes) and 2 bytes of zeros.
-        Assert.Equal(200, c.Packets.First().Samples.Length);
-        Assert.Equal(new byte[] { 0, 0 }, c.Packets.First().Samples[198..]);
+        Assert.That(c.Packets.First().Samples, Has.Length.EqualTo(200));
+        Assert.That(c.Packets.First().Samples[198..], Is.EqualTo(new byte[] { 0, 0 }));
     }
 
-    [Fact]
+    [Test]
     public async Task ManualStream_PayloadRemainder_IsZero()
     {
         await using var server = new NetSdrTestServer();
@@ -236,10 +237,10 @@ public class TestServerStreamingTests
         await server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 10 });
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
         await server.StopStreamingAsync();
-        Assert.Equal(Hex.Parse("00 00 FF FF 01 00 FE FF 00 00"), c.Packets.First().Samples);
+        Assert.That(c.Packets.First().Samples, Is.EqualTo(Hex.Parse("00 00 FF FF 01 00 FE FF 00 00")));
     }
 
-    [Fact]
+    [Test]
     public async Task ManualStream_FromBufferSource_ContinuesAcrossPackets()
     {
         await using var server = new NetSdrTestServer();
@@ -253,15 +254,14 @@ public class TestServerStreamingTests
         });
         await Eventually.ThatAsync(() => c.Packets.Count >= 2);
         await server.StopStreamingAsync();
-        Assert.Equal(Hex.Parse("01 02 03 04 05 06 07 08 01 02 03 04"), c.Packets.ElementAt(0).Samples);
-        Assert.Equal(Hex.Parse("05 06 07 08 01 02 03 04 05 06 07 08"), c.Packets.ElementAt(1).Samples);
+        Assert.That(c.Packets.ElementAt(0).Samples, Is.EqualTo(Hex.Parse("01 02 03 04 05 06 07 08 01 02 03 04")));
+        Assert.That(c.Packets.ElementAt(1).Samples, Is.EqualTo(Hex.Parse("05 06 07 08 01 02 03 04 05 06 07 08")));
     }
 
-    [Theory]
-    [InlineData(SampleFormat.Int24, null, 1444, "A4 85 00 00")]     // the spec's own example
-    [InlineData(SampleFormat.Int16, 8187, 8191, "FF 9F 00 00")]     // the longest length the field holds
-    [InlineData(SampleFormat.Int16, 8190, 8194, "00 80 00 00")]     // 8194 is the standard encoding of 0
-    [InlineData(SampleFormat.Int16, 8996, 9000, "00 80 00 00")]     // a jumbo packet is written as 0 as well
+    [TestCase(SampleFormat.Int24, null, 1444, "A4 85 00 00")]     // the spec's own example
+    [TestCase(SampleFormat.Int16, 8187, 8191, "FF 9F 00 00")]     // the longest length the field holds
+    [TestCase(SampleFormat.Int16, 8190, 8194, "00 80 00 00")]     // 8194 is the standard encoding of 0
+    [TestCase(SampleFormat.Int16, 8996, 9000, "00 80 00 00")]     // a jumbo packet is written as 0 as well
     public async Task Datagram_HeaderAndSequence(SampleFormat format, int? payloadSize, int datagramLength, string headerHex)
     {
         await using var server = new NetSdrTestServer();
@@ -273,11 +273,11 @@ public class TestServerStreamingTests
         var datagram = new byte[65535];
         int length = await udp.ReceiveAsync(datagram, SocketFlags.None, new CancellationTokenSource(Limits.Test).Token);
         await server.StopStreamingAsync();
-        Assert.Equal(datagramLength, length);
-        Assert.Equal(Hex.Parse(headerHex), datagram[..4]);
+        Assert.That(length, Is.EqualTo(datagramLength));
+        Assert.That(datagram[..4], Is.EqualTo(Hex.Parse(headerHex)));
     }
 
-    [Fact]
+    [Test]
     public async Task SequenceNumbers_WrapFrom0xFFFFTo1()
     {
         await using var server = new NetSdrTestServer();
@@ -297,11 +297,11 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 4);
         await server.StopStreamingAsync();
         var infos = c.Packets.Take(4).Select(p => p.Info).ToArray();
-        Assert.Equal(new ushort[] { 65534, 65535, 1, 2 }, infos.Select(i => i.Sequence));
-        Assert.All(infos, i => Assert.Equal(0, i.GapBefore));
+        Assert.That(infos.Select(i => i.Sequence), Is.EqualTo(new ushort[] { 65534, 65535, 1, 2 }));
+        Assert.That(infos.Select(i => i.GapBefore), Has.All.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task Restart_StopsPreviousStream_AndStartsNewCapture()
     {
         await using var server = new NetSdrTestServer();
@@ -313,15 +313,15 @@ public class TestServerStreamingTests
         await server.StartStreamingAsync(second.EndPoint);
         await Eventually.ThatAsync(() => second.Packets.Count >= 3);
         await server.StopStreamingAsync();
-        Assert.Equal((ushort)0, second.Packets.First().Info.Sequence);
-        Assert.True(second.Packets.First().Info.IsCaptureStart);
+        Assert.That(second.Packets.First().Info.Sequence, Is.EqualTo((ushort)0));
+        Assert.That(second.Packets.First().Info.IsCaptureStart, Is.True);
         await Task.Delay(100);
         var count = first.Packets.Count;
         await Task.Delay(200);
-        Assert.Equal(count, first.Packets.Count);
+        Assert.That(first.Packets, Has.Count.EqualTo(count));
     }
 
-    [Fact]
+    [Test]
     public async Task StopStreaming_ReturnsOnlyAfterTheLoopEnded_AndCanBeRepeated()
     {
         await using var server = new NetSdrTestServer();
@@ -337,11 +337,11 @@ public class TestServerStreamingTests
         await server.StopStreamingAsync();
         var atStop = Volatile.Read(ref calls);
         await Task.Delay(100);
-        Assert.Equal(atStop, Volatile.Read(ref calls));
+        Assert.That(Volatile.Read(ref calls), Is.EqualTo(atStop));
         await server.StopStreamingAsync();
     }
 
-    [Fact]
+    [Test]
     public async Task StartStreaming_RejectsInvalidParametersAndKeepsTheRunningStream()
     {
         await using var server = new NetSdrTestServer();
@@ -350,33 +350,51 @@ public class TestServerStreamingTests
         await server.StartStreamingAsync(c.EndPoint);
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
 
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(null!));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(new IPEndPoint(IPAddress.Parse("192.0.2.1"), 5000)));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(new IPEndPoint(IPAddress.IPv6Loopback, 5000)));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Format = SampleFormat.Unknown }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 3 }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Format = SampleFormat.Int24, PayloadSize = 5 }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 65504 }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = 0 }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = double.NaN }));
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Channels = 0 }));
+        await Assert.ThatAsync(() => server.StartStreamingAsync(null!), Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(new IPEndPoint(IPAddress.Parse("192.0.2.1"), 5000)),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(new IPEndPoint(IPAddress.IPv6Loopback, 5000)),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Format = SampleFormat.Unknown }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 3 }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Format = SampleFormat.Int24, PayloadSize = 5 }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 65504 }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = 0 }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = double.NaN }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Channels = 0 }),
+            Throws.InstanceOf<ArgumentException>());
 
         var count = c.Packets.Count;
         await Eventually.ThatAsync(() => c.Packets.Count > count);
     }
 
-    [Fact]
+    [Test]
     public async Task StartStreaming_AfterDispose_Throws()
     {
         var server = new NetSdrTestServer();
         await server.StartAsync();
         await server.DisposeAsync();
         using var c = new PacketCollector();
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => server.StartStreamingAsync(c.EndPoint));
+        await Assert.ThatAsync(() => server.StartStreamingAsync(c.EndPoint), Throws.TypeOf<ObjectDisposedException>());
         await server.StopStreamingAsync();   // still a no-op
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_StopsManualStream()
     {
         var server = new NetSdrTestServer();
@@ -388,7 +406,7 @@ public class TestServerStreamingTests
         await AssertNoMorePacketsAsync(c);
     }
 
-    [Fact]
+    [Test]
     public async Task FailingSource_IsReportedAtDispose()
     {
         var server = new NetSdrTestServer();
@@ -405,12 +423,12 @@ public class TestServerStreamingTests
         });
         await failing.Task.WaitAsync(Limits.Test);
         await server.StopStreamingAsync();
-        var error = await Assert.ThrowsAsync<FormatException>(() => server.DisposeAsync().AsTask());
-        Assert.Equal("source failed", error.Message);
-        Assert.Empty(c.Packets);
+        var error = Assert.ThrowsAsync<FormatException>(() => server.DisposeAsync().AsTask());
+        Assert.That(error.Message, Is.EqualTo("source failed"));
+        Assert.That(c.Packets, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StopsWhenClientDisconnects()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -425,7 +443,7 @@ public class TestServerStreamingTests
         await AssertNoMorePacketsAsync(c);
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StopsWhenServerIsDisposed()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -438,7 +456,7 @@ public class TestServerStreamingTests
         await AssertNoMorePacketsAsync(c);
     }
 
-    [Fact]
+    [Test]
     public async Task ManualStream_OutlivesTheClient()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -453,7 +471,7 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= count + 3);
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StopEcho_ComesAfterTheLoopEnded()
     {
         var calls = 0;
@@ -471,10 +489,10 @@ public class TestServerStreamingTests
         await client.SetAsync(ReceiverState.Stop);
         var atStop = Volatile.Read(ref calls);
         await Task.Delay(100);
-        Assert.Equal(atStop, Volatile.Read(ref calls));
+        Assert.That(Volatile.Read(ref calls), Is.EqualTo(atStop));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StateIsStored_AndAnswersGet()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -483,12 +501,12 @@ public class TestServerStreamingTests
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: true));
-        Assert.True((await client.GetAsync<ReceiverState>()).IsRunning);
+        Assert.That((await client.GetAsync<ReceiverState>()).IsRunning, Is.True);
         await client.SetAsync(ReceiverState.Stop);
-        Assert.False((await client.GetAsync<ReceiverState>()).IsRunning);
+        Assert.That((await client.GetAsync<ReceiverState>()).IsRunning, Is.False);
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_SecondRun_RestartsTheCapture()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -501,10 +519,10 @@ public class TestServerStreamingTests
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: true));
         await Eventually.ThatAsync(() => c.Packets.Count(p => p.Info.IsCaptureStart) >= 2);
         var restart = c.Packets.Last(p => p.Info.IsCaptureStart);
-        Assert.Equal(SampleFormat.Int24, restart.Info.Format);
+        Assert.That(restart.Info.Format, Is.EqualTo(SampleFormat.Int24));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_StreamOptionsWinOverState_ForFormatAndRate()
     {
         var (server, client) = await Loopback.StartAsync(s =>
@@ -520,11 +538,11 @@ public class TestServerStreamingTests
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
         await Task.Delay(300);
-        Assert.Equal(SampleFormat.Int24, c.Packets.First().Info.Format);
-        Assert.InRange(c.Packets.Count, 1, 6);
+        Assert.That(c.Packets.First().Info.Format, Is.EqualTo(SampleFormat.Int24));
+        Assert.That(c.Packets.Count, Is.InRange(1, 6));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_SampleRateFromState_PacesThePackets()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -537,10 +555,10 @@ public class TestServerStreamingTests
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
         await Task.Delay(400);
         await client.SetAsync(ReceiverState.Stop);
-        Assert.InRange(c.Packets.Count, 2, 8);
+        Assert.That(c.Packets.Count, Is.InRange(2, 8));
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_WithoutUdpAddress_TargetsTheTcpClient()
     {
         await using var server = new NetSdrTestServer();
@@ -575,14 +593,14 @@ public class TestServerStreamingTests
             {
                 var run = ControlFrames.Request(RequestType.Set, ReceiverState.Start(complex: true, bits24: false));
                 await tcp.GetStream().WriteAsync(run);
-                Assert.Equal(1024, await received.Task.WaitAsync(Limits.Test));
+                Assert.That(await received.Task.WaitAsync(Limits.Test), Is.EqualTo(1024));
             }
 
             return;
         }
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_UnusableTarget_IsNaked_AndNothingStarts()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -590,19 +608,23 @@ public class TestServerStreamingTests
         await using var __ = client;
         using var c = new PacketCollector();
         await client.SetAsync(DataOutputUdpAddress.For(new IPEndPoint(IPAddress.Parse("192.0.2.1"), 5000)));
-        await Assert.ThrowsAsync<NetSdrNakException>(() => client.SetAsync(ReceiverState.Start(complex: true, bits24: false)));
+        await Assert.ThatAsync(
+            () => client.SetAsync(ReceiverState.Start(complex: true, bits24: false)),
+            Throws.TypeOf<NetSdrNakException>());
         await client.SetAsync(new DataOutputUdpAddress(0, 0));
-        await Assert.ThrowsAsync<NetSdrNakException>(() => client.SetAsync(ReceiverState.Start(complex: true, bits24: false)));
-        Assert.Empty(c.Packets);
+        await Assert.ThatAsync(
+            () => client.SetAsync(ReceiverState.Start(complex: true, bits24: false)),
+            Throws.TypeOf<NetSdrNakException>());
+        Assert.That(c.Packets, Is.Empty);
         // The rejected Run was not stored, and the server still works.
-        await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ReceiverState>());
+        await Assert.ThatAsync(() => client.GetAsync<ReceiverState>(), Throws.TypeOf<NetSdrNakException>());
         // Both rejections came from the server refusing the target, and it recorded why. The Get above is a NAK it
         // chose to send.
-        Assert.Equal(2, server.HandlerErrors.Count);
-        Assert.All(server.HandlerErrors, error => Assert.IsType<ArgumentException>(error));
+        Assert.That(server.HandlerErrors, Has.Count.EqualTo(2));
+        Assert.That(server.HandlerErrors, Has.All.TypeOf<ArgumentException>());
     }
 
-    [Fact]
+    [Test]
     public async Task AutoStream_HandlerForReceiverState_TakesOver()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<ReceiverState>(_ => ControlReply.Echo));
@@ -612,7 +634,7 @@ public class TestServerStreamingTests
         await client.SetAsync(DataOutputUdpAddress.For(c.EndPoint));
         await client.SetAsync(ReceiverState.Start(complex: true, bits24: false));
         await Task.Delay(300);
-        Assert.Empty(c.Packets);
+        Assert.That(c.Packets, Is.Empty);
         // The caller can still start the stream by hand.
         await server.StartStreamingAsync(c.EndPoint);
         await Eventually.ThatAsync(() => c.Packets.Count >= 1);
@@ -624,6 +646,6 @@ public class TestServerStreamingTests
         await Task.Delay(100);
         var count = c.Packets.Count;
         await Task.Delay(300);
-        Assert.Equal(count, c.Packets.Count);
+        Assert.That(c.Packets, Has.Count.EqualTo(count));
     }
 }

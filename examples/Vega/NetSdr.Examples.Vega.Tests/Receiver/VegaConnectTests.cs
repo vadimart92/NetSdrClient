@@ -11,60 +11,58 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaConnectTests
 {
-    [Theory]
-    [InlineData(VegaFirmware.V1, typeof(VegaV1Receiver), 1)]
-    [InlineData(VegaFirmware.V2, typeof(VegaV2Receiver), 2)]
+    [TestCase(VegaFirmware.V1, typeof(VegaV1Receiver), 1)]
+    [TestCase(VegaFirmware.V2, typeof(VegaV2Receiver), 2)]
     public async Task Connect_PicksClientByFirmware(VegaFirmware firmware, Type receiverType, int major)
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync(firmware);
         await using var _ = emulator;
         await using var __ = vega;
-        Assert.IsType(receiverType, vega);
-        Assert.Equal(new Version(major, 0), vega.Identity.Get<VegaInfo>().Firmware);
-        Assert.True(emulator.IsUnlocked);
+        Assert.That(vega, Is.TypeOf(receiverType));
+        Assert.That(vega.Identity.Get<VegaInfo>().Firmware, Is.EqualTo(new Version(major, 0)));
+        Assert.That(emulator.IsUnlocked, Is.True);
         var codes = emulator.Server.Received.Select(r => r.Code).ToList();
-        Assert.True(codes.IndexOf(0x0009) < codes.IndexOf(VegaProtocol.VendorUnlockCode));
-        Assert.Equal(codes.IndexOf(VegaProtocol.VendorUnlockCode) + 1, codes.IndexOf(VegaProtocol.FirmwareInfoCode));
+        Assert.That(codes.IndexOf(0x0009) < codes.IndexOf(VegaProtocol.VendorUnlockCode), Is.True);
+        Assert.That(codes.IndexOf(VegaProtocol.FirmwareInfoCode), Is.EqualTo(codes.IndexOf(VegaProtocol.VendorUnlockCode) + 1));
     }
 
-    [Fact]
+    [Test]
     public async Task WrongKey_ThrowsNak_ClosesClient()
     {
         await using var emulator = new VegaEmulator();
         await emulator.StartAsync();
-        var ex = await Assert.ThrowsAsync<NetSdrNakException>(
-            () => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
-        Assert.Equal(VegaProtocol.VendorUnlockCode, ex.Code);
-        Assert.False(emulator.IsUnlocked);
-        Assert.DoesNotContain(emulator.Server.Received, r => r.Code == VegaProtocol.FirmwareInfoCode);
+        var ex = Assert.ThrowsAsync<NetSdrNakException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
+        Assert.That(ex.Code, Is.EqualTo(VegaProtocol.VendorUnlockCode));
+        Assert.That(emulator.IsUnlocked, Is.False);
+        Assert.That(emulator.Server.Received.Select(r => r.Code), Does.Not.Contain(VegaProtocol.FirmwareInfoCode));
         await VegaFixture.AssertServerFreeAsync(emulator.Server);
     }
 
-    [Fact]
+    [Test]
     public async Task ForeignDevice_ThrowsVegaException_WithIdentity()
     {
         await using var server = new NetSdrTestServer();
         server.Preload(new ProductId(0x03524453));
         await server.StartAsync();
-        var ex = await Assert.ThrowsAsync<VegaException>(
-            () => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
-        Assert.Equal(0x03524453u, ex.Identity!.ProductId);
-        Assert.DoesNotContain(server.Received,
-            r => r.Code is VegaProtocol.VendorUnlockCode or VegaProtocol.FirmwareInfoCode);
+        var ex = Assert.ThrowsAsync<VegaException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
+        Assert.That(ex.Identity!.ProductId, Is.EqualTo(0x03524453u));
+        Assert.That(
+            server.Received.Select(r => r.Code),
+            Does.Not.Contain(VegaProtocol.VendorUnlockCode).And.Not.Contain(VegaProtocol.FirmwareInfoCode));
         await VegaFixture.AssertServerFreeAsync(server);
     }
 
-    [Fact]
+    [Test]
     public async Task VendorCommand_BeforeUnlock_IsNak()
     {
         await using var emulator = new VegaEmulator();
         await emulator.StartAsync();
         await using var raw = new NetSdrControlClient();
         await raw.ConnectAsync("127.0.0.1", emulator.Port);
-        await Assert.ThrowsAsync<NetSdrNakException>(() => raw.GetAsync<AntennaSelect, byte>(0));
+        await Assert.ThatAsync(() => raw.GetAsync<AntennaSelect, byte>(0), Throws.TypeOf<NetSdrNakException>());
     }
 
-    [Fact]
+    [Test]
     public async Task ConnectAsync_PassesLoggerFactoryToIdentification()
     {
         var logs = new CategoryRecorder();
@@ -72,8 +70,8 @@ public class VegaConnectTests
         await emulator.StartAsync();
         await using var vega = await VegaReceiverBase.ConnectAsync("127.0.0.1", emulator.Port, VegaEmulator.DefaultKey,
             new NetSdrControlClientOptions { LoggerFactory = logs });
-        Assert.Contains("NetSdr.Identification.DeviceIdentity", logs.Categories);
-        Assert.Contains("NetSdr.Identification.DeviceCatalog", logs.Categories);
+        Assert.That(logs.Categories, Does.Contain("NetSdr.Identification.DeviceIdentity"));
+        Assert.That(logs.Categories, Does.Contain("NetSdr.Identification.DeviceCatalog"));
     }
 
     private sealed class CategoryRecorder : ILoggerFactory

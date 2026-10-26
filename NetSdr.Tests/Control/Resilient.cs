@@ -147,7 +147,7 @@ internal sealed class PipeConnector(TimeProvider? time = null)
         var device = await NextAsync();
         if (Serve is null)
         {
-            Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync());
+            Assert.That(await device.ReadRequestAsync(), Is.EqualTo(Hex.Parse(Resilient.GetStatus)));
             await device.SendAsync(Resilient.Nak);
         }
 

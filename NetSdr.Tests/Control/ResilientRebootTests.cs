@@ -25,7 +25,7 @@ public class ResilientRebootTests
         return (server, client, rebooter);
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_Connected_RestoresWithAfterReboot()
     {
         var logs = new FakeLoggerFactory();
@@ -35,20 +35,22 @@ public class ResilientRebootTests
         await using (client)
         {
             await client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test);
-            Assert.True(client.IsConnected);
-            Assert.Equal(RebootKind.Soft, seen);
-            Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
-            var context = Assert.Single(rebooter.Contexts);
-            Assert.Equal((true, client.RemoteEndPoint, $"127.0.0.1:{server.Port}"), (context.Requested, context.LastRemoteEndPoint, context.Target));
-            Assert.Equal((LogLevel.Information, "Soft"), (Assert.Single(logs.Events(1113)).Level, logs.Events(1113)[0].Value("Kind")));
-            Assert.Single(logs.Events(1116));
-            Assert.Single(logs.Events(1105));
-            Assert.Empty(logs.Events(1103));
-            Assert.Empty(logs.Events(1114));
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(seen, Is.EqualTo(RebootKind.Soft));
+            Assert.That(rebooter.Calls, Is.EqualTo(new[] { RebootKind.Soft }));
+            var context = rebooter.Contexts.Sole();
+            Assert.That(
+                (context.Requested, context.LastRemoteEndPoint, context.Target),
+                Is.EqualTo((true, client.RemoteEndPoint, $"127.0.0.1:{server.Port}")));
+            Assert.That((logs.Events(1113).Sole().Level, logs.Events(1113)[0].Value("Kind")), Is.EqualTo((LogLevel.Information, "Soft")));
+            Assert.That(logs.Events(1116), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1105), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1103), Is.Empty);
+            Assert.That(logs.Events(1114), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_JoinsRunningReboot()
     {
         var logs = new FakeLoggerFactory();
@@ -60,13 +62,13 @@ public class ResilientRebootTests
             await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);                 // accepted: the 300 ms boot wait runs
             var hard = client.RebootAsync(RebootKind.Hard);                             // joins, whatever its kind
             await Task.WhenAll(soft, hard).WaitAsync(Limits.Test);
-            Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
-            Assert.Equal(2, logs.Events(1113).Count);
-            Assert.Single(logs.Events(1105));
+            Assert.That(rebooter.Calls, Is.EqualTo(new[] { RebootKind.Soft }));
+            Assert.That(logs.Events(1113), Has.Count.EqualTo(2));
+            Assert.That(logs.Events(1105), Has.Exactly(1).Items);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_TransportFails_CallerGetsException_ClientReconnects()
     {
         var logs = new FakeLoggerFactory();
@@ -75,15 +77,15 @@ public class ResilientRebootTests
         await using (server)
         await using (client)
         {
-            await Assert.ThrowsAsync<ApplicationException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
-            Assert.IsType<ApplicationException>(Assert.Single(logs.Events(1115)).Exception);
+            await Assert.ThatAsync(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test), Throws.TypeOf<ApplicationException>());
+            Assert.That(logs.Events(1115).Sole().Exception, Is.TypeOf<ApplicationException>());
             await Eventually.ThatAsync(() => client.IsConnected && logs.Events(1105).Count == 1);
-            Assert.Empty(logs.Events(1116));
-            Assert.Empty(logs.Events(1103));
+            Assert.That(logs.Events(1116), Is.Empty);
+            Assert.That(logs.Events(1103), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_CallerCancels_RebootStillHappens()
     {
         var logs = new FakeLoggerFactory();
@@ -98,15 +100,15 @@ public class ResilientRebootTests
             var reboot = client.RebootAsync(RebootKind.Soft, cancel.Token);
             await entered.Task.WaitAsync(Limits.Test);
             cancel.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reboot.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => reboot.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
             gate.SetResult();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
-            Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
-            Assert.Single(logs.Events(1116));
+            Assert.That(rebooter.Calls, Is.EqualTo(new[] { RebootKind.Soft }));
+            Assert.That(logs.Events(1116), Has.Exactly(1).Items);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_CommandInFlight_RetriedAfterRestore()
     {
         var logs = new FakeLoggerFactory();
@@ -118,13 +120,13 @@ public class ResilientRebootTests
             var set = client.SetAsync(new AfGain(0, 7));
             await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == AfGain.Code));   // in flight, unanswered
             await client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test);
-            Assert.Equal(7, (await set.WaitAsync(Limits.Test)).Level);
-            Assert.Equal(2, server.Received.Count(r => r.Code == AfGain.Code));
-            Assert.Single(logs.Events(1100));
+            Assert.That((await set.WaitAsync(Limits.Test)).Level, Is.EqualTo(7));
+            Assert.That(server.Received.Count(r => r.Code == AfGain.Code), Is.EqualTo(2));
+            Assert.That(logs.Events(1100), Has.Exactly(1).Items);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_WithoutRebooter_Throws()
     {
         var (server, client) = await Resilient.StartAsync(Resilient.Fast());
@@ -132,18 +134,18 @@ public class ResilientRebootTests
         await using (client)
         {
             var ex = Assert.Throws<InvalidOperationException>(() => { _ = client.RebootAsync(RebootKind.Soft); });
-            Assert.Equal("No Rebooter is configured; set ResilientControlClientOptions.Rebooter.", ex.Message);
+            Assert.That(ex.Message, Is.EqualTo("No Rebooter is configured; set ResilientControlClientOptions.Rebooter."));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_AfterDispose_Throws()
     {
         var (server, client, _) = await StartAsync(new FakeLoggerFactory());
         await using (server)
         {
             await client.DisposeAsync();
-            Assert.Throws<ObjectDisposedException>(() => { _ = client.RebootAsync(RebootKind.Soft); });
+            Assert.That(() => { _ = client.RebootAsync(RebootKind.Soft); }, Throws.TypeOf<ObjectDisposedException>());
         }
 
         // After a give-up: the failure as the inner exception, like a command.
@@ -152,12 +154,14 @@ public class ResilientRebootTests
         options.ReconnectAttempts = 1;
         var (gaveUp, device) = await connector.StartAsync(options);
         device.CloseRemote();
-        await Assert.ThrowsAsync<IOException>(() => gaveUp.Completion.WaitAsync(Limits.Test));
-        Assert.IsType<IOException>(Assert.Throws<InvalidOperationException>(() => { _ = gaveUp.RebootAsync(RebootKind.Soft); }).InnerException);
+        await Assert.ThatAsync(() => gaveUp.Completion.WaitAsync(Limits.Test), Throws.TypeOf<IOException>());
+        Assert.That(
+            Assert.Throws<InvalidOperationException>(() => { _ = gaveUp.RebootAsync(RebootKind.Soft); }).InnerException,
+            Is.TypeOf<IOException>());
         await gaveUp.DisposeAsync();
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_InsideCallback_GivesUp()
     {
         var logs = new FakeLoggerFactory();
@@ -175,15 +179,15 @@ public class ResilientRebootTests
         await using (client)
         {
             await started.Server.DisconnectClientAsync();
-            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-            Assert.Same(thrown, failure.InnerException);
-            Assert.Empty(started.Rebooter.Calls);
+            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.That(failure.InnerException, Is.SameAs(thrown));
+            Assert.That(started.Rebooter.Calls, Is.Empty);
         }
 
-        Assert.Equal("ConnectionRestored called the ResilientControlClient", Assert.Single(logs.Events(1106)).Value("Reason"));
+        Assert.That(logs.Events(1106).Sole().Value("Reason"), Is.EqualTo("ConnectionRestored called the ResilientControlClient"));
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_PreCancelledToken_RegistersNothing()
     {
         var logs = new FakeLoggerFactory();
@@ -192,16 +196,16 @@ public class ResilientRebootTests
         await using (client)
         {
             var reboot = client.RebootAsync(RebootKind.Soft, new CancellationToken(canceled: true));
-            Assert.True(reboot.IsCanceled);
+            Assert.That(reboot.IsCanceled, Is.True);
             await Task.Delay(300);
-            Assert.Empty(rebooter.Calls);
-            Assert.True(client.IsConnected);
-            Assert.Empty(logs.Events(1113));
+            Assert.That(rebooter.Calls, Is.Empty);
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(logs.Events(1113), Is.Empty);
         }
     }
 
     // Review Focus 4.
-    [Fact]
+    [Test]
     public async Task RebootAsync_ParallelCallers_OneReboot()
     {
         var logs = new FakeLoggerFactory();
@@ -212,15 +216,15 @@ public class ResilientRebootTests
             var tasks = new Task[16];
             Parallel.For(0, tasks.Length, i => tasks[i] = client.RebootAsync(i % 2 == 0 ? RebootKind.Soft : RebootKind.Hard));
             await Task.WhenAll(tasks).WaitAsync(Limits.Test);
-            Assert.Single(rebooter.Calls);
-            Assert.Single(logs.Events(1116));
-            Assert.Equal(16, logs.Events(1113).Count);
-            Assert.True(client.IsConnected);
+            Assert.That(rebooter.Calls, Has.Exactly(1).Items);
+            Assert.That(logs.Events(1116), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1113), Has.Count.EqualTo(16));
+            Assert.That(client.IsConnected, Is.True);
         }
     }
 
     // Review Focus 3.
-    [Fact]
+    [Test]
     public async Task PolicyBlocks_NothingElseIsHeld()
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter { BootTime = TimeSpan.Zero });
@@ -241,19 +245,21 @@ public class ResilientRebootTests
             time.Advance(TimeSpan.FromSeconds(1));
             device.CloseRemote();
             await inPolicy.Task.WaitAsync(Limits.Test);                                // the policy blocks the supervisor now
-            Assert.False(client.IsConnected);                                          // no lock is held by it
+            Assert.That(client.IsConnected, Is.False);                                 // no lock is held by it
             var command = client.GetAsync<InterfaceVersion>();
             var reboot = client.RebootAsync(RebootKind.Soft);                          // registers at once
-            Assert.False(command.IsCompleted || reboot.IsCompleted);
+            Assert.That(command.IsCompleted || reboot.IsCompleted, Is.False);
             Volatile.Write(ref back, true);
             gate.Set();
             await time.AdvanceUntilAsync(() => rebooter.Calls.Count == 1 && logs.Events(1105).Count == 1, TimeSpan.FromMilliseconds(100));
-            await Assert.ThrowsAsync<NetSdrNakException>(() => command.WaitAsync(Limits.Test));   // the pipe NAKs it after the restore
+            await Assert.ThatAsync(
+                () => command.WaitAsync(Limits.Test),
+                Throws.TypeOf<NetSdrNakException>());   // the pipe NAKs it after the restore
             await reboot.WaitAsync(Limits.Test);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Logging_1113To1117_LevelsAndCategory()
     {
         var logs = new FakeLoggerFactory();
@@ -269,7 +275,9 @@ public class ResilientRebootTests
         {
             await client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test);                          // 1113, 1116
             rebooter.OnReboot = (_, _, _) => Task.FromException(new ApplicationException("no service"));
-            await Assert.ThrowsAsync<ApplicationException>(() => client.RebootAsync(RebootKind.Hard).WaitAsync(Limits.Test));   // 1113, 1115
+            await Assert.ThatAsync(
+                () => client.RebootAsync(RebootKind.Hard).WaitAsync(Limits.Test),
+                Throws.TypeOf<ApplicationException>());   // 1113, 1115
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 2);
             rebooter.OnReboot = booting;
             server.Availability = ServerAvailability.Silent;                                            // 1102, 1103, then 1117, 1114, 1116
@@ -278,8 +286,8 @@ public class ResilientRebootTests
 
         void Expect(int id, int count, LogLevel level)
         {
-            Assert.Equal(count, logs.Events(id).Count);
-            Assert.All(logs.Events(id), r => Assert.Equal((level, Outer), (r.Level, r.Category)));
+            Assert.That(logs.Events(id), Has.Count.EqualTo(count));
+            Assert.That(logs.Events(id).Select(r => (r.Level, r.Category)), Has.All.EqualTo((level, Outer)));
         }
 
         Expect(1113, 2, LogLevel.Information);
@@ -287,8 +295,10 @@ public class ResilientRebootTests
         Expect(1115, 1, LogLevel.Warning);
         Expect(1116, 2, LogLevel.Information);
         Expect(1117, 1, LogLevel.Warning);
-        Assert.Equal(("Soft", "2", "Verify"), (logs.Events(1114)[0].Value("Kind"), logs.Events(1114)[0].Value("FailedAttempts"), logs.Events(1114)[0].Value("Phase")));
-        Assert.Empty(logs.Events(1106));
+        Assert.That(
+            (logs.Events(1114)[0].Value("Kind"), logs.Events(1114)[0].Value("FailedAttempts"), logs.Events(1114)[0].Value("Phase")),
+            Is.EqualTo(("Soft", "2", "Verify")));
+        Assert.That(logs.Events(1106), Is.Empty);
     }
 
     /// <summary>A seam on fake time whose attempt 1 is answered by StartAsync; later verifications the test answers itself.</summary>
@@ -308,11 +318,11 @@ public class ResilientRebootTests
     private static async Task<PipeDevice> PendingVerifyAsync(PipeConnector connector)
     {
         PipeDevice device = await connector.NextAsync();
-        Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync());
+        Assert.That(await device.ReadRequestAsync(), Is.EqualTo(Hex.Parse(Resilient.GetStatus)));
         return device;
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_DuringBackoff_InterruptsPause()
     {
         bool back = false;
@@ -328,12 +338,12 @@ public class ResilientRebootTests
             var device = await PendingVerifyAsync(connector);
             await device.SendAsync(Resilient.Nak);
             await reboot.WaitAsync(Limits.Test);
-            Assert.InRange((connector.AttemptTimes.Last() - lost).TotalSeconds, 4, 4.3);
-            Assert.Equal(5, connector.Attempts);
+            Assert.That((connector.AttemptTimes.Last() - lost).TotalSeconds, Is.InRange(4, 4.3));
+            Assert.That(connector.Attempts, Is.EqualTo(5));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_DuringAttempt_WaitsForItToEnd()
     {
         var policy = new RecordingPolicy();
@@ -343,18 +353,18 @@ public class ResilientRebootTests
             var attempt = await PendingVerifyAsync(connector);
             var reboot = client.RebootAsync(RebootKind.Soft);
             await Task.Delay(200);
-            Assert.Empty(rebooter.Calls);                                                // the attempt runs on
-            Assert.True(attempt.Client.IsConnected);
+            Assert.That(rebooter.Calls, Is.Empty);                                       // the attempt runs on
+            Assert.That(attempt.Client.IsConnected, Is.True);
             attempt.CloseRemote();                                                       // it fails: the request runs instead of the pause
             await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);
-            Assert.Empty(policy.Calls);                                                  // no policy call for that failure
+            Assert.That(policy.Calls, Is.Empty);                                         // no policy call for that failure
             await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
             await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
             await reboot.WaitAsync(Limits.Test);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_AttemptSucceededMeanwhile_StillReboots()
     {
         var (client, _, connector, rebooter, logs, time) = await SeamAsync();
@@ -367,12 +377,14 @@ public class ResilientRebootTests
             await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
             await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
             await reboot.WaitAsync(Limits.Test);
-            Assert.Equal(2, logs.Events(1105).Count);
-            Assert.Single(logs.Events(1103));                                            // the requested loss is not reported
+            Assert.That(logs.Events(1105), Has.Count.EqualTo(2));
+            Assert.That(
+                logs.Events(1103),
+                Has.Exactly(1).Items);                                            // the requested loss is not reported
         }
     }
 
-    [Fact]
+    [Test]
     public async Task RebootAsync_Coalesce_HardWins()
     {
         var (client, _, connector, rebooter, logs, time) = await SeamAsync();
@@ -386,13 +398,13 @@ public class ResilientRebootTests
             await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
             await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
             await Task.WhenAll(soft, hard).WaitAsync(Limits.Test);
-            Assert.Equal(new[] { RebootKind.Hard }, rebooter.Calls);
-            Assert.Equal(2, logs.Events(1113).Count);
+            Assert.That(rebooter.Calls, Is.EqualTo(new[] { RebootKind.Hard }));
+            Assert.That(logs.Events(1113), Has.Count.EqualTo(2));
         }
     }
 
     // Spec 4.2 table row 4 (ruling C11): a manual request joins the reboot an escalation is running.
-    [Fact]
+    [Test]
     public async Task RebootAsync_DuringEscalationBootWait_Joins()
     {
         bool back = false;
@@ -408,39 +420,42 @@ public class ResilientRebootTests
             Volatile.Write(ref back, true);
             var reboot = client.RebootAsync(RebootKind.Hard);                           // joins, whatever its kind
             await Task.Delay(100);
-            Assert.False(reboot.IsCompleted);
+            Assert.That(reboot.IsCompleted, Is.False);
             await time.AdvanceUntilAsync(() => connector.Attempts == 3, TimeSpan.FromMilliseconds(100));
             await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
             await reboot.WaitAsync(Limits.Test);
-            Assert.Equal(new[] { RebootKind.Soft }, rebooter.Calls);
-            Assert.False(Assert.Single(rebooter.Contexts).Requested);
-            Assert.Single(logs.Events(1113));
-            Assert.Single(logs.Events(1114));
-            Assert.Single(logs.Events(1116));
-            Assert.Single(policy.Calls);
+            Assert.That(rebooter.Calls, Is.EqualTo(new[] { RebootKind.Soft }));
+            Assert.That(rebooter.Contexts.Sole().Requested, Is.False);
+            Assert.That(logs.Events(1113), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1114), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1116), Has.Exactly(1).Items);
+            Assert.That(policy.Calls, Has.Exactly(1).Items);
         }
     }
 
-    [Theory]
-    [InlineData(1, 1)]
-    [InlineData(2, 2)]
+    [TestCase(1, 1)]
+    [TestCase(2, 2)]
     public async Task RebootAsync_ManualCountsTowardsEscalation(int maxReboots, int expectedReboots)
     {
         var policy = new RecordingPolicy { Decide = new EscalatingRecoveryPolicy { MaxRebootsPerLoss = maxReboots }.OnAttemptFailed };
         var (client, _, _, rebooter, _, time) = await SeamAsync(o => o.RecoveryPolicy = policy, accept: n => n == 1);
         var reboot = client.RebootAsync(RebootKind.Hard);                                // noticed loss or not, the request runs before the first series
         await time.AdvanceUntilAsync(() => rebooter.Calls.Count == expectedReboots && policy.Calls.Count >= 6, TimeSpan.FromSeconds(1));   // six failures span about 31 s of backoff
-        Assert.Equal(Enumerable.Repeat(RebootKind.Hard, expectedReboots), rebooter.Calls);
-        Assert.All(policy.Calls, c => Assert.Equal(0, c.SoftReboots));
-        Assert.Equal(1, policy.Calls.SkipWhile(c => c.HardReboots == 0).First().HardReboots);   // Ruling C17: the supervisor's first refusal may reach the policy before the request
+        Assert.That(rebooter.Calls, Is.EqualTo(Enumerable.Repeat(RebootKind.Hard, expectedReboots)));
+        Assert.That(policy.Calls.Select(c => c.SoftReboots), Has.All.EqualTo(0));
+        Assert.That(
+            policy.Calls.SkipWhile(c => c.HardReboots == 0).First().HardReboots,
+            Is.EqualTo(1));   // Ruling C17: the supervisor's first refusal may reach the policy before the request
         if (expectedReboots == 2)
-            Assert.Equal(3, policy.Calls.Count(c => c.HardReboots == 1));   // three failures after the manual hard, then the second
+            Assert.That(
+                policy.Calls.Count(c => c.HardReboots == 1),
+                Is.EqualTo(3));   // three failures after the manual hard, then the second
         await client.DisposeAsync();
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => reboot.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => reboot.WaitAsync(Limits.Test), Throws.TypeOf<ObjectDisposedException>());
     }
 
     // Review Focus 1.
-    [Fact]
+    [Test]
     public async Task RebootAsync_OnLastAllowedAttempt_RebootsThenGiveUpFailsTheCaller()
     {
         var (client, _, connector, rebooter, logs, time) = await SeamAsync(o => o.ReconnectAttempts = 2, accept: n => n != 2);
@@ -449,16 +464,18 @@ public class ResilientRebootTests
         var reboot = client.RebootAsync(RebootKind.Soft);
         attempt.CloseRemote();
         await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);                     // the reboot still runs
-        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-        Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => reboot.WaitAsync(Limits.Test)));
-        Assert.Equal(("attempts exhausted", "2"), (Assert.Single(logs.Events(1106)).Value("Reason"), logs.Events(1106)[0].Value("Attempts")));
-        Assert.Equal(3, connector.Attempts);                                             // no attempt beyond the cap
+        var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        Assert.That(Assert.ThrowsAsync<IOException>(() => reboot.WaitAsync(Limits.Test)), Is.SameAs(failure));
+        Assert.That(
+            (logs.Events(1106).Sole().Value("Reason"), logs.Events(1106)[0].Value("Attempts")),
+            Is.EqualTo(("attempts exhausted", "2")));
+        Assert.That(connector.Attempts, Is.EqualTo(3));                                             // no attempt beyond the cap
         await client.DisposeAsync();
     }
 
     // Final F1 (reboot spec 4.2 row 1, 5.4): a manual request wakes the supervisor while the heartbeat waits for the
     // late reply of a device that does not answer; the reboot starts at once, and the end of the connection is no loss.
-    [Fact]
+    [Test]
     public async Task RebootAsync_HeartbeatUnanswered_RebootsAtOnce()
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter { BootTime = TimeSpan.Zero });
@@ -469,7 +486,9 @@ public class ResilientRebootTests
         await using (client)
         {
             time.Advance(TimeSpan.FromMilliseconds(100));
-            Assert.Equal(Hex.Parse(Resilient.GetStatus), await device.ReadRequestAsync().WaitAsync(Limits.Test));   // the heartbeat, never answered
+            Assert.That(
+                await device.ReadRequestAsync().WaitAsync(Limits.Test),
+                Is.EqualTo(Hex.Parse(Resilient.GetStatus)));   // the heartbeat, never answered
             time.Advance(TimeSpan.FromMilliseconds(200));                                // past ResponseTimeout, inside the late-reply deadline
             await Eventually.ThatAsync(() => logs.Events(1101).Count == 1);                 // HeartbeatMissed
             var reboot = client.RebootAsync(RebootKind.Soft);
@@ -477,16 +496,16 @@ public class ResilientRebootTests
             await time.AdvanceUntilAsync(() => connector.Attempts == 2, TimeSpan.FromMilliseconds(100));   // the 1 s floor after the reboot
             await (await PendingVerifyAsync(connector)).SendAsync(Resilient.Nak);
             await reboot.WaitAsync(Limits.Test);
-            Assert.True(client.IsConnected);
-            Assert.Empty(logs.Events(1103));
-            Assert.Single(logs.Events(1113));
-            Assert.Single(logs.Events(1116));
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(logs.Events(1103), Is.Empty);
+            Assert.That(logs.Events(1113), Has.Exactly(1).Items);
+            Assert.That(logs.Events(1116), Has.Exactly(1).Items);
         }
     }
 
     // A transport that closes the client it reboots the device of is application misuse, but it must not hold anything:
     // the disposal cancels the lifetime, which ends the supervisor's wait for the transport, so the disposal can finish.
-    [Fact]
+    [Test]
     public async Task RebootAsync_TransportDisposesTheClient_DoesNotDeadlock()
     {
         var logs = new FakeLoggerFactory();
@@ -496,14 +515,14 @@ public class ResilientRebootTests
             rebooter.OnReboot = (_, _, _) => client.DisposeAsync().AsTask();
             var caller = client.RebootAsync(RebootKind.Soft);
             await client.Completion.WaitAsync(Limits.Test);
-            await Assert.ThrowsAsync<ObjectDisposedException>(() => caller.WaitAsync(Limits.Test));
-            Assert.Empty(logs.Events(1106));
+            await Assert.ThatAsync(() => caller.WaitAsync(Limits.Test), Throws.TypeOf<ObjectDisposedException>());
+            Assert.That(logs.Events(1106), Is.Empty);
         }
     }
 
     // A transport that sends a command through the client waits for a reconnection that only the end of the reboot
     // step can start. The RebootTimeout ends that wait: the reboot fails, the client reconnects.
-    [Fact]
+    [Test]
     public async Task RebootAsync_TransportCallsTheClient_EndsByRebootTimeout()
     {
         var logs = new FakeLoggerFactory();
@@ -512,9 +531,9 @@ public class ResilientRebootTests
         await using (client)
         {
             rebooter.OnReboot = (_, _, _) => client.GetAsync<InterfaceVersion>();
-            await Assert.ThrowsAsync<TimeoutException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
             await Eventually.ThatAsync(() => client.IsConnected, Limits.Test);
-            Assert.Single(logs.Events(1115));
+            Assert.That(logs.Events(1115), Has.Exactly(1).Items);
         }
     }
 }

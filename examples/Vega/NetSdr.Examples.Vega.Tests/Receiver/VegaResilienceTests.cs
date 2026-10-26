@@ -27,7 +27,7 @@ public class VegaResilienceTests
     private static Task<ResilientControlClient> ConnectAsync(VegaEmulator emulator, ResilientControlClientOptions options) =>
         ResilientControlClient.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), options).WaitAsync(Limits.Test);
 
-    [Fact]
+    [Test]
     public async Task Catalog_AttachAsync_OverResilientClient()
     {
         await using var emulator = new VegaEmulator();
@@ -38,15 +38,15 @@ public class VegaResilienceTests
         await emulator.StartAsync().WaitAsync(Limits.Test);
         var client = await ConnectAsync(emulator, Fast());
         VegaReceiverBase device = await Catalog().AttachAsync(client).WaitAsync(Limits.Test);
-        Assert.IsType<VegaV2Receiver>(device);
-        Assert.Contains(SerialNumber.Code, device.Identity.Unsupported);
-        Assert.Equal(1, emulator.Server.Received.Count(r => r.Code == ProductId.Code));
-        Assert.Equal(1, emulator.Server.Received.Count(r => r.Code == SerialNumber.Code));
+        Assert.That(device, Is.TypeOf<VegaV2Receiver>());
+        Assert.That(device.Identity.Unsupported, Does.Contain(SerialNumber.Code));
+        Assert.That(emulator.Server.Received.Count(r => r.Code == ProductId.Code), Is.EqualTo(1));
+        Assert.That(emulator.Server.Received.Count(r => r.Code == SerialNumber.Code), Is.EqualTo(1));
         await device.DisposeAsync().AsTask().WaitAsync(Limits.Test);           // the device owns the client
-        Assert.True(client.Completion.IsCompletedSuccessfully);
+        Assert.That(client.Completion.IsCompletedSuccessfully, Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task Vega_ReconnectDuringIdentification()
     {
         await using var emulator = new VegaEmulator();
@@ -63,15 +63,15 @@ public class VegaResilienceTests
         options.ConnectionRestored = (ctx, ct) => ctx.Client.SetAsync(new VendorUnlock(VegaEmulator.DefaultKey), ct);  // always: session state
         var client = await ConnectAsync(emulator, options);
         await using var device = await Catalog().AttachAsync(client).WaitAsync(Limits.Test);
-        Assert.IsType<VegaV2Receiver>(device);
+        Assert.That(device, Is.TypeOf<VegaV2Receiver>());
         var codes = emulator.Server.Received.Where(r => r.Code != StatusCodes.Code).Select(r => r.Code).ToList();
         int firstInfo = codes.IndexOf(VegaProtocol.FirmwareInfoCode);
         int unlockAfterDrop = codes.IndexOf(VegaProtocol.VendorUnlockCode, firstInfo + 1);
-        Assert.True(unlockAfterDrop > firstInfo);
-        Assert.True(codes.IndexOf(VegaProtocol.FirmwareInfoCode, firstInfo + 1) > unlockAfterDrop);
+        Assert.That(unlockAfterDrop > firstInfo, Is.True);
+        Assert.That(codes.IndexOf(VegaProtocol.FirmwareInfoCode, firstInfo + 1) > unlockAfterDrop, Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task Vega_WrapperOverContextClient_StartsStream()
     {
         await using var emulator = new VegaEmulator();
@@ -93,7 +93,9 @@ public class VegaResilienceTests
         identity = device.Identity;
         await emulator.Server.DisconnectClientAsync();
         await Eventually.ThatAsync(() => streamed && client.IsConnected);
-        Assert.Contains(emulator.Server.Received, r => r.Code == ReceiverState.Code && r.Type == RequestType.Set);
+        Assert.That(
+            emulator.Server.Received,
+            Has.Some.Matches<ControlRequest>(r => r.Code == ReceiverState.Code && r.Type == RequestType.Set));
         await device.GetLabelAsync().WaitAsync(Limits.Test);                        // the connection still serves the device
     }
 }

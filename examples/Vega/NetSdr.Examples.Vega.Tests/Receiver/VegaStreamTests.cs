@@ -8,7 +8,7 @@ namespace NetSdr.Examples.Vega.Tests.Receiver;
 
 public class VegaStreamTests
 {
-    [Fact]
+    [Test]
     public async Task StartStream_DeliversCounterData_StopEndsIt()
     {
         var (emulator, vega) = await VegaFixture.ConnectAsync();
@@ -21,17 +21,16 @@ public class VegaStreamTests
         receiver.Start();
 
         await vega.StartStreamAsync(receiver.LocalEndPoint, 7_100_000, 200_000);
-        Assert.Equal(new ushort[] { 0x00B8, 0x0020, 0x00C5, 0x0018 },
-            emulator.Server.Received.Select(r => r.Code).TakeLast(4));
+        Assert.That(emulator.Server.Received.Select(r => r.Code).TakeLast(4), Is.EqualTo(new ushort[] { 0x00B8, 0x0020, 0x00C5, 0x0018 }));
         await Eventually.ThatAsync(() => packets.Count >= 3);
         var first = packets.First();
-        Assert.Equal((SampleFormat.Int16, (ushort)0), (first.Info.Format, first.Info.Sequence));
-        Assert.Equal(new short[] { 0, -1, 1, -2 }, MemoryMarshal.Cast<byte, short>(first.Samples)[..4].ToArray());
+        Assert.That((first.Info.Format, first.Info.Sequence), Is.EqualTo((SampleFormat.Int16, (ushort)0)));
+        Assert.That(MemoryMarshal.Cast<byte, short>(first.Samples)[..4].ToArray(), Is.EqualTo(new short[] { 0, -1, 1, -2 }));
 
         await vega.StopStreamAsync();
         await Task.Delay(100);
         var count = packets.Count;
         await Task.Delay(300);
-        Assert.Equal(count, packets.Count);
+        Assert.That(packets, Has.Count.EqualTo(count));
     }
 }

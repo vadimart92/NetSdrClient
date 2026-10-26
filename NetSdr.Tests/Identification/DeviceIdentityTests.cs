@@ -11,7 +11,7 @@ public class DeviceIdentityTests
     private sealed record TestFact(int Value);
     private sealed record OtherFact(string Value);
 
-    [Fact]
+    [Test]
     public async Task FullDevice_FillsEveryField()
     {
         var (server, client) = await Loopback.StartAsync(s =>
@@ -29,32 +29,32 @@ public class DeviceIdentityTests
         await using var _ = server;
         await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
-        Assert.Equal(("NetSDR", "MT123456", KnownModel.NetSdr), (id.Name, id.SerialNumber, id.Model));
-        Assert.Equal(new Version(5, 29), id.InterfaceVersion);
-        Assert.Equal(new Version(1, 4), id.BootVersion);
-        Assert.Equal(new Version(5, 29), id.FirmwareVersion);
-        Assert.Equal(new Version(3, 0), id.HardwareVersion);
-        Assert.Equal(new FpgaInfo(3, 28), id.Fpga);
-        Assert.Equal(0x03524453u, id.ProductId);
-        Assert.Equal(Options.ReflockBoard, id.Options!.Value.Flags);
-        Assert.Empty(id.Unsupported);
+        Assert.That((id.Name, id.SerialNumber, id.Model), Is.EqualTo(("NetSDR", "MT123456", KnownModel.NetSdr)));
+        Assert.That(id.InterfaceVersion, Is.EqualTo(new Version(5, 29)));
+        Assert.That(id.BootVersion, Is.EqualTo(new Version(1, 4)));
+        Assert.That(id.FirmwareVersion, Is.EqualTo(new Version(5, 29)));
+        Assert.That(id.HardwareVersion, Is.EqualTo(new Version(3, 0)));
+        Assert.That(id.Fpga, Is.EqualTo(new FpgaInfo(3, 28)));
+        Assert.That(id.ProductId, Is.EqualTo(0x03524453u));
+        Assert.That(id.Options!.Value.Flags, Is.EqualTo(Options.ReflockBoard));
+        Assert.That(id.Unsupported, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task BareDevice_AllNull_SixCodesUnsupported()
     {
         var (server, client) = await Loopback.StartAsync();
         await using var _ = server;
         await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
-        Assert.Null(id.Name);
-        Assert.Null(id.FirmwareVersion);
-        Assert.Null(id.ProductId);
-        Assert.Equal(KnownModel.Unknown, id.Model);
-        Assert.Equal(new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0009, 0x000A }, id.Unsupported.Order());
+        Assert.That(id.Name, Is.Null);
+        Assert.That(id.FirmwareVersion, Is.Null);
+        Assert.That(id.ProductId, Is.Null);
+        Assert.That(id.Model, Is.EqualTo(KnownModel.Unknown));
+        Assert.That(id.Unsupported.Order(), Is.EqualTo(new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0009, 0x000A }));
     }
 
-    [Fact]
+    [Test]
     public async Task FirmwareNakForOneId_LeavesOnlyThatFieldEmpty()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<FirmwareVersion>(r =>
@@ -62,12 +62,12 @@ public class DeviceIdentityTests
         await using var _ = server;
         await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
-        Assert.Null(id.HardwareVersion);
-        Assert.Equal(new Version(1, 0), id.FirmwareVersion);
-        Assert.DoesNotContain((ushort)0x0004, id.Unsupported);
+        Assert.That(id.HardwareVersion, Is.Null);
+        Assert.That(id.FirmwareVersion, Is.EqualTo(new Version(1, 0)));
+        Assert.That(id.Unsupported, Does.Not.Contain((ushort)0x0004));
     }
 
-    [Fact]
+    [Test]
     public async Task FirmwareEmptyPayload_IsAbsentNotUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest(0x0004, r =>
@@ -77,12 +77,12 @@ public class DeviceIdentityTests
         await using var _ = server;
         await using var __ = client;
         var id = await DeviceIdentity.ReadAsync(client);
-        Assert.Null(id.BootVersion);
-        Assert.Equal(new Version(1, 0), id.FirmwareVersion);
-        Assert.DoesNotContain((ushort)0x0004, id.Unsupported);
+        Assert.That(id.BootVersion, Is.Null);
+        Assert.That(id.FirmwareVersion, Is.EqualTo(new Version(1, 0)));
+        Assert.That(id.Unsupported, Does.Not.Contain((ushort)0x0004));
     }
 
-    [Fact]
+    [Test]
     public async Task ItemProbe_StoresFact_NakMarksUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new RfGain(0, -10)));
@@ -94,14 +94,14 @@ public class DeviceIdentityTests
             Probes = { Probes.Item<RfGain, byte>(0), Probes.Item<AfGain, byte>(0) },
         };
         var id = await DeviceIdentity.ReadAsync(client, options);
-        Assert.Equal(-10, id.Get<RfGain>().GainDb);
-        Assert.False(id.TryGet<AfGain>(out AfGain absent));
-        Assert.Equal(default, absent);
-        Assert.Equal(new ushort[] { 0x0048 }, id.Unsupported);
-        Assert.Equal(new ushort[] { 0x0038, 0x0048 }, server.Received.Select(r => r.Code));
+        Assert.That(id.Get<RfGain>().GainDb, Is.EqualTo(-10));
+        Assert.That(id.TryGet<AfGain>(out AfGain absent), Is.False);
+        Assert.That(absent, Is.Default);
+        Assert.That(id.Unsupported, Is.EqualTo(new ushort[] { 0x0048 }));
+        Assert.That(server.Received.Select(r => r.Code), Is.EqualTo(new ushort[] { 0x0038, 0x0048 }));
     }
 
-    [Fact]
+    [Test]
     public async Task DelegateProbe_SeesStandardFields()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(0x41474556)));
@@ -110,10 +110,10 @@ public class DeviceIdentityTests
         uint? seen = null;
         var options = new IdentificationOptions { Probes = { (c, b, ct) => { seen = b.Current.ProductId; return Task.CompletedTask; } } };
         await DeviceIdentity.ReadAsync(client, options);
-        Assert.Equal(0x41474556u, seen);
+        Assert.That(seen, Is.EqualTo(0x41474556u));
     }
 
-    [Fact]
+    [Test]
     public async Task Facts_KeyedByType_LaterSetReplaces()
     {
         var (server, client) = await Loopback.StartAsync();
@@ -128,48 +128,46 @@ public class DeviceIdentityTests
             },
         };
         var id = await DeviceIdentity.ReadAsync(client, options);
-        Assert.Equal(2, id.Get<TestFact>().Value);
-        Assert.Equal("a", id.Get<OtherFact>().Value);
-        Assert.Equal(2, id.FactTypes.Count);
+        Assert.That(id.Get<TestFact>().Value, Is.EqualTo(2));
+        Assert.That(id.Get<OtherFact>().Value, Is.EqualTo("a"));
+        Assert.That(id.FactTypes, Has.Count.EqualTo(2));
         var ex = Assert.Throws<KeyNotFoundException>(() => id.Get<string>());
-        Assert.Contains("String", ex.Message);
+        Assert.That(ex.Message, Does.Contain("String"));
     }
 
-    [Fact]
+    [Test]
     public async Task SilentDevice_TimeoutIsNotUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest<TargetName>(_ => ControlReply.Silent),
             new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) });
         await using var _ = server;
         await using var __ = client;
-        await Assert.ThrowsAsync<TimeoutException>(() => DeviceIdentity.ReadAsync(client));
+        await Assert.ThatAsync(() => DeviceIdentity.ReadAsync(client), Throws.TypeOf<TimeoutException>());
     }
 
-    [Fact]
+    [Test]
     public async Task StandardProbes_AskInOrder_FirmwareOncePerComponent()
     {
         var (server, client) = await Loopback.StartAsync();
         await using var _ = server;
         await using var __ = client;
         await DeviceIdentity.ReadAsync(client);
-        Assert.Equal(
-            new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0004, 0x0004, 0x0004, 0x0009, 0x000A },
-            server.Received.Select(r => r.Code));
-        Assert.Equal(
-            new byte[] { 0, 1, 2, 3 },
-            server.Received.Where(r => r.Code == 0x0004).Select(r => r.Payload.Span[0]));
+        Assert.That(
+            server.Received.Select(r => r.Code),
+            Is.EqualTo(new ushort[] { 0x0001, 0x0002, 0x0003, 0x0004, 0x0004, 0x0004, 0x0004, 0x0009, 0x000A }));
+        Assert.That(server.Received.Where(r => r.Code == 0x0004).Select(r => r.Payload.Span[0]), Is.EqualTo(new byte[] { 0, 1, 2, 3 }));
     }
 
-    [Fact]
+    [Test]
     public async Task UnreadableReply_IsAnErrorNotUnsupported()
     {
         var (server, client) = await Loopback.StartAsync(s => s.OnRequest(0x0009, _ => ControlReply.Bytes(new byte[] { 1 })));
         await using var __ = server;
         await using var ___ = client;
-        await Assert.ThrowsAsync<NetSdrProtocolException>(() => DeviceIdentity.ReadAsync(client));
+        await Assert.ThatAsync(() => DeviceIdentity.ReadAsync(client), Throws.TypeOf<NetSdrProtocolException>());
     }
 
-    [Fact]
+    [Test]
     public void Current_IsASnapshot_LaterChangesDoNotReachIt()
     {
         var builder = new DeviceIdentityBuilder();
@@ -181,25 +179,25 @@ public class DeviceIdentityTests
         builder.MarkUnsupported(0x0001);
         var second = builder.Current;
 
-        Assert.Equal(1, first.Get<TestFact>().Value);
-        Assert.Single(first.FactTypes);
-        Assert.Empty(first.Unsupported);
-        Assert.Equal(2, second.Get<TestFact>().Value);
-        Assert.Equal(2, second.FactTypes.Count);
-        Assert.Equal(new ushort[] { 0x0001 }, second.Unsupported);
+        Assert.That(first.Get<TestFact>().Value, Is.EqualTo(1));
+        Assert.That(first.FactTypes, Has.Exactly(1).Items);
+        Assert.That(first.Unsupported, Is.Empty);
+        Assert.That(second.Get<TestFact>().Value, Is.EqualTo(2));
+        Assert.That(second.FactTypes, Has.Count.EqualTo(2));
+        Assert.That(second.Unsupported, Is.EqualTo(new ushort[] { 0x0001 }));
     }
 
-    [Fact]
+    [Test]
     public async Task ReadAsync_LeavesClientOpen()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new ProductId(7)));
         await using var _ = server;
         await using var __ = client;
         await DeviceIdentity.ReadAsync(client);
-        Assert.Equal(7u, (await client.GetAsync<ProductId>()).Value);
+        Assert.That((await client.GetAsync<ProductId>()).Value, Is.EqualTo(7u));
     }
 
-    [Fact]
+    [Test]
     public async Task ReadAsync_WorksThroughAnyINetSdrControlClient()
     {
         var (server, client) = await Loopback.StartAsync(s => s.Preload(new InterfaceVersion(529)));
@@ -208,8 +206,8 @@ public class DeviceIdentityTests
         {
             var forwarding = new ForwardingClient(client);
             var identity = await DeviceIdentity.ReadAsync(forwarding);
-            Assert.Equal(new Version(5, 29), identity.InterfaceVersion);
-            Assert.Equal(9, forwarding.Requests);   // six standard items, 0x0004 four times
+            Assert.That(identity.InterfaceVersion, Is.EqualTo(new Version(5, 29)));
+            Assert.That(forwarding.Requests, Is.EqualTo(9));   // six standard items, 0x0004 four times
         }
     }
 }

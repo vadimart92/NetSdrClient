@@ -12,7 +12,7 @@ public class InnerClientHookTests
     private const string ProductReply = "08 00 09 00 53 44 52 03";
     private const string VersionReply = "06 00 03 00 11 02";
 
-    [Fact]
+    [Test]
     public async Task InnerTimeProvider_DrivesResponseTimeout()
     {
         var time = new FakeTimeProvider();
@@ -27,12 +27,12 @@ public class InnerClientHookTests
         await Task.Delay(100);                                 // the wait has started after the write
         time.Advance(TimeSpan.FromSeconds(1.9));
         await Task.Delay(100);
-        Assert.False(call.IsCompleted);
+        Assert.That(call.IsCompleted, Is.False);
         time.Advance(TimeSpan.FromSeconds(0.2));
-        await Assert.ThrowsAsync<TimeoutException>(() => call.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
     }
 
-    [Fact]
+    [Test]
     public async Task LateReplyObserver_FiresForLateReplyAndForNakWithSlotSet()
     {
         var calls = new ConcurrentQueue<(ControlItemMessage Message, bool IsNak)>();
@@ -46,11 +46,13 @@ public class InnerClientHookTests
         await device.SendAsync("02 00");                            // NAK, nothing in flight, slot set
         await Eventually.ThatAsync(() => calls.Count == 2);
         var (late, nak) = (calls.ElementAt(0), calls.ElementAt(1));
-        Assert.Equal((ReplyType.Response, (ushort)0x0009, false), (late.Message.Type, late.Message.Code, late.IsNak));
-        Assert.Equal((ReplyType.Response, (ushort)0, 0, true), (nak.Message.Type, nak.Message.Code, nak.Message.Payload.Length, nak.IsNak));
+        Assert.That((late.Message.Type, late.Message.Code, late.IsNak), Is.EqualTo((ReplyType.Response, (ushort)0x0009, false)));
+        Assert.That(
+            (nak.Message.Type, nak.Message.Code, nak.Message.Payload.Length, nak.IsNak),
+            Is.EqualTo((ReplyType.Response, (ushort)0, 0, true)));
     }
 
-    [Fact]
+    [Test]
     public async Task LateReplyObserver_SilentOtherwise()
     {
         int calls = 0;
@@ -68,11 +70,11 @@ public class InnerClientHookTests
         var rejected = client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
         await device.SendAsync("02 00");                            // NAK that answers the request
-        await Assert.ThrowsAsync<NetSdrNakException>(() => rejected.WaitAsync(Limits.Test));
-        Assert.Equal(0, calls);
+        await Assert.ThatAsync(() => rejected.WaitAsync(Limits.Test), Throws.TypeOf<NetSdrNakException>());
+        Assert.That(calls, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task LateReplyObserver_RunsBeforeUnsolicited()
     {
         bool? visibleAtCall = null;
@@ -81,13 +83,13 @@ public class InnerClientHookTests
         await using var device = PipeDevice.Attach(client);
         await AbandonAsync<ProductId>(device);
         await device.SendAsync(ProductReply);
-        Assert.Equal((ushort)0x0009, (await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test)).Code);
-        Assert.False(visibleAtCall);
+        Assert.That((await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test)).Code, Is.EqualTo((ushort)0x0009));
+        Assert.That(visibleAtCall, Is.False);
     }
 
-    [Fact]
+    [Test]
     public async Task LateReplyObserver_Unset_SameBytes() =>
-        Assert.Equal(await ScriptAsync(observe: false), await ScriptAsync(observe: true));
+        Assert.That(await ScriptAsync(observe: true), Is.EqualTo(await ScriptAsync(observe: false)));
 
     private static NetSdrControlClient Inner() =>
         new(new NetSdrControlClientOptions { ResponseTimeout = TimeSpan.FromMilliseconds(150), FaultOnTimeout = false });
@@ -96,7 +98,7 @@ public class InnerClientHookTests
     {
         var call = device.Client.GetAsync<T>();
         await device.ReadRequestAsync();
-        await Assert.ThrowsAsync<TimeoutException>(() => call.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
     }
 
     // A late reply, a NAK and an unsolicited frame, then the next request: every frame and message as text.

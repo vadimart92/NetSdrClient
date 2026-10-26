@@ -21,7 +21,7 @@ public class ResilientRestoreTests
         await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_Throws_RetriedOnNewConnection()
     {
         var logs = new FakeLoggerFactory();
@@ -38,14 +38,14 @@ public class ResilientRestoreTests
             await DropAndRestoreAsync(server, logs);
         }
 
-        var failed = Assert.Single(logs.Events(1104));
-        Assert.Equal("Restore", failed.Value("Phase"));
-        Assert.IsType<ApplicationException>(failed.Exception);
-        Assert.Equal(2, ports.Distinct().Count());              // the third connection runs the second callback
-        Assert.Equal((2, 1), (logs.Events(1110).Count, logs.Events(1111).Count));
+        var failed = logs.Events(1104).Sole();
+        Assert.That(failed.Value("Phase"), Is.EqualTo("Restore"));
+        Assert.That(failed.Exception, Is.TypeOf<ApplicationException>());
+        Assert.That(ports.Distinct().Count(), Is.EqualTo(2));   // the third connection runs the second callback
+        Assert.That((logs.Events(1110).Count, logs.Events(1111).Count), Is.EqualTo((2, 1)));
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_Nak_RetriedOnNewConnection()
     {
         var logs = new FakeLoggerFactory();
@@ -58,26 +58,26 @@ public class ResilientRestoreTests
         await using (client)
         {
             await DropAndRestoreAsync(server, logs);
-            var failed = Assert.Single(logs.Events(1104));
-            Assert.Equal("Restore", failed.Value("Phase"));
-            Assert.IsType<NetSdrNakException>(failed.Exception);
-            Assert.Equal(2, server.Received.Count(r => r.Code == AfGain.Code));
-            Assert.Empty(logs.Events(1106));
-            Assert.False(client.Completion.IsCompleted);
-            Assert.Equal(529, (await client.GetAsync<InterfaceVersion>()).Version);
+            var failed = logs.Events(1104).Sole();
+            Assert.That(failed.Value("Phase"), Is.EqualTo("Restore"));
+            Assert.That(failed.Exception, Is.TypeOf<NetSdrNakException>());
+            Assert.That(server.Received.Count(r => r.Code == AfGain.Code), Is.EqualTo(2));
+            Assert.That(logs.Events(1106), Is.Empty);
+            Assert.That(client.Completion.IsCompleted, Is.False);
+            Assert.That((await client.GetAsync<InterfaceVersion>()).Version, Is.EqualTo(529));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_PersistentNak_GivesUpOnlyWhenAttemptsRunOut()
     {
         var endless = await RunAsync(attempts: null, until: l => l.Events(1104).Count >= 10);
-        Assert.Empty(endless.Events(1106));
-        Assert.All(endless.Events(1104), r => Assert.IsType<NetSdrNakException>(r.Exception));
+        Assert.That(endless.Events(1106), Is.Empty);
+        Assert.That(endless.Events(1104).Select(r => r.Exception), Has.All.TypeOf<NetSdrNakException>());
 
         var limited = await RunAsync(attempts: 3, until: l => l.Events(1106).Count == 1);
-        Assert.Equal(2, limited.Events(1104).Count);
-        Assert.IsType<NetSdrNakException>(Assert.Single(limited.Events(1106)).Exception!.InnerException);
+        Assert.That(limited.Events(1104), Has.Count.EqualTo(2));
+        Assert.That(limited.Events(1106).Sole().Exception!.InnerException, Is.TypeOf<NetSdrNakException>());
 
         static async Task<FakeLoggerFactory> RunAsync(int? attempts, Func<FakeLoggerFactory, bool> until)
         {
@@ -100,7 +100,7 @@ public class ResilientRestoreTests
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_CallsResilientClient_GivesUpWithClearMessage()
     {
         var logs = new FakeLoggerFactory();
@@ -118,15 +118,15 @@ public class ResilientRestoreTests
         await using (client)
         {
             await started.Server.DisconnectClientAsync();
-            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-            Assert.Contains("ConnectionRestored called the ResilientControlClient instead of context.Client", failure.Message);
-            Assert.Same(thrown, failure.InnerException);
+            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            Assert.That(failure.Message, Does.Contain("ConnectionRestored called the ResilientControlClient instead of context.Client"));
+            Assert.That(failure.InnerException, Is.SameAs(thrown));
         }
 
-        Assert.Equal("ConnectionRestored called the ResilientControlClient", Assert.Single(logs.Events(1106)).Value("Reason"));
+        Assert.That(logs.Events(1106).Sole().Value("Reason"), Is.EqualTo("ConnectionRestored called the ResilientControlClient"));
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_CatchesReentrancy_StillGivesUp()
     {
         var logs = new FakeLoggerFactory();
@@ -143,13 +143,13 @@ public class ResilientRestoreTests
         await using (client)
         {
             await started.Server.DisconnectClientAsync();
-            await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => client.Completion.WaitAsync(Limits.Test), Throws.TypeOf<IOException>());
         }
 
-        Assert.Single(logs.Events(1106));
+        Assert.That(logs.Events(1106), Has.Exactly(1).Items);
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_FireAndForgetAfterReturn_Allowed()
     {
         var logs = new FakeLoggerFactory();
@@ -169,12 +169,12 @@ public class ResilientRestoreTests
         await using (client)
         {
             await DropAndRestoreAsync(started.Server, logs);
-            Assert.Equal(529, (await later!.WaitAsync(Limits.Test)).Version);
-            Assert.Empty(logs.Events(1106));
+            Assert.That((await later!.WaitAsync(Limits.Test)).Version, Is.EqualTo(529));
+            Assert.That(logs.Events(1106), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_SessionRules()
     {
         var logs = new FakeLoggerFactory();
@@ -194,15 +194,15 @@ public class ResilientRestoreTests
         {
             int oldPort = client.LocalEndPoint!.Port;
             await DropAndRestoreAsync(started.Server, logs);
-            Assert.NotEqual(oldPort, sessionPort);
-            Assert.False(connectedInside);
-            Assert.True(client.IsConnected);
-            Assert.IsAssignableFrom<IOException>(seen!.Cause);
-            Assert.Throws<InvalidOperationException>(() => { _ = seen.Client.GetAsync<InterfaceVersion>(); });
+            Assert.That(sessionPort, Is.Not.EqualTo(oldPort));
+            Assert.That(connectedInside, Is.False);
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(seen!.Cause, Is.InstanceOf<IOException>());
+            Assert.That(() => { _ = seen.Client.GetAsync<InterfaceVersion>(); }, Throws.TypeOf<InvalidOperationException>());
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Callback_ConnectionLostDuringIt()
     {
         var logs = new FakeLoggerFactory();
@@ -219,12 +219,12 @@ public class ResilientRestoreTests
             await DropAndRestoreAsync(server, logs);
         }
 
-        Assert.IsAssignableFrom<IOException>(first);
-        Assert.Empty(logs.Events(1100));                          // failed at once, not after a response timeout
-        Assert.Equal("Restore", Assert.Single(logs.Events(1104)).Value("Phase"));
+        Assert.That(first, Is.InstanceOf<IOException>());
+        Assert.That(logs.Events(1100), Is.Empty);                 // failed at once, not after a response timeout
+        Assert.That(logs.Events(1104).Sole().Value("Phase"), Is.EqualTo("Restore"));
     }
 
-    [Fact]
+    [Test]
     public async Task CommandDuringRestore_WaitsForCallback()
     {
         var logs = new FakeLoggerFactory();
@@ -243,14 +243,14 @@ public class ResilientRestoreTests
             await inCallback.Task.WaitAsync(Limits.Test);
             var get = client.GetAsync<InterfaceVersion>();
             await Task.Delay(300);
-            Assert.DoesNotContain(server.Received, r => r.Code == InterfaceVersion.Code);
+            Assert.That(server.Received.Select(r => r.Code), Does.Not.Contain(InterfaceVersion.Code));
             gate.SetResult();
-            Assert.Equal(529, (await get.WaitAsync(Limits.Test)).Version);
-            Assert.Equal(new[] { AfGain.Code, InterfaceVersion.Code }, server.Received.WithoutStatus().Select(r => r.Code));
+            Assert.That((await get.WaitAsync(Limits.Test)).Version, Is.EqualTo(529));
+            Assert.That(server.Received.WithoutStatus().Select(r => r.Code), Is.EqualTo(new[] { AfGain.Code, InterfaceVersion.Code }));
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_DuringCallback()
     {
         var logs = new FakeLoggerFactory();
@@ -272,15 +272,15 @@ public class ResilientRestoreTests
             await server.DisconnectClientAsync();
             await inCallback.Task.WaitAsync(Limits.Test);
             await client.DisposeAsync().AsTask().WaitAsync(Limits.Test);
-            Assert.True(tokenCancelled);
-            Assert.IsType<ObjectDisposedException>(afterDispose);
-            Assert.True(client.Completion.IsCompletedSuccessfully);
-            Assert.Empty(logs.Events(1106));
+            Assert.That(tokenCancelled, Is.True);
+            Assert.That(afterDispose, Is.TypeOf<ObjectDisposedException>());
+            Assert.That(client.Completion.IsCompletedSuccessfully, Is.True);
+            Assert.That(logs.Events(1106), Is.Empty);
             await Loopback.AssertServerFreeAsync(server);
         }
     }
 
-    [Fact]
+    [Test]
     public async Task Dispose_FromInsideCallback_NoDeadlock()
     {
         var logs = new FakeLoggerFactory();
@@ -296,18 +296,17 @@ public class ResilientRestoreTests
         {
             await started.Server.DisconnectClientAsync();
             await Eventually.ThatAsync(() => disposedInside);
-            Assert.True(client.Completion.IsCompletedSuccessfully);
-            Assert.False(client.IsConnected);
-            Assert.Empty(logs.Events(1105));
-            Assert.Empty(logs.Events(1106));
+            Assert.That(client.Completion.IsCompletedSuccessfully, Is.True);
+            Assert.That(client.IsConnected, Is.False);
+            Assert.That(logs.Events(1105), Is.Empty);
+            Assert.That(logs.Events(1106), Is.Empty);
             await Loopback.AssertServerFreeAsync(started.Server);
         }
     }
 
     // Review Focus 4.
-    [Theory]
-    [InlineData("throw")]
-    [InlineData("null")]
+    [TestCase("throw")]
+    [TestCase("null")]
     public async Task Callback_SyncThrowOrNullTask_FailsOnlyTheAttempt(string kind)
     {
         var logs = new FakeLoggerFactory();
@@ -319,10 +318,10 @@ public class ResilientRestoreTests
         await using (client)
         {
             await DropAndRestoreAsync(server, logs);
-            Assert.Equal("Restore", Assert.Single(logs.Events(1104)).Value("Phase"));
-            Assert.Equal(2, calls);
-            Assert.Empty(logs.Events(1106));
-            Assert.False(client.Completion.IsCompleted);
+            Assert.That(logs.Events(1104).Sole().Value("Phase"), Is.EqualTo("Restore"));
+            Assert.That(calls, Is.EqualTo(2));
+            Assert.That(logs.Events(1106), Is.Empty);
+            Assert.That(client.Completion.IsCompleted, Is.False);
         }
     }
 }

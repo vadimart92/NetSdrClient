@@ -19,7 +19,7 @@ public class ControlClientLoggingTests
         Supervised = supervised,
     };
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_LifecycleAndRequests()
     {
         var logs = new FakeLoggerFactory();
@@ -27,42 +27,42 @@ public class ControlClientLoggingTests
         await using (server)
         {
             await client.SetAsync(new RfGain(0, -20));
-            await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>());
+            await Assert.ThatAsync(() => client.GetAsync<ProductId>(), Throws.TypeOf<NetSdrNakException>());
             await client.DisposeAsync();
         }
 
-        var connected = Assert.Single(logs.Events(1000));
-        Assert.Equal((LogLevel.Information, Category), (connected.Level, connected.Category));
-        Assert.Equal($"Connected to {client.RemoteEndPoint} from {client.LocalEndPoint}", connected.Message);
-        Assert.Equal((LogLevel.Debug, "RfGain"), (logs.Events(1003)[0].Level, logs.Events(1003)[0].Value("Item")));
-        var reply = Assert.Single(logs.Events(1004));
-        Assert.Equal("RfGain", reply.Value("Item"));
-        Assert.True(reply.Span("Duration") >= TimeSpan.Zero);
-        var nak = Assert.Single(logs.Events(1005));
-        Assert.Equal((LogLevel.Debug, "ProductId"), (nak.Level, nak.Value("Item")));
-        Assert.Equal(LogLevel.Information, Assert.Single(logs.Events(1001)).Level);
+        var connected = logs.Events(1000).Sole();
+        Assert.That((connected.Level, connected.Category), Is.EqualTo((LogLevel.Information, Category)));
+        Assert.That(connected.Message, Is.EqualTo($"Connected to {client.RemoteEndPoint} from {client.LocalEndPoint}"));
+        Assert.That((logs.Events(1003)[0].Level, logs.Events(1003)[0].Value("Item")), Is.EqualTo((LogLevel.Debug, "RfGain")));
+        var reply = logs.Events(1004).Sole();
+        Assert.That(reply.Value("Item"), Is.EqualTo("RfGain"));
+        Assert.That(reply.Span("Duration") >= TimeSpan.Zero, Is.True);
+        var nak = logs.Events(1005).Sole();
+        Assert.That((nak.Level, nak.Value("Item")), Is.EqualTo((LogLevel.Debug, "ProductId")));
+        Assert.That(logs.Events(1001).Sole().Level, Is.EqualTo(LogLevel.Information));
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_TimeoutAndForeignReply_Warning()
     {
         var logs = new FakeLoggerFactory();
         await using var silent = PipeDevice.Create(Logged(logs, fault: false));
         var timedOut = silent.Client.GetAsync<ProductId>();
         await silent.ReadRequestAsync();
-        await Assert.ThrowsAsync<TimeoutException>(() => timedOut.WaitAsync(Limits.Test));
-        Assert.Equal((LogLevel.Warning, "False"), (logs.Events(1006)[0].Level, logs.Events(1006)[0].Value("Faults")));
+        await Assert.ThatAsync(() => timedOut.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
+        Assert.That((logs.Events(1006)[0].Level, logs.Events(1006)[0].Value("Faults")), Is.EqualTo((LogLevel.Warning, "False")));
 
         await using var foreign = PipeDevice.Create(Logged(logs, fault: false));
         var failed = foreign.Client.GetAsync<InterfaceVersion>();
         await foreign.ReadRequestAsync();
         await foreign.SendAsync(ProductReply);                                     // a reply for another item
-        await Assert.ThrowsAsync<NetSdrProtocolException>(() => failed.WaitAsync(Limits.Test));
-        Assert.Equal(LogLevel.Warning, Assert.Single(logs.Events(1007)).Level);
-        Assert.Contains(logs.Events(1009), r => r.Value("Reason") == "Foreign");
+        await Assert.ThatAsync(() => failed.WaitAsync(Limits.Test), Throws.TypeOf<NetSdrProtocolException>());
+        Assert.That(logs.Events(1007).Sole().Level, Is.EqualTo(LogLevel.Warning));
+        Assert.That(logs.Events(1009).Select(r => r.Value("Reason")), Does.Contain("Foreign"));
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_DeviceClose_Error()
     {
         var logs = new FakeLoggerFactory();
@@ -71,16 +71,16 @@ public class ControlClientLoggingTests
         await using (client)
         {
             await server.DisconnectClientAsync();
-            await Assert.ThrowsAnyAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => client.Completion.WaitAsync(Limits.Test), Throws.InstanceOf<IOException>());
         }
 
-        var faulted = Assert.Single(logs.Events(1002));
-        Assert.Equal(LogLevel.Error, faulted.Level);
-        Assert.IsAssignableFrom<IOException>(faulted.Exception);
-        Assert.Empty(logs.Events(1001));
+        var faulted = logs.Events(1002).Sole();
+        Assert.That(faulted.Level, Is.EqualTo(LogLevel.Error));
+        Assert.That(faulted.Exception, Is.InstanceOf<IOException>());
+        Assert.That(logs.Events(1001), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_Supervised_DowngradesToDebug()
     {
         var logs = new FakeLoggerFactory();
@@ -89,9 +89,9 @@ public class ControlClientLoggingTests
         await using (server)
         await using (client)
         {
-            await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<ProductId>());   // 1006
+            await Assert.ThatAsync(() => client.GetAsync<ProductId>(), Throws.TypeOf<TimeoutException>());   // 1006
             await server.DisconnectClientAsync();                                             // 1002
-            await Assert.ThrowsAnyAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            await Assert.ThatAsync(() => client.Completion.WaitAsync(Limits.Test), Throws.InstanceOf<IOException>());
         }
 
         var (other, closed) = await Loopback.StartAsync(options: Logged(logs, supervised: true));
@@ -99,14 +99,13 @@ public class ControlClientLoggingTests
             await closed.DisposeAsync();                                      // 1001
         foreach (int id in new[] { 1000, 1001, 1002, 1006 })
         {
-            Assert.NotEmpty(logs.Events(id));
-            Assert.All(logs.Events(id), r => Assert.Equal(LogLevel.Debug, r.Level));
+            Assert.That(logs.Events(id), Is.Not.Empty);
+            Assert.That(logs.Events(id).Select(r => r.Level), Has.All.EqualTo(LogLevel.Debug));
         }
     }
 
-    [Theory]
-    [InlineData(LogLevel.Debug, false)]
-    [InlineData(LogLevel.Trace, true)]
+    [TestCase(LogLevel.Debug, false)]
+    [TestCase(LogLevel.Trace, true)]
     public async Task ControlClientLogging_TraceHex(LogLevel minimum, bool hex)
     {
         var logs = new FakeLoggerFactory(minimum);
@@ -117,11 +116,11 @@ public class ControlClientLoggingTests
             await client.SetAsync(new RfGain(0, -20));
         }
 
-        Assert.Equal(hex, logs.Events(1010).Any(r => r.Message == "-> 0600380000EC"));
-        Assert.Equal(hex, logs.Events(1011).Any(r => r.Message == "<- 0600380000EC"));
+        Assert.That(logs.Events(1010).Any(r => r.Message == "-> 0600380000EC"), Is.EqualTo(hex));
+        Assert.That(logs.Events(1011).Any(r => r.Message == "<- 0600380000EC"), Is.EqualTo(hex));
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_Unsolicited_Debug()
     {
         var logs = new FakeLoggerFactory();
@@ -131,16 +130,17 @@ public class ControlClientLoggingTests
         {
             await server.SendUnsolicitedAsync(new AfGain(0, 9));
             await client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
-            await Assert.ThrowsAsync<NetSdrNakException>(
-                () => client.SendAsync(RequestType.Get, 0x7FFF, ReadOnlyMemory<byte>.Empty));
+            await Assert.ThatAsync(
+                () => client.SendAsync(RequestType.Get, 0x7FFF, ReadOnlyMemory<byte>.Empty),
+                Throws.TypeOf<NetSdrNakException>());
         }
 
-        var published = Assert.Single(logs.Events(1009));
-        Assert.Equal((LogLevel.Debug, "Unsolicited"), (published.Level, published.Value("Reason")));
-        Assert.Equal("raw", logs.Events(1003).Last().Value("Item"));
+        var published = logs.Events(1009).Sole();
+        Assert.That((published.Level, published.Value("Reason")), Is.EqualTo((LogLevel.Debug, "Unsolicited")));
+        Assert.That(logs.Events(1003).Last().Value("Item"), Is.EqualTo("raw"));
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_PublishReasons()
     {
         var logs = new FakeLoggerFactory();
@@ -152,17 +152,18 @@ public class ControlClientLoggingTests
         await Eventually.ThatAsync(() => logs.Events(1009).Count == 4);   // processed before a request is in flight
         var late = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
-        await Assert.ThrowsAsync<TimeoutException>(() => late.WaitAsync(Limits.Test));
+        await Assert.ThatAsync(() => late.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
         await device.SendAsync(ProductReply);                  // the late reply of the abandoned request
         var foreign = device.Client.GetAsync<InterfaceVersion>();
         await device.ReadRequestAsync();
         await device.SendAsync("05 00 01 00 41");              // Response 0x0001: foreign
-        await Assert.ThrowsAsync<NetSdrProtocolException>(() => foreign.WaitAsync(Limits.Test));
-        Assert.Equal(new[] { "Unsolicited", "Data", "NoRequest", "Nak", "LateReply", "Foreign" },
-            logs.Events(1009).Select(r => r.Value("Reason")));
+        await Assert.ThatAsync(() => foreign.WaitAsync(Limits.Test), Throws.TypeOf<NetSdrProtocolException>());
+        Assert.That(
+            logs.Events(1009).Select(r => r.Value("Reason")),
+            Is.EqualTo(new[] { "Unsolicited", "Data", "NoRequest", "Nak", "LateReply", "Foreign" }));
     }
 
-    [Fact]
+    [Test]
     public async Task ControlClientLogging_HeaderOnlyFrameOfAnotherType_PublishedAsNak_WhileRequestInFlight()
     {
         var logs = new FakeLoggerFactory();
@@ -171,8 +172,8 @@ public class ControlClientLoggingTests
         await device.ReadRequestAsync();
         await device.SendAsync("02 20");                      // a header-only Unsolicited frame never answers a request
         await device.SendAsync("06 00 03 00 11 02");          // the real reply
-        Assert.Equal(529, (await call.WaitAsync(Limits.Test)).Version);
-        var published = Assert.Single(logs.Events(1009));
-        Assert.Equal(("Unsolicited", "Nak"), (published.Value("ReplyType"), published.Value("Reason")));
+        Assert.That((await call.WaitAsync(Limits.Test)).Version, Is.EqualTo(529));
+        var published = logs.Events(1009).Sole();
+        Assert.That((published.Value("ReplyType"), published.Value("Reason")), Is.EqualTo(("Unsolicited", "Nak")));
     }
 }

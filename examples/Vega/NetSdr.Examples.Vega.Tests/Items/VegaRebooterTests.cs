@@ -23,63 +23,77 @@ public class VegaRebooterTests
     private static async Task<Exception?> RebootAgainstAsync(string reply, RebootKind kind = RebootKind.Soft)
     {
         await using var server = await ServeAsync(reply);
-        return await Record.ExceptionAsync(() => Rebooter(server.Port).RebootAsync(kind, Ctx(), default).WaitAsync(Limits.Test));
+        try
+        {
+            await Rebooter(server.Port).RebootAsync(kind, Ctx(), default).WaitAsync(Limits.Test);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex;
+        }
     }
 
     private static async Task AssertRequestAsync(RebootKind kind, string reply, string expectedRequest)
     {
         await using var server = await ServeAsync(reply);
         await Rebooter(server.Port).RebootAsync(kind, Ctx(), default).WaitAsync(Limits.Test);
-        Assert.Equal(Hex.Parse(expectedRequest), Assert.Single(server.Requests));
+        Assert.That(server.Requests.Sole(), Is.EqualTo(Hex.Parse(expectedRequest)));
     }
 
-    [Fact] public Task Soft_SendsExactBytes() => AssertRequestAsync(RebootKind.Soft, "56 53 01 00", "56 53 01 01 C5 5E DE C0");
-    [Fact] public Task Hard_SendsExactBytes() => AssertRequestAsync(RebootKind.Hard, "56 53 02 00", "56 53 01 02 C5 5E DE C0");
+    [Test] public Task Soft_SendsExactBytes() => AssertRequestAsync(RebootKind.Soft, "56 53 01 00", "56 53 01 01 C5 5E DE C0");
+    [Test] public Task Hard_SendsExactBytes() => AssertRequestAsync(RebootKind.Hard, "56 53 02 00", "56 53 01 02 C5 5E DE C0");
 
-    [Fact] public async Task BadKey_VegaException() => Assert.Contains("wrong unlock key", Assert.IsType<VegaException>(await RebootAgainstAsync("56 53 01 01")).Message);
-    [Fact] public async Task Busy_VegaException() => Assert.Contains("busy", Assert.IsType<VegaException>(await RebootAgainstAsync("56 53 01 02")).Message);
-    [Fact] public async Task OtherStatus_VegaException() => Assert.Contains("status 7", Assert.IsType<VegaException>(await RebootAgainstAsync("56 53 01 07")).Message);
-    [Fact] public async Task TruncatedReply_IOException() => Assert.IsAssignableFrom<IOException>(await RebootAgainstAsync("56 53"));
-    [Fact] public async Task WrongMagic_IOException() => Assert.IsType<IOException>(await RebootAgainstAsync("00 00 01 00"));
-    [Fact] public async Task WrongCommand_IOException() => Assert.IsType<IOException>(await RebootAgainstAsync("56 53 02 00"));   // the command byte must echo the request
+    [Test] public async Task BadKey_VegaException() => Assert.That(await RebootAgainstAsync("56 53 01 01"), Is.TypeOf<VegaException>().With.Message.Contains("wrong unlock key"));
+    [Test] public async Task Busy_VegaException() => Assert.That(await RebootAgainstAsync("56 53 01 02"), Is.TypeOf<VegaException>().With.Message.Contains("busy"));
+    [Test] public async Task OtherStatus_VegaException() => Assert.That(await RebootAgainstAsync("56 53 01 07"), Is.TypeOf<VegaException>().With.Message.Contains("status 7"));
+    [Test] public async Task TruncatedReply_IOException() => Assert.That(await RebootAgainstAsync("56 53"), Is.InstanceOf<IOException>());
+    [Test] public async Task WrongMagic_IOException() => Assert.That(await RebootAgainstAsync("00 00 01 00"), Is.TypeOf<IOException>());
+    [Test] public async Task WrongCommand_IOException() => Assert.That(await RebootAgainstAsync("56 53 02 00"), Is.TypeOf<IOException>());   // the command byte must echo the request
 
-    [Fact]
+    [Test]
     public async Task HostFromContext_UsesLastRemoteEndPoint()
     {
         await using var server = await ServeAsync("56 53 01 00");
         var context = Ctx(new IPEndPoint(IPAddress.Loopback, 50000), target: "nowhere.invalid:50000");
         await Rebooter(server.Port, host: null).RebootAsync(RebootKind.Soft, context, default).WaitAsync(Limits.Test);
-        Assert.Single(server.Requests);
+        Assert.That(server.Requests, Has.Exactly(1).Items);
     }
 
-    [Fact]
+    [Test]
     public async Task HostFromTarget_WhenNoEndPoint()
     {
         await using var server = await ServeAsync("56 53 01 00");
         await Rebooter(server.Port, host: null).RebootAsync(RebootKind.Soft, Ctx(target: "127.0.0.1:50000"), default).WaitAsync(Limits.Test);
-        Assert.Single(server.Requests);
+        Assert.That(server.Requests, Has.Exactly(1).Items);
     }
 
-    [Fact]
+    [Test]
     public void GetBootTime_FromOptions()
     {
         var defaults = new VegaRebooter(new VegaRebooterOptions { UnlockKey = Key });
-        Assert.Equal((8, 20), ((int)defaults.GetBootTime(RebootKind.Soft).TotalSeconds, (int)defaults.GetBootTime(RebootKind.Hard).TotalSeconds));
+        Assert.That(
+            ((int)defaults.GetBootTime(RebootKind.Soft).TotalSeconds, (int)defaults.GetBootTime(RebootKind.Hard).TotalSeconds),
+            Is.EqualTo((8, 20)));
         var custom = new VegaRebooter(new VegaRebooterOptions { UnlockKey = Key, SoftBootTime = TimeSpan.FromSeconds(1), HardBootTime = TimeSpan.FromSeconds(2) });
-        Assert.Equal((1, 2), ((int)custom.GetBootTime(RebootKind.Soft).TotalSeconds, (int)custom.GetBootTime(RebootKind.Hard).TotalSeconds));
-        Assert.Equal((VegaProtocol.ServicePort, 50001), (new VegaRebooterOptions().Port, VegaProtocol.ServicePort));
+        Assert.That(
+            ((int)custom.GetBootTime(RebootKind.Soft).TotalSeconds, (int)custom.GetBootTime(RebootKind.Hard).TotalSeconds),
+            Is.EqualTo((1, 2)));
+        Assert.That((new VegaRebooterOptions().Port, VegaProtocol.ServicePort), Is.EqualTo((VegaProtocol.ServicePort, 50001)));
     }
 
-    [Theory]
-    [InlineData(0, 8, 20)]
-    [InlineData(65536, 8, 20)]
-    [InlineData(50001, -1, 20)]
-    [InlineData(50001, 8, -1)]
-    public void InvalidOptions_Throw(int port, int softSeconds, int hardSeconds) =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => new VegaRebooter(new VegaRebooterOptions
+    [TestCase(0, 8, 20)]
+    [TestCase(65536, 8, 20)]
+    [TestCase(50001, -1, 20)]
+    [TestCase(50001, 8, -1)]
+    public void InvalidOptions_Throw(int port, int softSeconds, int hardSeconds)
+    {
+        var options = new VegaRebooterOptions
         {
             Port = port,
             SoftBootTime = TimeSpan.FromSeconds(softSeconds),
             HardBootTime = TimeSpan.FromSeconds(hardSeconds),
-        }));
+        };
+        Assert.That(() => new VegaRebooter(options), Throws.TypeOf<ArgumentOutOfRangeException>());
+    }
 }

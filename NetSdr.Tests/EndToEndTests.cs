@@ -10,7 +10,7 @@ namespace NetSdr.Tests;
 
 public class EndToEndTests
 {
-    [Fact]
+    [Test]
     public async Task TypicalScenario_FromSpec()
     {
         await using var server = new NetSdrTestServer();
@@ -18,7 +18,7 @@ public class EndToEndTests
         await server.StartAsync();
         await using var client = new NetSdrControlClient();
         await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port));
-        Assert.Equal("SDR-IP", (await client.GetAsync<TargetName>()).Value);
+        Assert.That((await client.GetAsync<TargetName>()).Value, Is.EqualTo("SDR-IP"));
 
         using var c = new PacketCollector();
         c.Receiver.SetReceiveBuffer(TimeSpan.FromMilliseconds(200), DataRate.BytesPerSecond(500_000, SampleFormat.Int24));
@@ -30,12 +30,12 @@ public class EndToEndTests
         await client.SetAsync(ReceiverState.Stop);
 
         var infos = c.Packets.Take(10).Select(p => p.Info).ToArray();
-        Assert.All(infos, i => Assert.Equal(SampleFormat.Int24, i.Format));
-        Assert.Equal(Enumerable.Range(0, 10).Select(i => (ushort)i), infos.Select(i => i.Sequence));
-        Assert.Equal(0, c.Receiver.Statistics.Lost);
+        Assert.That(infos.Select(i => i.Format), Has.All.EqualTo(SampleFormat.Int24));
+        Assert.That(infos.Select(i => i.Sequence), Is.EqualTo(Enumerable.Range(0, 10).Select(i => (ushort)i)));
+        Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public async Task EndToEnd_StreamResumesAfterReconnect()
     {
         using var c = new PacketCollector();
@@ -56,8 +56,8 @@ public class EndToEndTests
             await server.DisconnectClientAsync();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
             await Eventually.ThatAsync(() => c.Packets.Count(p => p.Info.IsCaptureStart) >= 2);
-            Assert.Equal(0, c.Receiver.Statistics.Lost);
-            Assert.Equal(0, c.Receiver.Statistics.HandlerErrors);
+            Assert.That(c.Receiver.Statistics.Lost, Is.EqualTo(0));
+            Assert.That(c.Receiver.Statistics.HandlerErrors, Is.EqualTo(0));
         }
     }
 }

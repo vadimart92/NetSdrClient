@@ -20,7 +20,7 @@ public class VegaCatalogTests
             .Register("Vega v1", id => id.ProductId == VegaProtocol.ProductId, (c, id) => new VegaV1Receiver(c, id))
             .Default((c, id) => new GenericDevice(c, id));
 
-    [Fact]
+    [Test]
     public async Task OwnCatalog_VegaGetsVersionClient_OtherGetsDefault()
     {
         await using var emulator = new VegaEmulator(firmware: VegaFirmware.V1);
@@ -30,7 +30,7 @@ public class VegaCatalogTests
         var catalog = Catalog();
         await using var vega = await catalog.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port));
         await using var other = await catalog.ConnectAsync(new IPEndPoint(IPAddress.Loopback, bare.Port));
-        Assert.IsType<VegaV1Receiver>(vega);
-        Assert.IsType<GenericDevice>(other);
+        Assert.That(vega, Is.TypeOf<VegaV1Receiver>());
+        Assert.That(other, Is.TypeOf<GenericDevice>());
     }
 }
