@@ -172,7 +172,7 @@ public class ResilientHeartbeatTests
         {
             time.Armed = true;                                                        // the first wait exists already
             fake.Advance(Interval);                                                   // one probe, its NAK, then the next wait fails
-            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.InnerException, Is.TypeOf<InvalidOperationException>());
             await device.Client.Completion.WaitAsync(Limits.Test);                    // the watched connection is closed
             Assert.That(requests, Has.Count.EqualTo(2));                              // the verification and the one probe
@@ -198,7 +198,7 @@ public class ResilientHeartbeatTests
             Assert.That(logs.Events(1105)[0].Value("Attempts"), Is.EqualTo("1"));
             time.Armed = true;
             await fake.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(10));
-            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.Message, Is.EqualTo("Gave up on pipe: watching the connection failed."));
             var gaveUp = logs.Events(1106).Sole();
             Assert.That((gaveUp.Value("Reason"), gaveUp.Value("Attempts")), Is.EqualTo(("heartbeat failed", "0")));

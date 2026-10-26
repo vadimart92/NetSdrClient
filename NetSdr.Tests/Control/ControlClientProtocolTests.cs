@@ -93,7 +93,7 @@ public class ControlClientProtocolTests
         var call = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
         await device.SendAsync("02 00");
-        var ex = Assert.ThrowsAsync<NetSdrNakException>(() => call.WaitAsync(Limits.Test));
+        var ex = await Assert.ThrowsAsync<NetSdrNakException>(() => call.WaitAsync(Limits.Test));
         Assert.That((ex.Code, ex.RequestType), Is.EqualTo(((ushort)0x0009, RequestType.Get)));
     }
 
@@ -269,7 +269,7 @@ public class ControlClientProtocolTests
     public async Task OversizedItem_NamesTheItemParameter()
     {
         await using var device = PipeDevice.Create();
-        var ex = Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.SetAsync(new HugeItem()));
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.SetAsync(new HugeItem()));
         Assert.That(ex.ParamName, Is.EqualTo("item"));
     }
 
@@ -277,8 +277,8 @@ public class ControlClientProtocolTests
     public async Task OversizedKey_NamesTheKeyParameter()
     {
         await using var device = PipeDevice.Create();
-        var get = Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetAsync<ProductId, HugeKey>(default));
-        var range = Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetRangeAsync<ProductId, HugeKey>(default));
+        var get = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetAsync<ProductId, HugeKey>(default));
+        var range = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.GetRangeAsync<ProductId, HugeKey>(default));
         Assert.That((get.ParamName, range.ParamName), Is.EqualTo(("key", "key")));
     }
 
@@ -286,7 +286,7 @@ public class ControlClientProtocolTests
     public async Task OversizedPayload_NamesThePayloadParameter()
     {
         await using var device = PipeDevice.Create();
-        var ex = Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.SendAsync(RequestType.Set, 0x0150, new byte[8188]));
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => device.Client.SendAsync(RequestType.Set, 0x0150, new byte[8188]));
         Assert.That(ex.ParamName, Is.EqualTo("payload"));
     }
 

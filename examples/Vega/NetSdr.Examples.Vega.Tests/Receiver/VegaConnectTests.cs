@@ -31,7 +31,7 @@ public class VegaConnectTests
     {
         await using var emulator = new VegaEmulator();
         await emulator.StartAsync();
-        var ex = Assert.ThrowsAsync<NetSdrNakException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
+        var ex = await Assert.ThrowsAsync<NetSdrNakException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, emulator.Port), 0x1234));
         Assert.That(ex.Code, Is.EqualTo(VegaProtocol.VendorUnlockCode));
         Assert.That(emulator.IsUnlocked, Is.False);
         Assert.That(emulator.Server.Received.Select(r => r.Code), Does.Not.Contain(VegaProtocol.FirmwareInfoCode));
@@ -44,7 +44,7 @@ public class VegaConnectTests
         await using var server = new NetSdrTestServer();
         server.Preload(new ProductId(0x03524453));
         await server.StartAsync();
-        var ex = Assert.ThrowsAsync<VegaException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
+        var ex = await Assert.ThrowsAsync<VegaException>(() => VegaReceiverBase.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), VegaEmulator.DefaultKey));
         Assert.That(ex.Identity!.ProductId, Is.EqualTo(0x03524453u));
         Assert.That(
             server.Received.Select(r => r.Code),

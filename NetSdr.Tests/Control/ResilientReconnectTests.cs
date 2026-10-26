@@ -239,8 +239,8 @@ public class ResilientReconnectTests
         var waiting = client.GetAsync<InterfaceVersion>();
         await time.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(100));
         Assert.That(logs.Events(1104).Select(r => r.Span("Delay").TotalSeconds), Is.EqualTo(new[] { 1.0, 2 }));
-        var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-        Assert.That(Assert.ThrowsAsync<IOException>(() => waiting.WaitAsync(Limits.Test)), Is.SameAs(failure));
+        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        Assert.That(await Assert.ThrowsAsync<IOException>(() => waiting.WaitAsync(Limits.Test)), Is.SameAs(failure));
         Assert.That(failure.InnerException, Is.TypeOf<SocketException>());
         Assert.That(failure.Message, Does.Contain("after 3 attempt(s)"));
         Assert.That(

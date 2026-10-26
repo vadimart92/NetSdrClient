@@ -39,7 +39,7 @@ public class InterfaceParityTests
             Assert.That((await client.GetRangeAsync<RfGain, byte>(0)).GainDb, Is.EqualTo(-20));
             var raw = await client.SendAsync(RequestType.Get, InterfaceVersion.Code, ReadOnlyMemory<byte>.Empty);
             Assert.That((raw.Type, Convert.ToHexString(raw.Payload.Span)), Is.EqualTo((ReplyType.Response, "1102")));
-            Assert.That(Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>()).Code, Is.EqualTo(ProductId.Code));
+            Assert.That((await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<ProductId>())).Code, Is.EqualTo(ProductId.Code));
             await server.SendUnsolicitedAsync(new AfGain(0, 9));
             ControlItemMessage pushed;
             do
