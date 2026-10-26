@@ -24,6 +24,12 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     /// <summary>The largest payload a control frame carries after its header and item code.</summary>
     internal const int MaxPayloadSize = FrameHeader.MaxEncodableLength - FramePrefixSize;
 
+    /// <summary>The pause between two unanswered keepalive probes.</summary>
+    private const int KeepAliveIntervalSeconds = 2;
+
+    /// <summary>How many unanswered keepalive probes in a row close the connection.</summary>
+    private const int KeepAliveProbes = 3;
+
     private enum State
     {
         NotConnected,
@@ -43,6 +49,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     private readonly ILogger _logger;
     private readonly TimeProvider _timeProvider;
     private readonly bool _supervised;
+    private readonly int? _keepAliveSeconds;
 
     // Written under _sync. _state is also read without the lock by IsConnected.
     private volatile State _state;
@@ -57,12 +64,14 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     private Task? _readLoop;
     private IPEndPoint? _localEndPoint;
     private IPEndPoint? _remoteEndPoint;
+    private Socket? _socket;
 
     /// <exception cref="ArgumentNullException"><see cref="NetSdrControlClientOptions.LoggerFactory"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1, or
+    /// <see cref="NetSdrControlClientOptions.UnsolicitedCapacity"/> is below 1,
     /// <see cref="NetSdrControlClientOptions.ResponseTimeout"/> is neither positive (up to <see cref="int.MaxValue"/> milliseconds)
-    /// nor <see cref="Timeout.InfiniteTimeSpan"/>.
+    /// nor <see cref="Timeout.InfiniteTimeSpan"/>, or <see cref="NetSdrControlClientOptions.KeepAlive"/> is below 1 second
+    /// or above <see cref="int.MaxValue"/> milliseconds.
     /// </exception>
     public NetSdrControlClient(NetSdrControlClientOptions? options = null)
     {
@@ -78,6 +87,8 @@ public sealed class NetSdrControlClient : INetSdrControlClient
                 "ResponseTimeout must be positive (at most Int32.MaxValue milliseconds) or Timeout.InfiniteTimeSpan.");
         }
 
+        ThrowIfInvalidKeepAlive(options.KeepAlive, nameof(options));
+        _keepAliveSeconds = options.KeepAlive is { } keepAlive ? (int)Math.Ceiling(keepAlive.TotalSeconds) : null;
         _responseTimeout = timeout;
         _faultOnTimeout = options.FaultOnTimeout;
         _logger = options.LoggerFactory.CreateLogger(typeof(NetSdrControlClient).FullName!);
@@ -113,6 +124,18 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     /// Set before the client connects. It must neither block nor throw: an exception faults the client.
     /// </summary>
     internal Action<ControlItemMessage, bool>? LateReplyObserver { get; set; }
+
+    /// <summary>The socket <c>ConnectAsync</c> attached; <see langword="null"/> before it and for a pipe. For the tests of its options.</summary>
+    internal Socket? Socket
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _socket;
+            }
+        }
+    }
 
     /// <summary>
     /// The local end of the TCP connection, set by <c>ConnectAsync</c>; <see langword="null"/> before the client has
@@ -158,7 +181,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         ArgumentNullException.ThrowIfNull(host);
         ThrowIfCannotAttach();
 
-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        Socket socket = CreateSocket(null);
         try
         {
             await socket.ConnectAsync(host, port, ct).ConfigureAwait(false);
@@ -180,7 +203,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         ArgumentNullException.ThrowIfNull(endPoint);
         ThrowIfCannotAttach();
 
-        var socket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        Socket socket = CreateSocket(endPoint.AddressFamily);
         try
         {
             await socket.ConnectAsync(endPoint, ct).ConfigureAwait(false);
@@ -292,9 +315,10 @@ public sealed class NetSdrControlClient : INetSdrControlClient
     /// <summary>Starts the read loop on an established connection.</summary>
     /// <exception cref="InvalidOperationException">The client is already attached or has faulted.</exception>
     /// <exception cref="ObjectDisposedException">The client has been disposed.</exception>
-    internal void Attach(PipeReader input, Stream output) => Attach(input, output, null, null);
+    internal void Attach(PipeReader input, Stream output) => Attach(input, output, null, null, null);
 
-    private void Attach(PipeReader input, Stream output, IPEndPoint? localEndPoint, IPEndPoint? remoteEndPoint)
+    private void Attach(
+        PipeReader input, Stream output, Socket? socket, IPEndPoint? localEndPoint, IPEndPoint? remoteEndPoint)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -303,6 +327,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         {
             ThrowIfCannotAttach();
             _output = output;
+            _socket = socket;
             _localEndPoint = localEndPoint;
             _remoteEndPoint = remoteEndPoint;
             _state = State.Connected;
@@ -322,12 +347,53 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         var stream = new NetworkStream(socket, ownsSocket: true);
         try
         {
-            Attach(PipeReader.Create(stream), stream, local, remote);
+            Attach(PipeReader.Create(stream), stream, socket, local, remote);
         }
         catch
         {
             stream.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// A TCP socket for <c>ConnectAsync</c> with Nagle off and, unless <see cref="NetSdrControlClientOptions.KeepAlive"/>
+    /// is <see langword="null"/>, keepalive on.
+    /// </summary>
+    /// <param name="family">The address family; <see langword="null"/> for a dual-mode socket that connects to a host name.</param>
+    private Socket CreateSocket(AddressFamily? family)
+    {
+        Socket socket = family is { } f
+            ? new Socket(f, SocketType.Stream, ProtocolType.Tcp)
+            : new Socket(SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            socket.NoDelay = true;
+            if (_keepAliveSeconds is { } seconds)
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, seconds);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, KeepAliveIntervalSeconds);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, KeepAliveProbes);
+            }
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+
+        return socket;
+    }
+
+    /// <summary>Rejects a keepalive time the socket cannot take.</summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="keepAlive"/> is below 1 second or above <see cref="int.MaxValue"/> milliseconds.</exception>
+    internal static void ThrowIfInvalidKeepAlive(TimeSpan? keepAlive, string paramName)
+    {
+        if (keepAlive is { } value && (value < TimeSpan.FromSeconds(1) || value.TotalMilliseconds > int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName, value, "KeepAlive must be at least 1 second and at most Int32.MaxValue milliseconds, or null.");
         }
     }
 

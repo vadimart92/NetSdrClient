@@ -50,6 +50,13 @@ public sealed class ResilientControlClientOptions
     public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// TCP keepalive of every connection, as <see cref="NetSdrControlClientOptions.KeepAlive"/> describes it: the silence
+    /// after which probes start, or <see langword="null"/> for none. The heartbeat notices a dead connection first with
+    /// the defaults; keepalive is what notices it when <see cref="HeartbeatInterval"/> is <see cref="Timeout.InfiniteTimeSpan"/>.
+    /// </summary>
+    public TimeSpan? KeepAlive { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// How many connection attempts one lost connection gets before the client gives up for good. Must be at least 1;
     /// <see cref="int.MaxValue"/> means never giving up. The attempts start about 1, 2, 4, 8, 16, 30, 30... seconds apart.
     /// The limit holds for the whole loss, across every reboot of the device: a reboot gives no extra attempts.

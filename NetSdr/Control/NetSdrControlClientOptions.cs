@@ -39,6 +39,15 @@ public sealed class NetSdrControlClientOptions
     public bool FaultOnTimeout { get; set; } = true;
 
     /// <summary>
+    /// The silence on the TCP connection after which the operating system starts sending keepalive probes, rounded up
+    /// to whole seconds. The probes go 2 seconds apart, and the third unanswered one closes the connection, which
+    /// faults the client: a device that vanished while nobody was talking to it is noticed after about this plus
+    /// 6 seconds, instead of never. Must be at least 1 second and at most <see cref="int.MaxValue"/> milliseconds, or
+    /// <see langword="null"/> to send no probes. Applies to the connections <c>ConnectAsync</c> makes.
+    /// </summary>
+    public TimeSpan? KeepAlive { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Creates the client's logger, category <c>NetSdr.Control.NetSdrControlClient</c>. Defaults to
     /// <see cref="NullLoggerFactory.Instance"/>, which logs nothing; <see langword="null"/> is rejected by the client's constructor.
     /// </summary>

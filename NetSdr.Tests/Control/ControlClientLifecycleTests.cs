@@ -525,6 +525,60 @@ public class ControlClientLifecycleTests
         Assert.Equal(server.Port, client.RemoteEndPoint!.Port);
     }
 
+    // Keepalive
+
+    [Fact]
+    public void Options_KeepAlive_DefaultsToTenSeconds() =>
+        Assert.Equal(TimeSpan.FromSeconds(10), new NetSdrControlClientOptions().KeepAlive);
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(999)]
+    [InlineData(3_000_000_000)]
+    public void Options_InvalidKeepAlive_Throws(long milliseconds)
+    {
+        var options = new NetSdrControlClientOptions { KeepAlive = TimeSpan.FromMilliseconds(milliseconds) };
+        Assert.Throws<ArgumentOutOfRangeException>(() => new NetSdrControlClient(options));
+    }
+
+    [Fact]
+    public async Task KeepAlive_IsSetOnTheSocket_InWholeSecondsRoundedUp()
+    {
+        var (server, client) = await Loopback.StartAsync(
+            options: new NetSdrControlClientOptions { KeepAlive = TimeSpan.FromSeconds(7.2) });
+        await using var _ = server;
+        await using var __ = client;
+        AssertKeepAlive(client.Socket!, seconds: 8);
+    }
+
+    [Fact]
+    public async Task KeepAlive_IsSetOnTheSocket_OfAConnectByHostName()
+    {
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        await using var client = new NetSdrControlClient();
+        await client.ConnectAsync("127.0.0.1", server.Port);
+        AssertKeepAlive(client.Socket!, seconds: 10);
+    }
+
+    [Fact]
+    public async Task KeepAlive_Null_LeavesItOff()
+    {
+        var (server, client) = await Loopback.StartAsync(options: new NetSdrControlClientOptions { KeepAlive = null });
+        await using var _ = server;
+        await using var __ = client;
+        Assert.Equal(0, (int)client.Socket!.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)!);
+    }
+
+    private static void AssertKeepAlive(Socket socket, int seconds)
+    {
+        Assert.NotEqual(0, (int)socket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)!);
+        Assert.Equal(seconds, (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime)!);
+        Assert.Equal(2, (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval)!);
+        Assert.Equal(3, (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount)!);
+    }
+
     [Fact]
     public async Task ConnectAsync_WhenAlreadyConnected_Throws()
     {
