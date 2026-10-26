@@ -30,7 +30,8 @@
   метрики, `Polly.Extensions`.
 - Налаштування на рівні окремого виклику.
 - Повтор першого `ConnectAsync`.
-- TCP keepalive.
+- TCP keepalive. Пізніше додано окремо як `KeepAlive` в опціях обох клієнтів, див.
+  [архітектуру](../../architecture.md), розділ 7.
 - Стійкі перевантаження `DeviceCatalog.ConnectAsync` і `VegaReceiverBase.ConnectAsync`.
   Застосунок підключається сам і викликає `AttachAsync`.
 - Відстеження і повтор стану пристрою. Єдиний гачок відновлення це `ConnectionRestored`.

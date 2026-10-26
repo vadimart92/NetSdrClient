@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetSdr.Control;
 using NetSdr.Items;
+using NetSdr.Testing;
 
 namespace NetSdr.Tests.Control;
 
@@ -22,6 +23,8 @@ public class ResilientConnectTests
         ["UnsolicitedCapacity 0"] = o => o.UnsolicitedCapacity = 0,
         ["RebootTimeout 0"] = o => o.RebootTimeout = TimeSpan.Zero,
         ["RebootTimeout Infinite"] = o => o.RebootTimeout = Timeout.InfiniteTimeSpan,
+        ["KeepAlive 0"] = o => o.KeepAlive = TimeSpan.Zero,
+        ["KeepAlive 999 ms"] = o => o.KeepAlive = TimeSpan.FromMilliseconds(999),
     };
 
     public static TheoryData<string> InvalidNames
@@ -57,6 +60,33 @@ public class ResilientConnectTests
         Assert.Null(o.RecoveryPolicy);
         Assert.Null(o.ConnectAttempts);
         Assert.Equal(10, (int)o.RebootTimeout.TotalSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(10), o.KeepAlive);
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(null)]
+    public async Task KeepAlive_ReachesTheInnerConnection(int? seconds)
+    {
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        NetSdrControlClient? inner = null;
+        var options = Resilient.Fast();
+        options.KeepAlive = seconds is { } s ? TimeSpan.FromSeconds(s) : null;
+        await using var client = await ResilientControlClient.ConnectAsync(
+            (c, ct) =>
+            {
+                inner = c;
+                return c.ConnectAsync(new IPEndPoint(IPAddress.Loopback, server.Port), ct);
+            },
+            "loopback", options, default);
+
+        Socket socket = inner!.Socket!;
+        Assert.Equal(seconds is not null, (int)socket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)! != 0);
+        if (seconds is not null)
+        {
+            Assert.Equal(seconds, (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime)!);
+        }
     }
 
     [Fact]

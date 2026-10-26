@@ -75,6 +75,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             ResponseTimeout = options.ResponseTimeout,          // finite: tells a busy device from a dead connection
             UnsolicitedCapacity = options.UnsolicitedCapacity,  // the pump drains the channel continuously
             FaultOnTimeout = false,
+            KeepAlive = options.KeepAlive,                      // a backup of the heartbeat, and the check when it is off
             LoggerFactory = options.LoggerFactory,
             TimeProvider = options.TimeProvider,                // ResponseTimeout on the same clock
             Supervised = true,                                  // levels of spec 3.2
@@ -383,6 +384,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
 
         RequireFinite(options.RebootTimeout, nameof(options.RebootTimeout), nameof(options));
+        NetSdrControlClient.ThrowIfInvalidKeepAlive(options.KeepAlive, nameof(options));
         if (options.ConnectAttempts is < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.ConnectAttempts, "ConnectAttempts must be at least 1.");
@@ -395,6 +397,7 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
             CommandTimeout = options.CommandTimeout,
             HeartbeatInterval = options.HeartbeatInterval,
             ConnectTimeout = options.ConnectTimeout,
+            KeepAlive = options.KeepAlive,
             ReconnectAttempts = options.ReconnectAttempts,
             UnsolicitedCapacity = options.UnsolicitedCapacity,
             ConnectionRestored = options.ConnectionRestored,
