@@ -412,12 +412,17 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
         ControlReply reply;
         ReadOnlyMemory<byte> replyFrame = default;
-        Func<Task>? afterReply = null;
+        List<Func<Task>>? afterReply = [];
         try
         {
             Dispatched dispatched = await DispatchAsync(request, connection).ConfigureAwait(false);
             reply = dispatched.Reply;
-            afterReply = dispatched.AfterReply;
+            if (dispatched.AfterReply is not null)
+            {
+                afterReply.Add(dispatched.AfterReply);
+            }
+
+            await RunCommandsAsync(reply, connection, afterReply, depth: 1).ConfigureAwait(false);
             if (!reply.IsSilent)
             {
                 replyFrame = reply.ToFrame(in request);
@@ -437,25 +442,56 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             afterReply = null;
         }
 
-        if (reply.IsSilent)
+        if (!reply.IsSilent)
         {
-            return;
+            if (reply.Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(reply.Delay, connection.Token).ConfigureAwait(false);
+            }
+
+            await connection.WriteAsync(replyFrame).ConfigureAwait(false);
         }
 
-        if (reply.Delay > TimeSpan.Zero)
-        {
-            await Task.Delay(reply.Delay, connection.Token).ConfigureAwait(false);
-        }
-
-        await connection.WriteAsync(replyFrame).ConfigureAwait(false);
+        // A silent reply has nothing to wait for: what its commands start, starts now.
         if (afterReply is not null)
         {
-            await afterReply().ConfigureAwait(false);
+            foreach (Func<Task> work in afterReply)
+            {
+                await work().ConfigureAwait(false);
+            }
         }
     }
 
     /// <summary>A reply, and work that must wait until the reply has been written.</summary>
     private readonly record struct Dispatched(ControlReply Reply, Func<Task>? AfterReply = null);
+
+    /// <summary>How deep commands chained by <see cref="ControlReply.Then"/> may go, so a command that chains itself ends.</summary>
+    private const int MaxCommandDepth = 8;
+
+    /// <summary>
+    /// Dispatches the commands of <paramref name="reply"/> in order, and the commands of their replies after each one,
+    /// collecting the work each leaves for after the reply to the client's request.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The commands chain deeper than <see cref="MaxCommandDepth"/>.</exception>
+    private async ValueTask RunCommandsAsync(ControlReply reply, Connection connection, List<Func<Task>> afterReply, int depth)
+    {
+        IReadOnlyList<ControlRequest> commands = reply.Commands;
+        if (commands.Count > 0 && depth > MaxCommandDepth)
+        {
+            throw new InvalidOperationException($"The commands chained by ControlReply.Then go deeper than {MaxCommandDepth} levels.");
+        }
+
+        foreach (ControlRequest command in commands)
+        {
+            Dispatched dispatched = await DispatchAsync(command, connection).ConfigureAwait(false);
+            if (dispatched.AfterReply is not null)
+            {
+                afterReply.Add(dispatched.AfterReply);
+            }
+
+            await RunCommandsAsync(dispatched.Reply, connection, afterReply, depth + 1).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// Chooses the reply to a request: the handler for its code if there is one, then the receiver state when

@@ -21,6 +21,26 @@ public readonly struct ControlRequest
 
     /// <summary>The bytes after the item code: the item for a Set, the key for a Get or GetRange.</summary>
     public ReadOnlyMemory<byte> Payload { get; }
+
+    /// <summary>A Set of <paramref name="item"/>, for a command the server runs itself, see <see cref="ControlReply.Then"/>.</summary>
+    public static ControlRequest Set<T>(in T item) where T : struct, IControlItem<T>
+    {
+        var payload = new byte[T.GetSize(in item)];
+        T.Write(in item, payload);
+        return new ControlRequest(RequestType.Set, T.Code, payload);
+    }
+
+    /// <summary>A request with an arbitrary item code and payload, for a command the server runs itself, see <see cref="ControlReply.Then"/>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="type"/> is not Set, Get or GetRange.</exception>
+    public static ControlRequest Create(RequestType type, ushort code, ReadOnlyMemory<byte> payload)
+    {
+        if (type > RequestType.GetRange)
+        {
+            throw new ArgumentOutOfRangeException(nameof(type), type, "A control request is a Set, Get or GetRange.");
+        }
+
+        return new ControlRequest(type, code, payload.ToArray());
+    }
 }
 
 /// <summary>A control request for the item <typeparamref name="T"/>, as handed to a typed handler.</summary>

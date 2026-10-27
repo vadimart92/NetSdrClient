@@ -33,11 +33,33 @@ public sealed class StreamOptions
     public SampleFormat? Format { get; set; }
 
     /// <summary>
-    /// The bytes of samples in a packet, without the 4-byte prefix. A payload that is not a whole number of samples is
-    /// finished with zeros. When not set: 1024 or 512 bytes for 16-bit samples and 1440 or 384 for 24-bit ones, the large
-    /// or small size of the specification (the small size only when the state asks for it).
+    /// The bytes of a packet after the 4-byte prefix: the samples, and the timestamp in the last 8 bytes when
+    /// <see cref="Timestamps"/> is on, so 8192 carries 8184 bytes of samples then. Room that is not a whole number of
+    /// samples is filled with zeros. A datagram over 8191 bytes gets a header that encodes 0, which a
+    /// <c>NetSdrDataReceiver</c> accepts. When not set: 1024 or 512 bytes for 16-bit samples and 1440 or 384 for
+    /// 24-bit ones, the large or small size of the specification (the small size only when the state asks for it).
+    /// Ignored when <see cref="Packets"/> is set.
     /// </summary>
     public int? PayloadSize { get; set; }
+
+    /// <summary>
+    /// The samples of the packets to send, one entry per packet, played in order and over again from the first. Each
+    /// entry must hold whole samples of <see cref="Format"/>, at least one, and becomes a packet of exactly that many
+    /// bytes, plus the timestamp when <see cref="Timestamps"/> is on. The sample index of a packet counts the samples of
+    /// the packets before it. When set, <see cref="Source"/> and <see cref="PayloadSize"/> are ignored. The list is
+    /// copied when a stream starts; the memory of the entries is read on every packet and not copied.
+    /// </summary>
+    public IReadOnlyList<ReadOnlyMemory<byte>>? Packets { get; set; }
+
+    /// <summary>
+    /// Whether every packet ends with a <c>PacketTimestamp</c> (8 bytes) of its first sample: sample index
+    /// <c>k</c> is <c>k / <see cref="Channels"/></c> sample periods of <see cref="SampleRate"/> after
+    /// <see cref="TimestampOrigin"/>.
+    /// </summary>
+    public bool Timestamps { get; set; }
+
+    /// <summary>The time of the first sample of the stream, for <see cref="Timestamps"/>; the clock at the start of the stream when not set.</summary>
+    public DateTimeOffset? TimestampOrigin { get; set; }
 
     /// <summary>The sample rate in hertz, which sets the pace of <see cref="Pacing.RealTime"/>; 200 000 when not set.</summary>
     public double? SampleRate { get; set; }
@@ -51,7 +73,10 @@ public sealed class StreamOptions
     /// <summary>How fast packets are sent.</summary>
     public Pacing Pacing { get; set; } = Pacing.RealTime;
 
-    /// <summary>Where the samples come from; the counter of <see cref="SampleSources.Counter"/> by default.</summary>
+    /// <summary>
+    /// Where the samples come from; the counter of <see cref="SampleSources.Counter"/> by default. Ignored when
+    /// <see cref="Packets"/> is set.
+    /// </summary>
     public FillSamples Source { get; set; } = SampleSources.Counter();
 
     /// <summary>
