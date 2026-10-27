@@ -22,13 +22,20 @@ public readonly struct ControlReply
     private readonly ushort? _code;
     private readonly ReadOnlyMemory<byte> _payload;
     private readonly TimeSpan _delay;
+    private readonly ControlRequest[]? _then;
 
-    private ControlReply(ReplyKind kind, ushort? code = null, ReadOnlyMemory<byte> payload = default, TimeSpan delay = default)
+    private ControlReply(
+        ReplyKind kind,
+        ushort? code = null,
+        ReadOnlyMemory<byte> payload = default,
+        TimeSpan delay = default,
+        ControlRequest[]? then = null)
     {
         _kind = kind;
         _code = code;
         _payload = payload;
         _delay = delay;
+        _then = then;
     }
 
     /// <summary>Answers with the request's item code and payload.</summary>
@@ -57,12 +64,31 @@ public readonly struct ControlReply
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delay, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(delay.TotalMilliseconds, int.MaxValue);
-        return new ControlReply(_kind, _code, _payload, delay);
+        return new ControlReply(_kind, _code, _payload, delay, _then);
+    }
+
+    /// <summary>
+    /// Returns this reply, with <paramref name="commands"/> run by the server as if the client had sent them: one after
+    /// another, through the handlers, <see cref="NetSdrTestServer.AutoStream"/> and the stored state, before this reply
+    /// is written. What a command does after its own reply, such as starting the stream of a Run, happens once this
+    /// reply has been written. So a vendor item can start the stream that the standard receiver state starts. The
+    /// replies to the commands are not sent and the commands are not added to <see cref="NetSdrTestServer.Received"/>.
+    /// A command that fails turns this reply into a NAK and is recorded in <see cref="NetSdrTestServer.HandlerErrors"/>;
+    /// a command answered with a NAK on purpose does not. A reply of a command may chain commands too, up to 8 levels deep.
+    /// Calling this again adds to the commands.
+    /// </summary>
+    public ControlReply Then(params ControlRequest[] commands)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        return new ControlReply(_kind, _code, _payload, _delay, [.. _then ?? [], .. commands]);
     }
 
     internal bool IsSilent => _kind == ReplyKind.Silent;
 
     internal TimeSpan Delay => _delay;
+
+    /// <summary>The commands the server runs before this reply is written; empty when there are none.</summary>
+    internal IReadOnlyList<ControlRequest> Commands => _then ?? [];
 
     /// <summary>The frame to send for <paramref name="request"/>. Not valid for a silent reply.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The reply does not fit in one frame.</exception>

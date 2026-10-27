@@ -64,20 +64,18 @@ public class TestServerStreamingTests
     }
 
     [Test]
-    public async Task Jumbo_DeliveredWithoutValidation()
+    [TestCase(8192)]
+    [TestCase(8996)]
+    public async Task Jumbo_DeliveredWithValidation(int payloadSize)
     {
         await using var server = new NetSdrTestServer();
         await server.StartAsync();
-        using var strict = new PacketCollector();
-        using var loose = new PacketCollector(new DataReceiverOptions { ValidateLength = false });
-        var options = new StreamOptions { PayloadSize = 8996, SampleRate = 22_490 };
-        await server.StartStreamingAsync(loose.EndPoint, options);
-        await Eventually.ThatAsync(() => loose.Packets.Count >= 1);
-        await server.StartStreamingAsync(strict.EndPoint, options);
-        await Eventually.ThatAsync(() => strict.Receiver.Statistics.Rejected >= 1);
+        using var c = new PacketCollector();
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = payloadSize, SampleRate = 22_490 });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 1);
         await server.StopStreamingAsync();
-        Assert.That(loose.Packets.First().Samples, Has.Length.EqualTo(8996));
-        Assert.That(strict.Packets, Is.Empty);
+        Assert.That(c.Packets.First().Samples, Has.Length.EqualTo(payloadSize));
+        Assert.That(c.Receiver.Statistics.Rejected, Is.Zero);
     }
 
     [TestCase(false, DataOutputPacketSize.Large, 1028)]
@@ -258,6 +256,124 @@ public class TestServerStreamingTests
         Assert.That(c.Packets.ElementAt(1).Samples, Is.EqualTo(Hex.Parse("05 06 07 08 01 02 03 04 05 06 07 08")));
     }
 
+    [Test]
+    public async Task ManualStream_Packets_PlayInOrderAndOverAgain()
+    {
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        using var c = new PacketCollector();
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions
+        {
+            SampleRate = 4_000,
+            Packets = [Hex.Parse("01 02 03 04"), Hex.Parse("05 06 07 08 09 0A 0B 0C")],
+        });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 5);
+        await server.StopStreamingAsync();
+        var packets = c.Packets.Take(5).ToArray();
+        Assert.That(packets.Select(p => p.Info.Sequence), Is.EqualTo(new ushort[] { 0, 1, 2, 3, 4 }));
+        Assert.That(packets.Select(p => p.Samples.Length), Is.EqualTo(new[] { 4, 8, 4, 8, 4 }));
+        Assert.That(packets[2].Samples, Is.EqualTo(Hex.Parse("01 02 03 04")));
+        Assert.That(packets[3].Samples, Is.EqualTo(Hex.Parse("05 06 07 08 09 0A 0B 0C")));
+        Assert.That(c.Receiver.Statistics.Rejected, Is.Zero);
+    }
+
+    [Test]
+    public async Task ManualStream_PacketsWithTimestamps_StampTheFirstSampleOfEach()
+    {
+        // Sample 0 is 999 ms into a second: at 1 kHz that is tick 999, and the next sample starts the next second.
+        var second = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        using var c = new PacketCollector();
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions
+        {
+            SampleRate = 1_000,
+            Packets = [Hex.Parse("01 02 03 04"), Hex.Parse("05 06 07 08 09 0A 0B 0C")],
+            Timestamps = true,
+            TimestampOrigin = second.AddMilliseconds(999),
+        });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 4);
+        await server.StopStreamingAsync();
+        var packets = c.Packets.Take(4).ToArray();
+        Assert.That(packets.Select(p => p.Samples.Length), Is.EqualTo(new[] { 12, 16, 12, 16 }));
+        Assert.That(packets[1].Samples[..8], Is.EqualTo(Hex.Parse("05 06 07 08 09 0A 0B 0C")));
+        Assert.That(
+            packets.Select(p => PacketTimestamp.ReadTrailer(p.Samples)),
+            Is.EqualTo(new[]
+            {
+                new PacketTimestamp(999, 1_800_000_000),
+                new PacketTimestamp(0, 1_800_000_001),
+                new PacketTimestamp(2, 1_800_000_001),
+                new PacketTimestamp(3, 1_800_000_001),
+            }));
+    }
+
+    [TestCase(SampleFormat.Int16, 2046)]
+    [TestCase(SampleFormat.Int24, 1364)]
+    public async Task ManualStream_Jumbo8192WithTimestamps_TimestampTakesTheLastSamples(SampleFormat format, int samplesPerPacket)
+    {
+        var origin = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        using var c = new PacketCollector();
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions
+        {
+            Format = format,
+            PayloadSize = 8192,
+            SampleRate = 1_000_000,
+            Timestamps = true,
+            TimestampOrigin = origin,
+        });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 2);
+        await server.StopStreamingAsync();
+        var second = c.Packets.ElementAt(1).Samples;
+        int sampleBytes = format == SampleFormat.Int16 ? 4 : 6;
+        Assert.That(second, Has.Length.EqualTo(8192));
+        Assert.That(PacketTimestamp.ReadTrailer(second), Is.EqualTo(new PacketTimestamp((uint)samplesPerPacket, 1_800_000_000)));
+
+        // 8184 bytes are whole samples in both formats: the last sample ends right where the timestamp starts.
+        Assert.That(samplesPerPacket * sampleBytes, Is.EqualTo(8192 - PacketTimestamp.Size));
+        Assert.That(second[((samplesPerPacket - 1) * sampleBytes)..][..2],
+            Is.EqualTo(BitConverter.GetBytes((short)(2 * samplesPerPacket - 1))));
+        Assert.That(c.Receiver.Statistics.Rejected, Is.Zero);
+    }
+
+    [Test]
+    public async Task ManualStream_Timestamps_CountSamplesPerChannel()
+    {
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        using var c = new PacketCollector();
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions
+        {
+            PayloadSize = 16 + PacketTimestamp.Size,    // 4 samples, 2 per channel
+            SampleRate = 1_000,
+            Channels = 2,
+            Timestamps = true,
+            TimestampOrigin = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000),
+        });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 3);
+        await server.StopStreamingAsync();
+        Assert.That(
+            c.Packets.Take(3).Select(p => PacketTimestamp.ReadTrailer(p.Samples).Ticks),
+            Is.EqualTo(new uint[] { 0, 2, 4 }));
+    }
+
+    [Test]
+    public async Task ManualStream_TimestampsWithoutOrigin_FollowTheClock()
+    {
+        await using var server = new NetSdrTestServer();
+        await server.StartAsync();
+        using var c = new PacketCollector();
+        var before = DateTimeOffset.UtcNow;
+        await server.StartStreamingAsync(c.EndPoint, new StreamOptions { SampleRate = 256_000, Timestamps = true });
+        await Eventually.ThatAsync(() => c.Packets.Count >= 1);
+        await server.StopStreamingAsync();
+        var after = DateTimeOffset.UtcNow;
+        var first = PacketTimestamp.ReadTrailer(c.Packets.First().Samples).ToDateTimeOffset(new SampleRateTimeScale(256_000));
+        Assert.That(first, Is.InRange(before.AddMilliseconds(-1), after));
+    }
+
     [TestCase(SampleFormat.Int24, null, 1444, "A4 85 00 00")]     // the spec's own example
     [TestCase(SampleFormat.Int16, 8187, 8191, "FF 9F 00 00")]     // the longest length the field holds
     [TestCase(SampleFormat.Int16, 8190, 8194, "00 80 00 00")]     // 8194 is the standard encoding of 0
@@ -377,6 +493,18 @@ public class TestServerStreamingTests
             Throws.InstanceOf<ArgumentException>());
         await Assert.ThatAsync(
             () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Channels = 0 }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { PayloadSize = 11, Timestamps = true }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Packets = [] }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Packets = [new byte[4], new byte[6]] }),
+            Throws.InstanceOf<ArgumentException>());
+        await Assert.ThatAsync(
+            () => server.StartStreamingAsync(c.EndPoint, new StreamOptions { Packets = [new byte[65500]], Timestamps = true }),
             Throws.InstanceOf<ArgumentException>());
 
         var count = c.Packets.Count;

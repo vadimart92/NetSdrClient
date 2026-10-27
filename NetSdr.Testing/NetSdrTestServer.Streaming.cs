@@ -45,7 +45,8 @@ public sealed partial class NetSdrTestServer
     /// <see cref="Stream"/>, and what that leaves open comes from the device state: the format from the capture mode, the
     /// packet size from 0x00C4, the sample rate from 0x00B8 and the target from 0x00C5 (the client's address when that
     /// has none, or its address with the 0x00C5 port when the address is 0.0.0.0). A Run the server cannot honour, such as
-    /// one aimed at a non-loopback address, is answered with a NAK. The stream ends when the client leaves.
+    /// one aimed at a non-loopback address, is answered with a NAK. The stream ends when the client leaves. A handler of
+    /// another item can run the same Set through <see cref="ControlReply.Then"/>.
     /// </summary>
     public bool AutoStream
     {
@@ -62,8 +63,9 @@ public sealed partial class NetSdrTestServer
     /// <param name="options">The settings; <see cref="Stream"/> when omitted.</param>
     /// <exception cref="ArgumentException">
     /// The target is not an IPv4 loopback endpoint with a port, or the options hold an unusable value: a format other
-    /// than 16 or 24 bit, a payload that cannot hold one sample or does not fit a datagram, a sample rate that is not
-    /// positive, fewer than one channel. A running stream is left alone then.
+    /// than 16 or 24 bit, a payload that cannot hold one sample (and the timestamp, when on) or does not fit a datagram,
+    /// an empty <see cref="StreamOptions.Packets"/> or an entry of it that is not whole samples or does not fit, a sample
+    /// rate that is not positive, fewer than one channel. A running stream is left alone then.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
     public async Task StartStreamingAsync(IPEndPoint target, StreamOptions? options = null)
@@ -275,7 +277,10 @@ public sealed partial class NetSdrTestServer
         int Channels,
         Pacing Pacing,
         FillSamples Source,
-        Func<ushort, bool>? DropPacket)
+        Func<ushort, bool>? DropPacket,
+        ReadOnlyMemory<byte>[]? Packets,
+        bool Timestamps,
+        DateTimeOffset? TimestampOrigin)
     {
         public static StreamPlan Create(IPEndPoint target, StreamOptions options, SampleFormat format, int payloadSize, double sampleRate)
         {
@@ -290,12 +295,33 @@ public sealed partial class NetSdrTestServer
             }
 
             int sampleBytes = SampleSources.BytesPerSample(format);
-            if (payloadSize < sampleBytes || payloadSize > MaxPayloadSize)
+            int trailer = options.Timestamps ? PacketTimestamp.Size : 0;
+            ReadOnlyMemory<byte>[]? packets = null;
+            if (options.Packets is not null)
             {
+                packets = [.. options.Packets];
+                if (packets.Length == 0)
+                {
+                    throw new ArgumentException("Packets must hold at least one packet.", nameof(options));
+                }
+
+                int unfit = Array.FindIndex(packets, packet =>
+                    packet.Length < sampleBytes || packet.Length % sampleBytes != 0 || packet.Length + trailer > MaxPayloadSize);
+                if (unfit >= 0)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(options),
+                        packets[unfit].Length,
+                        $"Entry {unfit} of Packets is unusable: every entry must hold whole samples of {sampleBytes} bytes, at most {MaxPayloadSize - trailer} bytes.");
+                }
+            }
+            else if (payloadSize < sampleBytes + trailer || payloadSize > MaxPayloadSize)
+            {
+                string least = trailer == 0 ? "one sample" : "one sample and the timestamp";
                 throw new ArgumentOutOfRangeException(
                     nameof(options),
                     payloadSize,
-                    $"PayloadSize must be from {sampleBytes} (one sample) to {MaxPayloadSize} bytes.");
+                    $"PayloadSize must be from {sampleBytes + trailer} ({least}) to {MaxPayloadSize} bytes.");
             }
 
             if (!double.IsFinite(sampleRate) || sampleRate <= 0)
@@ -309,7 +335,18 @@ public sealed partial class NetSdrTestServer
             }
 
             ArgumentNullException.ThrowIfNull(options.Source);
-            return new StreamPlan(target, format, payloadSize, sampleRate, options.Channels, options.Pacing, options.Source, options.DropPacket);
+            return new StreamPlan(
+                target,
+                format,
+                payloadSize,
+                sampleRate,
+                options.Channels,
+                options.Pacing,
+                options.Source,
+                options.DropPacket,
+                packets,
+                options.Timestamps,
+                options.TimestampOrigin);
         }
     }
 
@@ -322,9 +359,13 @@ public sealed partial class NetSdrTestServer
         private readonly byte[] _datagram;
         private readonly int _sampleBytes;
         private readonly int _samplesPerPacket;
+        private readonly int _trailerSize;
+        private readonly DateTimeOffset _origin;
+        private readonly SampleRateTimeScale _scale;
 
         private ushort _sequence;
         private long _firstSample;
+        private int _nextPacket;
 
         public DataStream(StreamPlan plan, Socket socket)
         {
@@ -332,16 +373,15 @@ public sealed partial class NetSdrTestServer
             _socket = socket;
             _target = plan.Target.Serialize();
             _sampleBytes = SampleSources.BytesPerSample(plan.Format);
-            _samplesPerPacket = plan.PayloadSize / _sampleBytes;
+            _trailerSize = plan.Timestamps ? PacketTimestamp.Size : 0;
+            _samplesPerPacket = (plan.PayloadSize - _trailerSize) / _sampleBytes;
+            _origin = plan.TimestampOrigin ?? DateTimeOffset.UtcNow;
+            _scale = new SampleRateTimeScale(plan.SampleRate);
 
-            // The bytes after the samples stay zero for good: only whole samples are ever written.
-            _datagram = new byte[DatagramPrefixSize + plan.PayloadSize];
-
-            // The header is written here and not by FrameHeader.Write: a length the 13-bit field cannot hold is encoded as 0
-            // (8194 is the specification's own use of that, longer jumbo datagrams follow the same convention).
-            int length = _datagram.Length;
-            int encodedLength = length > FrameHeader.MaxEncodableLength ? 0 : length;
-            BinaryPrimitives.WriteUInt16LittleEndian(_datagram, (ushort)(((int)ReplyType.Data0 << DataTypeShift) | encodedLength));
+            // Without Packets the bytes between the samples and the timestamp stay zero for good: only whole samples
+            // are ever written, and the timestamp always lands in the last bytes.
+            int largest = plan.Packets is null ? plan.PayloadSize : plan.Packets.Max(packet => packet.Length) + _trailerSize;
+            _datagram = new byte[DatagramPrefixSize + largest];
         }
 
         public void Dispose() => _socket.Dispose();
@@ -349,18 +389,18 @@ public sealed partial class NetSdrTestServer
         /// <summary>Sends packets until <paramref name="token"/> is cancelled.</summary>
         public async Task RunAsync(CancellationToken token)
         {
-            // The time between two packets: the samples of a packet, per channel, at the sample rate.
-            double ticksPerPacket = _samplesPerPacket / (double)_plan.Channels / _plan.SampleRate * Stopwatch.Frequency;
+            // A packet is due when its first sample is, per channel, at the sample rate; packets of any size keep the pace.
+            double ticksPerSample = Stopwatch.Frequency / (double)_plan.Channels / _plan.SampleRate;
             long pauseThreshold = Stopwatch.Frequency / 1000;
             long start = Stopwatch.GetTimestamp();
-            for (long packet = 0; !token.IsCancellationRequested; packet++)
+            while (!token.IsCancellationRequested)
             {
                 if (_plan.Pacing == Pacing.RealTime)
                 {
-                    // Packet n is due at start + n * period. A pause shorter than a millisecond is not worth one: the
-                    // packet goes now, at most a millisecond early. After a late wake-up the packets that are due go in a burst.
+                    // A pause shorter than a millisecond is not worth one: the packet goes now, at most a millisecond
+                    // early. After a late wake-up the packets that are due go in a burst.
                     long now = Stopwatch.GetTimestamp();
-                    long due = start + (long)(packet * ticksPerPacket);
+                    long due = start + (long)(_firstSample * ticksPerSample);
                     if (due - now > pauseThreshold)
                     {
                         await Task.Delay(Stopwatch.GetElapsedTime(now, due), token).ConfigureAwait(false);
@@ -374,15 +414,39 @@ public sealed partial class NetSdrTestServer
         /// <summary>Sends the packet of the current sequence number unless it is dropped, then moves on to the next one.</summary>
         private void SendNext()
         {
+            ReadOnlyMemory<byte> recorded = _plan.Packets is { } packets ? packets[_nextPacket] : default;
+            int samplesLength = _plan.Packets is null ? _samplesPerPacket * _sampleBytes : recorded.Length;
+            int payloadSize = _plan.Packets is null ? _plan.PayloadSize : recorded.Length + _trailerSize;
             if (_plan.DropPacket?.Invoke(_sequence) != true)
             {
+                int length = DatagramPrefixSize + payloadSize;
+
+                // The header is written here and not by FrameHeader.Write: a length the 13-bit field cannot hold is encoded
+                // as 0 (8194 is the specification's own use of that, longer jumbo datagrams follow the same convention).
+                int encodedLength = length > FrameHeader.MaxEncodableLength ? 0 : length;
+                BinaryPrimitives.WriteUInt16LittleEndian(_datagram, (ushort)(((int)ReplyType.Data0 << DataTypeShift) | encodedLength));
                 BinaryPrimitives.WriteUInt16LittleEndian(_datagram.AsSpan(FrameHeader.Size), _sequence);
-                Span<byte> samples = _datagram.AsSpan(DatagramPrefixSize, _samplesPerPacket * _sampleBytes);
-                samples.Clear();
-                _plan.Source(samples, _firstSample, _plan.Format);
+
+                Span<byte> payload = _datagram.AsSpan(DatagramPrefixSize, payloadSize);
+                Span<byte> samples = payload[..samplesLength];
+                if (_plan.Packets is null)
+                {
+                    samples.Clear();
+                    _plan.Source(samples, _firstSample, _plan.Format);
+                }
+                else
+                {
+                    recorded.Span.CopyTo(samples);
+                }
+
+                if (_trailerSize > 0)
+                {
+                    PacketTimestamp.AtSample(_origin, _firstSample / _plan.Channels, _scale).Write(payload[^_trailerSize..]);
+                }
+
                 try
                 {
-                    _socket.SendTo(_datagram, SocketFlags.None, _target);
+                    _socket.SendTo(_datagram.AsSpan(0, length), SocketFlags.None, _target);
                 }
                 catch (SocketException)
                 {
@@ -391,7 +455,11 @@ public sealed partial class NetSdrTestServer
             }
 
             _sequence = DataSequence.Next(_sequence);
-            _firstSample += _samplesPerPacket;
+            _firstSample += samplesLength / _sampleBytes;
+            if (_plan.Packets is { } all)
+            {
+                _nextPacket = (_nextPacket + 1) % all.Length;
+            }
         }
     }
 }

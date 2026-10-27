@@ -203,9 +203,9 @@ flowchart TB
 
     subgraph testing["NetSdr.Testing"]
         server["<b>Керування</b><br/>[NetSdrTestServer]<br/>TcpListener на loopback,<br/>клієнти обслуговуються по одному,<br/>запити читаються з PipeReader"]
-        disp["<b>Диспетчер</b><br/>[DispatchAsync]<br/>Обробник OnRequest,<br/>далі AutoStream для 0x0018,<br/>далі стан"]
+        disp["<b>Диспетчер</b><br/>[DispatchAsync]<br/>Обробник OnRequest,<br/>далі AutoStream для 0x0018,<br/>далі стан; команди Then"]
         state["<b>Стан пристрою</b><br/>[код: список payload]<br/>Set зберігає і відлунює,<br/>Get віддає за ключем, Preload"]
-        stream["<b>Потік даних</b><br/>[StreamPlan, DataStream]<br/>UDP-сокет, sequence за специфікацією,<br/>Pacing, DropPacket, jumbo"]
+        stream["<b>Потік даних</b><br/>[StreamPlan, DataStream]<br/>UDP-сокет, sequence за специфікацією,<br/>Pacing, DropPacket, jumbo,<br/>Packets, PacketTimestamp у кінці"]
         sources["<b>Джерела семплів</b><br/>[SampleSources]<br/>Counter, Tone, FromBuffer"]
         frames["<b>ControlFrames</b><br/>Повні кадри для відповідей<br/>і порівняння в тестах"]
         eventually["<b>Eventually</b><br/>Очікування умови без sleep"]
@@ -232,6 +232,12 @@ flowchart TB
   Тому перекриття в тесті завжди перемагає поведінку за замовчуванням.
 - Параметри потоку беруться зі стану, який клієнт сам задав командами 0x00B8, 0x00C4,
   0x00C5 і 0x0018. Явні `StreamOptions` мають пріоритет.
+- Обробник може відповісти `ControlReply.Echo.Then(ControlRequest.Set(...))`: сервер сам
+  проганяє ці команди через той самий диспетчер до відповіді, а те, що команда робить після
+  своєї відповіді (старт потоку для Run), робить після відповіді на запит клієнта. Так
+  вендорська команда вмикає стандартний потік.
+- `StreamOptions.Timestamps` кладе `PacketTimestamp` першого семпла в останні 8 байт
+  `PayloadSize`, `StreamOptions.Packets` грає задані пакети по колу.
 
 ## 5. Компоненти прикладу Vega
 

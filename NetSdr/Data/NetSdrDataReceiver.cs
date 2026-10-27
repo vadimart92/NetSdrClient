@@ -326,6 +326,14 @@ public sealed class NetSdrDataReceiver : IDisposable
         _ => SampleFormat.Unknown,
     };
 
+    /// <summary>
+    /// Whether the datagram length agrees with its header. A header that encodes 0 (read as 8194) cannot describe a
+    /// longer datagram, so it stands for any length the 13-bit field cannot hold: 8192 and up, jumbo datagrams included.
+    /// </summary>
+    private static bool LengthMatches(int declaredLength, int length) => declaredLength == FrameHeader.MaxLength
+        ? length > FrameHeader.MaxEncodableLength
+        : declaredLength == length;
+
     private void ReceiveLoop()
     {
         var buffer = new byte[MaxDatagramSize];
@@ -424,7 +432,7 @@ public sealed class NetSdrDataReceiver : IDisposable
         if (length < PrefixSize
             || !FrameHeader.TryRead(datagram, out int declaredLength, out byte type)
             || type != (byte)ReplyType.Data0
-            || (_validateLength && declaredLength != length))
+            || (_validateLength && !LengthMatches(declaredLength, length)))
         {
             Interlocked.Increment(ref _rejected);
             return;

@@ -8,9 +8,9 @@ namespace NetSdr.Data;
 public sealed class DataReceiverOptions
 {
     /// <summary>
-    /// Whether a datagram is dropped when the length in its header differs from the datagram length. Turn it off for
-    /// a device that sends datagrams over 8194 bytes: the header cannot describe them, and the samples are then
-    /// everything after the first 4 bytes.
+    /// Whether a datagram is dropped when the length in its header differs from the datagram length. A header that
+    /// encodes 0 matches any datagram of 8192 bytes or more, so jumbo datagrams pass with the check on; the samples are
+    /// then everything after the first 4 bytes. Turn it off only for a device whose headers are wrong.
     /// </summary>
     public bool ValidateLength { get; set; } = true;
 

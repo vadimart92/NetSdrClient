@@ -131,15 +131,27 @@ public class DataReceiverTests
     }
 
     [Test]
-    public async Task Jumbo9000_DeliveredOnlyWithoutValidation()
+    [TestCase(8192)]
+    [TestCase(8196)]
+    [TestCase(9000)]
+    public async Task Jumbo_HeaderZero_DeliveredWithValidation(int length)
     {
-        using var strict = new PacketCollector();
-        using var loose = new PacketCollector(new DataReceiverOptions { ValidateLength = false });
-        Send(strict, UdpTestSender.Datagram(0, 9000));
-        Send(loose, UdpTestSender.Datagram(0, 9000));
-        await Eventually.ThatAsync(() => loose.Packets.Count == 1 && strict.Receiver.Statistics.Rejected == 1);
-        Assert.That(loose.Packets.Single().Samples, Has.Length.EqualTo(8996));
-        Assert.That(loose.Packets.Single().Info.Format, Is.EqualTo(SampleFormat.Unknown));
+        using var c = new PacketCollector();
+        Send(c, UdpTestSender.Datagram(0, length));
+        await Eventually.ThatAsync(() => c.Packets.Count == 1);
+        Assert.That(c.Packets.Single().Samples, Has.Length.EqualTo(length - 4));
+        Assert.That(c.Packets.Single().Info.Format, Is.EqualTo(SampleFormat.Unknown));
+        Assert.That(c.Receiver.Statistics.Rejected, Is.Zero);
+    }
+
+    [Test]
+    public async Task HeaderZero_ShortDatagram_Rejected()
+    {
+        using var c = new PacketCollector();
+        Send(c, UdpTestSender.Datagram(0, 1028, headerLength: 8194), UdpTestSender.Datagram(1, 8191, headerLength: 8194),
+            UdpTestSender.Datagram(2, 1028));
+        await Eventually.ThatAsync(() => c.Packets.Count == 1);
+        Assert.That(c.Receiver.Statistics.Rejected, Is.EqualTo(2));
     }
 
     [Test]
