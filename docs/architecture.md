@@ -79,7 +79,7 @@ flowchart TB
     logs["<b>Провайдер логування</b><br/>[Зовнішня система, ILoggerFactory]<br/>Обирає застосунок:<br/>консоль, файл тощо"]
 
     subgraph testonly["Лише для тестів"]
-        testing["<b>NetSdr.Testing</b><br/>[Бібліотека, без тестового фреймворку]<br/>NetSdrTestServer, ControlFrames,<br/>SampleSources, Eventually"]
+        testing["<b>NetSdr.Testing</b><br/>[Бібліотека, без тестового фреймворку]<br/>NetSdrTestServer, NetSdrServiceServer,<br/>ControlFrames, SampleSources, Eventually"]
         tests["<b>NetSdr.Tests</b><br/>[NUnit]<br/>Тести фреймворку"]
         vtests["<b>NetSdr.Examples.Vega.Tests</b><br/>[NUnit]<br/>Тести прикладу, VegaEmulator"]
     end
@@ -238,6 +238,10 @@ flowchart TB
   вендорська команда вмикає стандартний потік.
 - `StreamOptions.Timestamps` кладе `PacketTimestamp` першого семпла в останні 8 байт
   `PayloadSize`, `StreamOptions.Packets` грає задані пакети по колу.
+- `NetSdrServiceServer` це сервісний канал поруч із приймачем, як мікроконтролер: JSON-об'єкт
+  на рядок, команда в полі `CommandField`. Що робити, вирішує async-обробник `On(cmd, ctx => ...)`:
+  відповісти (`ReplyAsync`, `ReplyRawAsync`), перезавантажити приймач (`RebootAsync`), закрити або
+  обірвати з'єднання (`Close`, `Abort`).
 
 ## 5. Компоненти прикладу Vega
 
