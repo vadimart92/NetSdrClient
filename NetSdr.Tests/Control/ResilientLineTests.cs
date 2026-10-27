@@ -74,7 +74,7 @@ public class ResilientLineTests
         await using (server)
         await using (client)
         {
-            var nak = Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<SerialNumber>().WaitAsync(Limits.Test));
+            var nak = await Assert.ThrowsAsync<NetSdrNakException>(() => client.GetAsync<SerialNumber>().WaitAsync(Limits.Test));
             Assert.That(nak.Code, Is.EqualTo(SerialNumber.Code));
             Assert.That((await client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test)).Version, Is.EqualTo(529));
             var options = new IdentificationOptions { IncludeStandardProbes = false };

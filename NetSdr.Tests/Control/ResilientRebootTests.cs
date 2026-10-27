@@ -179,7 +179,7 @@ public class ResilientRebootTests
         await using (client)
         {
             await started.Server.DisconnectClientAsync();
-            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.InnerException, Is.SameAs(thrown));
             Assert.That(started.Rebooter.Calls, Is.Empty);
         }
@@ -464,8 +464,8 @@ public class ResilientRebootTests
         var reboot = client.RebootAsync(RebootKind.Soft);
         attempt.CloseRemote();
         await Eventually.ThatAsync(() => rebooter.Calls.Count == 1);                     // the reboot still runs
-        var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
-        Assert.That(Assert.ThrowsAsync<IOException>(() => reboot.WaitAsync(Limits.Test)), Is.SameAs(failure));
+        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        Assert.That(await Assert.ThrowsAsync<IOException>(() => reboot.WaitAsync(Limits.Test)), Is.SameAs(failure));
         Assert.That(
             (logs.Events(1106).Sole().Value("Reason"), logs.Events(1106)[0].Value("Attempts")),
             Is.EqualTo(("attempts exhausted", "2")));

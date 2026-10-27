@@ -42,7 +42,7 @@ public class DeviceCatalogTests
         var catalog = new DeviceCatalog<Dev>()
             .Register("x", _ => false, (c, id) => new Dev("x", c, id))
             .Register("y", _ => false, (c, id) => new Dev("y", c, id));
-        var ex = Assert.ThrowsAsync<DeviceNotRecognizedException>(() => catalog.ConnectAsync(At(server)));
+        var ex = await Assert.ThrowsAsync<DeviceNotRecognizedException>(() => catalog.ConnectAsync(At(server)));
         Assert.That(ex.Candidates, Is.EqualTo(new[] { "x", "y" }));
         Assert.That(ex.Identity.Name, Is.EqualTo("NetSDR"));
         await Loopback.AssertServerFreeAsync(server);
@@ -133,7 +133,7 @@ public class DeviceCatalogTests
     {
         await using var server = await ServerAsync();
         var catalog = NullFactoryCatalog(viaDefault);
-        var ex = Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ConnectAsync(At(server)));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ConnectAsync(At(server)));
         Assert.That(ex.Message, Does.Contain(expectedName));
         await Loopback.AssertServerFreeAsync(server);
     }
@@ -146,7 +146,7 @@ public class DeviceCatalogTests
         await using var _ = server;
         await using var __ = client;
         var catalog = NullFactoryCatalog(viaDefault);
-        var ex = Assert.ThrowsAsync<InvalidOperationException>(() => catalog.AttachAsync(client));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.AttachAsync(client));
         Assert.That(ex.Message, Does.Contain(expectedName));
         Assert.That((await client.GetAsync<ProductId>()).Value, Is.EqualTo(9u));
     }

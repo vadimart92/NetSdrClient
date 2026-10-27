@@ -30,7 +30,7 @@ public class ControlClientLifecycleTests
         await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
         await Assert.ThatAsync(() => device.Client.Completion.WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
         Assert.That(device.Client.IsConnected, Is.False);
-        var ex = Assert.ThrowsAsync<InvalidOperationException>(() => device.Client.GetAsync<ProductId>());
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => device.Client.GetAsync<ProductId>());
         Assert.That(ex.InnerException, Is.TypeOf<TimeoutException>());
     }
 
@@ -121,9 +121,9 @@ public class ControlClientLifecycleTests
         await using var device = PipeDevice.Create(Fast());
         var call = device.Client.GetAsync<ProductId>();
         await device.ReadRequestAsync();
-        var ex = Assert.ThrowsAsync<TimeoutException>(() => call.WaitAsync(Limits.Test));
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => call.WaitAsync(Limits.Test));
         Assert.That(ex.Message, Does.Contain("0x0009"));
-        Assert.That(Assert.ThrowsAsync<TimeoutException>(() => device.Client.Completion.WaitAsync(Limits.Test)), Is.SameAs(ex));
+        Assert.That(await Assert.ThrowsAsync<TimeoutException>(() => device.Client.Completion.WaitAsync(Limits.Test)), Is.SameAs(ex));
     }
 
     [Test]
@@ -330,7 +330,7 @@ public class ControlClientLifecycleTests
         var rejected = device.Client.GetAsync<InterfaceVersion>();
         await device.ReadRequestAsync();
         await device.SendAsync("02 00");
-        var ex = Assert.ThrowsAsync<NetSdrNakException>(() => rejected.WaitAsync(Limits.Test));
+        var ex = await Assert.ThrowsAsync<NetSdrNakException>(() => rejected.WaitAsync(Limits.Test));
         Assert.That((ex.Code, ex.RequestType), Is.EqualTo(((ushort)0x0003, RequestType.Get)));
         Assert.That(device.Client.Unsolicited.TryRead(out _), Is.False);
 
@@ -456,9 +456,9 @@ public class ControlClientLifecycleTests
     {
         await using var client = new NetSdrControlClient();
         client.Attach(new Pipe().Reader, new FailingWriteStream(new IOException("The wire broke.")));
-        var ex = Assert.ThrowsAsync<IOException>(() => client.GetAsync<ProductId>());
+        var ex = await Assert.ThrowsAsync<IOException>(() => client.GetAsync<ProductId>());
         Assert.That(ex.Message, Is.EqualTo("The wire broke."));
-        Assert.That(Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test)), Is.SameAs(ex));
+        Assert.That(await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test)), Is.SameAs(ex));
         Assert.That(client.IsConnected, Is.False);
         await client.Unsolicited.Completion.WaitAsync(Limits.Test);
     }
@@ -469,7 +469,7 @@ public class ControlClientLifecycleTests
         await using var client = new NetSdrControlClient();
         var cause = new NotSupportedException("Not writable.");
         client.Attach(new Pipe().Reader, new FailingWriteStream(cause));
-        var ex = Assert.ThrowsAsync<IOException>(() => client.GetAsync<ProductId>());
+        var ex = await Assert.ThrowsAsync<IOException>(() => client.GetAsync<ProductId>());
         Assert.That(ex.InnerException, Is.SameAs(cause));
         await Assert.ThatAsync(() => client.Completion.WaitAsync(Limits.Test), Throws.TypeOf<IOException>());
     }

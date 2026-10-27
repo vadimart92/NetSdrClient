@@ -423,7 +423,7 @@ public class TestServerStreamingTests
         });
         await failing.Task.WaitAsync(Limits.Test);
         await server.StopStreamingAsync();
-        var error = Assert.ThrowsAsync<FormatException>(() => server.DisposeAsync().AsTask());
+        var error = await Assert.ThrowsAsync<FormatException>(() => server.DisposeAsync().AsTask());
         Assert.That(error.Message, Is.EqualTo("source failed"));
         Assert.That(c.Packets, Is.Empty);
     }

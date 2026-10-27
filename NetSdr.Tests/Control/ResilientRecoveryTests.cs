@@ -213,7 +213,7 @@ public class ResilientRecoveryTests
         var policy = new RecordingPolicy { Decide = c => c.FailedAttempts == 2 ? RecoveryAction.GiveUp : RecoveryAction.Continue };
         var (client, _, connector) = await Start(logs, time, rebooter, policy);
         await time.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, Step);
-        var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+        var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
         Assert.That(failure.InnerException, Is.TypeOf<SocketException>());
         Assert.That(failure.Message, Does.Contain("after 2 attempt(s)"));
         Assert.That(

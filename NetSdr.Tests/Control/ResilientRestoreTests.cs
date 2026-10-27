@@ -118,7 +118,7 @@ public class ResilientRestoreTests
         await using (client)
         {
             await started.Server.DisconnectClientAsync();
-            var failure = Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
+            var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.Message, Does.Contain("ConnectionRestored called the ResilientControlClient instead of context.Client"));
             Assert.That(failure.InnerException, Is.SameAs(thrown));
         }

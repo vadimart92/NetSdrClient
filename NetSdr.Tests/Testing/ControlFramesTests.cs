@@ -58,7 +58,7 @@ public class ControlFramesTests
     {
         foreach (TimeSpan timeout in new[] { TimeSpan.Zero, TimeSpan.FromSeconds(-1), Timeout.InfiniteTimeSpan })
         {
-            var ex = Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Eventually.ThatAsync(() => true, timeout));
+            var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Eventually.ThatAsync(() => true, timeout));
             Assert.That(ex.ParamName, Is.EqualTo("timeout"));
         }
     }

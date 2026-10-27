@@ -19,7 +19,7 @@ public class ResilientTimeoutTests
         {
             device.CloseRemote();
             await Eventually.ThatAsync(() => !client.IsConnected);
-            var timeout = Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
+            var timeout = await Assert.ThrowsAsync<TimeoutException>(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test));
             Assert.That(timeout.Message, Does.StartWith("Get of item 0x0003 did not complete within"));
             Assert.That(timeout.InnerException, Is.InstanceOf<IOException>());      // the cause of the loss, not null
         }

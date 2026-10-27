@@ -100,7 +100,7 @@ public class ResilientConnectTests
         var hanging = new PipeConnector { Before = (_, ct) => Task.Delay(Timeout.Infinite, ct) };
         var slow = Resilient.Seam();
         slow.ConnectTimeout = TimeSpan.FromMilliseconds(200);
-        var timeout = Assert.ThrowsAsync<TimeoutException>(() => ResilientControlClient.ConnectAsync(hanging.ConnectAsync, "pipe", slow, default));
+        var timeout = await Assert.ThrowsAsync<TimeoutException>(() => ResilientControlClient.ConnectAsync(hanging.ConnectAsync, "pipe", slow, default));
         Assert.That(timeout.Message, Does.StartWith("No TCP connection to pipe within"));
         using var cancel = new CancellationTokenSource(200);
         await Assert.ThatAsync(

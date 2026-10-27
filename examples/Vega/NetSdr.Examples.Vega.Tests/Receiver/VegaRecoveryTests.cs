@@ -89,7 +89,7 @@ public class VegaRecoveryTests
         var options = Recovering(emulator, serviceKey: 0x0BAD_0BAD);
         options.LoggerFactory = logs;
         await using var client = await ConnectAsync(emulator, options);
-        var ex = Assert.ThrowsAsync<VegaException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
+        var ex = await Assert.ThrowsAsync<VegaException>(() => client.RebootAsync(RebootKind.Soft).WaitAsync(Limits.Test));
         Assert.That(ex.Message, Does.Contain("wrong unlock key"));
         Assert.That(emulator.RebootRequests, Is.EqualTo(new[] { (RebootKind.Soft, false) }));
         await Eventually.ThatAsync(() => client.IsConnected);                            // the requested loss is reconnected as any other
