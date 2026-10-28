@@ -45,7 +45,7 @@ public sealed partial class NetSdrTestServer
     /// <see cref="Stream"/>, and what that leaves open comes from the device state: the format from the capture mode, the
     /// packet size from 0x00C4, the sample rate from 0x00B8 and the target from 0x00C5 (the client's address when that
     /// has none, or its address with the 0x00C5 port when the address is 0.0.0.0). A Run the server cannot honour, such as
-    /// one aimed at a non-loopback address, is answered with a NAK. The stream ends when the client leaves. A handler of
+    /// one aimed at a non-loopback address or one after a setting too short to read, is answered with a NAK. The stream ends when the client leaves. A handler of
     /// another item can run the same Set through <see cref="ControlReply.Then"/>.
     /// </summary>
     public bool AutoStream
@@ -147,13 +147,6 @@ public sealed partial class NetSdrTestServer
         }
 
         return StreamPlan.Create(target, options, format, options.PayloadSize ?? DefaultPayloadSize(format, small), sampleRate);
-    }
-
-    /// <summary>Reads the newest stored payload of a fixed-size item; false when none is stored or it is too short.</summary>
-    private bool TryReadLatest<T>(out T item) where T : struct, IControlItem<T>
-    {
-        item = default;
-        return TryGetLatestState(T.Code, out byte[] payload) && MemoryMarshal.TryRead(payload, out item);
     }
 
     /// <summary>Stops the running stream, if any, and starts the one described by <paramref name="plan"/>.</summary>
