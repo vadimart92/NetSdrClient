@@ -203,7 +203,7 @@ flowchart TB
 
     subgraph testing["NetSdr.Testing"]
         server["<b>Керування</b><br/>[NetSdrTestServer]<br/>TcpListener на loopback,<br/>клієнти обслуговуються по одному,<br/>запити читаються з PipeReader"]
-        disp["<b>Диспетчер</b><br/>[DispatchAsync]<br/>Обробник OnRequest,<br/>далі AutoStream для 0x0018,<br/>далі стан; команди Then"]
+        disp["<b>Диспетчер</b><br/>[DispatchAsync]<br/>Обробник OnRequest,<br/>далі AutoStream для 0x0018,<br/>далі стан; Builtin, команди Then"]
         state["<b>Стан пристрою</b><br/>[код: список payload]<br/>Set зберігає і відлунює,<br/>Get віддає за ключем, Preload"]
         stream["<b>Потік даних</b><br/>[StreamPlan, DataStream]<br/>UDP-сокет, sequence за специфікацією,<br/>Pacing, DropPacket, jumbo,<br/>Packets, PacketTimestamp у кінці"]
         sources["<b>Джерела семплів</b><br/>[SampleSources]<br/>Counter, Tone, FromBuffer"]
@@ -230,6 +230,10 @@ flowchart TB
 
 - Порядок вибору відповіді: обробник для коду, потім `AutoStream` для 0x0018, потім стан.
   Тому перекриття в тесті завжди перемагає поведінку за замовчуванням.
+- Обробник може не перекривати, а доповнювати вбудовану поведінку: `ControlReply.Builtin()`
+  проганяє запит через `AutoStream` і стан так, ніби обробника немає, а `ControlReply.Builtin(item)`
+  робить те саме з підміненим payload. Наприклад, обробник 0x00C5 підставляє свій порт, і потік
+  після Run іде туди; клієнт отримує відлуння підміненого значення, а `Received` зберігає те, що він надіслав.
 - Параметри потоку беруться зі стану, який клієнт сам задав командами 0x00B8, 0x00C4,
   0x00C5 і 0x0018. Явні `StreamOptions` мають пріоритет.
 - Обробник може відповісти `ControlReply.Echo.Then(ControlRequest.Set(...))`: сервер сам
