@@ -211,7 +211,7 @@ flowchart TB
         eventually["<b>Eventually</b><br/>Очікування умови без sleep"]
     end
 
-    test -->|"OnRequest, Preload, Received,<br/>SendUnsolicitedAsync"| server
+    test -->|"OnRequest, Preload, TryReadLatest,<br/>Received, SendUnsolicitedAsync"| server
     test -->|"порівнює байти"| frames
     test -->|"чекає стану"| eventually
     client <-->|"TCP loopback"| server
@@ -234,6 +234,9 @@ flowchart TB
   проганяє запит через `AutoStream` і стан так, ніби обробника немає, а `ControlReply.Builtin(item)`
   робить те саме з підміненим payload. Наприклад, обробник 0x00C5 підставляє свій порт, і потік
   після Run іде туди; клієнт отримує відлуння підміненого значення, а `Received` зберігає те, що він надіслав.
+- `TryReadLatest<T>()` читає останнє збережене значення пункту, будь-якого ключа, а
+  `TryReadLatest<T, TKey>(key)` останнє з цим ключем, як його віддав би Get. Так тест перевіряє стан
+  пристрою, не розбираючи `Received`.
 - Параметри потоку беруться зі стану, який клієнт сам задав командами 0x00B8, 0x00C4,
   0x00C5 і 0x0018. Явні `StreamOptions` мають пріоритет.
 - Обробник може відповісти `ControlReply.Echo.Then(ControlRequest.Set(...))`: сервер сам

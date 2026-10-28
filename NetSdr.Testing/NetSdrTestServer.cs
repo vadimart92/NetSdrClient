@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using NetSdr.Framing;
 using NetSdr.Items;
 
@@ -151,6 +152,35 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         {
             AddState(T.Code, payload);
         }
+    }
+
+    /// <summary>
+    /// Reads the newest stored <typeparamref name="T"/>, whatever its key: what the client set last, or what was
+    /// preloaded or stored through <see cref="ControlReply.Builtin()"/>. Safe to call from any thread and from a handler.
+    /// </summary>
+    /// <returns>False when nothing of <typeparamref name="T"/> is stored.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The stored payload is too short for <typeparamref name="T"/>, or what <c>T.Read</c> throws for it.</exception>
+    public bool TryReadLatest<T>(out T item) where T : struct, IControlItem<T> => TryReadLatest(T.Code, [], out item);
+
+    /// <summary>
+    /// Reads the newest stored <typeparamref name="T"/> whose payload starts with <paramref name="key"/>, the way a Get
+    /// with that key is answered, for example the setting of one channel. See <see cref="TryReadLatest{T}(out T)"/>.
+    /// </summary>
+    /// <returns>False when nothing of <typeparamref name="T"/> with this key is stored.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The stored payload is too short for <typeparamref name="T"/>, or what <c>T.Read</c> throws for it.</exception>
+    public bool TryReadLatest<T, TKey>(TKey key, out T item) where T : struct, IControlItem<T> where TKey : unmanaged =>
+        TryReadLatest(T.Code, MemoryMarshal.AsBytes(new ReadOnlySpan<TKey>(in key)), out item);
+
+    private bool TryReadLatest<T>(ushort code, ReadOnlySpan<byte> key, out T item) where T : struct, IControlItem<T>
+    {
+        if (!TryGetState(code, key, out byte[] payload))
+        {
+            item = default;
+            return false;
+        }
+
+        item = T.Read(payload);
+        return true;
     }
 
     /// <summary>
@@ -598,9 +628,6 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         payload = [];
         return false;
     }
-
-    /// <summary>Finds the newest payload of <paramref name="code"/>, whatever its key.</summary>
-    private bool TryGetLatestState(ushort code, out byte[] payload) => TryGetState(code, [], out payload);
 
     private async Task SendFrameAsync(byte[] frame)
     {
