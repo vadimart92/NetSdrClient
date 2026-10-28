@@ -1,0 +1,14 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/examples/">
+    <Project Path="examples/Vega/NetSdr.Examples.Vega.Tests/NetSdr.Examples.Vega.Tests.csproj" />
+    <Project Path="examples/Vega/NetSdr.Examples.Vega/NetSdr.Examples.Vega.csproj" />
+  </Folder>
+  <Project Path="NetSdr.Testing/NetSdr.Testing.csproj" />
+  <Project Path="NetSdr.Tests/NetSdr.Tests.csproj" />
+  <Project Path="NetSdr/NetSdr.csproj" />
+</Solution>
