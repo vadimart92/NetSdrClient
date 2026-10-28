@@ -113,7 +113,8 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
     /// <summary>
     /// Sets the handler for the item <typeparamref name="T"/>, replacing an earlier one for the same code. It runs
-    /// instead of the default behaviour: for a Set <see cref="ControlRequest{T}.Item"/> holds the item, for a Get or
+    /// instead of the built-in behaviour, which it can still ask for, with a changed item too, through
+    /// <see cref="ControlReply.Builtin()"/>: for a Set <see cref="ControlRequest{T}.Item"/> holds the item, for a Get or
     /// GetRange the key is read with <see cref="ControlRequest{T}.Key{TKey}"/>. An exception from the handler is answered with a NAK
     /// and recorded in <see cref="HandlerErrors"/>.
     /// </summary>
@@ -128,7 +129,8 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
     /// <summary>
     /// Sets the handler for an item code, replacing an earlier one for the same code. It runs on the connection's
-    /// thread, one request at a time. An exception from the handler is answered with a NAK and recorded in
+    /// thread, one request at a time, instead of the built-in behaviour, which it can still ask for through
+    /// <see cref="ControlReply.Builtin()"/>. An exception from the handler is answered with a NAK and recorded in
     /// <see cref="HandlerErrors"/>.
     /// </summary>
     public void OnRequest(ushort code, Func<ControlRequest, ControlReply> handler)
@@ -494,8 +496,8 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Chooses the reply to a request: the handler for its code if there is one, then the receiver state when
-    /// <see cref="AutoStream"/> acts on it, otherwise the default behaviour from the state.
+    /// Chooses the reply to a request: the handler for its code if there is one, otherwise the built-in behaviour,
+    /// which a handler can also ask for with <see cref="ControlReply.Builtin()"/>.
     /// </summary>
     private async ValueTask<Dispatched> DispatchAsync(ControlRequest request, Connection connection)
     {
@@ -505,11 +507,25 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
             _handlers.TryGetValue(request.Code, out handler);
         }
 
-        if (handler is not null)
+        if (handler is null)
         {
-            return new Dispatched(handler(request));
+            return await DispatchBuiltinAsync(request, connection).ConfigureAwait(false);
         }
 
+        ControlReply reply = handler(request);
+        if (!reply.IsBuiltin)
+        {
+            return new Dispatched(reply);
+        }
+
+        ControlRequest builtin = reply.BuiltinRequest(in request);
+        Dispatched dispatched = await DispatchBuiltinAsync(builtin, connection).ConfigureAwait(false);
+        return dispatched with { Reply = reply.WithBuiltinAnswer(dispatched.Reply, in builtin) };
+    }
+
+    /// <summary>The built-in behaviour: the receiver state when <see cref="AutoStream"/> acts on it, otherwise the stored state.</summary>
+    private async ValueTask<Dispatched> DispatchBuiltinAsync(ControlRequest request, Connection connection)
+    {
         if (IsAutoStreamRequest(request))
         {
             return await ReplyToReceiverStateAsync(request, connection).ConfigureAwait(false);
