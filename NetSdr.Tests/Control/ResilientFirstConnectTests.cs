@@ -127,7 +127,7 @@ public class ResilientFirstConnectTests
         using var cancel = new CancellationTokenSource();
         var connecting = Connect(refused, Resilient.Seam(logs, time).WithRebooter(rebooter, new EscalatingRecoveryPolicy { SoftRebootAfter = 1 }), cancel.Token);
         await time.AdvanceUntilAsync(() => logs.Events(1116).Count == 1, Step);         // inside the 2 s boot wait
-        cancel.Cancel();
+        await cancel.CancelAsync();
         await Assert.ThatAsync(() => connecting.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         time.Advance(TimeSpan.FromSeconds(10));
         await Task.Delay(100);

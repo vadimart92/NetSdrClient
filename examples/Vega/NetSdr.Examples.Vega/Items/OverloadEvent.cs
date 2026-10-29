@@ -10,9 +10,9 @@ public readonly struct OverloadEvent : IControlItem<OverloadEvent>
     public static ushort Code => VegaProtocol.OverloadEventCode;
 
     public readonly byte Channel;
-    public readonly OverloadFlags Flags;
+    public readonly OverloadedStages Flags;
 
-    public OverloadEvent(byte channel, OverloadFlags flags)
+    public OverloadEvent(byte channel, OverloadedStages flags)
     {
         Channel = channel;
         Flags = flags;

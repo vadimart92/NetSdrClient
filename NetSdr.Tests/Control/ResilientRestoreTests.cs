@@ -135,7 +135,7 @@ public class ResilientRestoreTests
         {
             try
             { _ = client!.GetAsync<InterfaceVersion>(ct); }
-            catch (InvalidOperationException) { }                       // swallowed: the client still gives up
+            catch (InvalidOperationException) { /* swallowed: the client still gives up */ }
             return Task.CompletedTask;
         }));
         client = started.Client;

@@ -684,7 +684,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
         {
             try
             {
-                input.Complete();
+                await input.CompleteAsync().ConfigureAwait(false);
             }
             catch (Exception)
             {

@@ -78,7 +78,7 @@ public sealed partial class ResilientControlClient
         {
             // Step 2. Stops every wait on the lifetime token: the backoff, the connection attempt, the 1 s floor, and
             // the queued commands and waits for a connection, which end with ObjectDisposedException.
-            _lifetime.Cancel();
+            await _lifetime.CancelAsync().ConfigureAwait(false);
 
             // Step 3. A request in flight on either fails, and its caller sees ObjectDisposedException.
             await link.Client.DisposeAsync().ConfigureAwait(false);
@@ -121,12 +121,11 @@ public sealed partial class ResilientControlClient
     private async Task SuperviseAsync(Link link)
     {
         ReconnectState? state = null;
-        bool watching = false;
+        bool watching = true;
         try
         {
             while (true)
             {
-                watching = true;
                 CancellationToken wake = CurrentWake();
                 await WatchAsync(link, wake).ConfigureAwait(false);
                 watching = false;
@@ -187,6 +186,7 @@ public sealed partial class ResilientControlClient
 
                 // The loss is over: a later give-up belongs to the next loss or to the heartbeat, not to this one.
                 state = null;
+                watching = true;
             }
         }
         catch (Exception) when (_lifetime.IsCancellationRequested)
@@ -341,7 +341,7 @@ public sealed partial class ResilientControlClient
 
         // A non-blocking try never overtakes a queued command, and fails while a request is in flight or unanswered:
         // checking and taking the line is one atomic step.
-        if (!link.Wire.Wait(0))
+        if (!await link.Wire.WaitAsync(0).ConfigureAwait(false))
         {
             await Task.WhenAny(completion, Task.Delay(interval, _time, stop)).ConfigureAwait(false);
             return;

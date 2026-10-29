@@ -417,7 +417,7 @@ public class TestServerControlTests
     {
         await using var server = new NetSdrTestServer();
         await server.StartAsync();
-        await server.DisconnectClientAsync();
+        await Assert.ThatAsync(() => server.DisconnectClientAsync(), Throws.Nothing);
     }
 
     [Test]

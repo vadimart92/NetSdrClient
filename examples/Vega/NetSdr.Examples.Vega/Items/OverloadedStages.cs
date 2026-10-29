@@ -2,7 +2,7 @@ namespace NetSdr.Examples.Vega.Items;
 
 /// <summary>Which stages of a channel are overloaded.</summary>
 [Flags]
-public enum OverloadFlags : byte
+public enum OverloadedStages : byte
 {
     None = 0,
     Adc = 1,

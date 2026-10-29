@@ -12,4 +12,4 @@ public abstract record VegaEvent;
 public sealed record TemperatureReport(TemperatureSensor Sensor, double Celsius, byte? Status = null) : VegaEvent;
 
 /// <summary>A channel is overloaded.</summary>
-public sealed record OverloadDetected(byte Channel, OverloadFlags Flags) : VegaEvent;
+public sealed record OverloadDetected(byte Channel, OverloadedStages Flags) : VegaEvent;

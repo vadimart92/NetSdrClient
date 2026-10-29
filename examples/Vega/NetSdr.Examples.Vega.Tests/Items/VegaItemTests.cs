@@ -46,7 +46,7 @@ public class VegaItemTests
     [Test]
     public void OverloadEvent_Frame() =>
         Assert.That(
-            ControlFrames.Reply(ReplyType.Unsolicited, new OverloadEvent(1, OverloadFlags.Adc | OverloadFlags.Rf)),
+            ControlFrames.Reply(ReplyType.Unsolicited, new OverloadEvent(1, OverloadedStages.Adc | OverloadedStages.Rf)),
             Is.EqualTo(Hex.Parse("06 20 04 80 01 03")));
 
     [Test]

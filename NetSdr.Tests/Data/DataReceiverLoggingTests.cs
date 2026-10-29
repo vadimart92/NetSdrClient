@@ -27,7 +27,10 @@ public class DataReceiverLoggingTests
     private static Task CheckedAsync(CountingTimeProvider clock, int checks) =>
         Eventually.ThatAsync(() => clock.TimestampReaders.Count(n => n == ReceiveThread) == checks);
 
-    private static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples) { }
+    private static void Ignore(in DataPacketInfo info, ReadOnlySpan<byte> samples)
+    {
+        // These tests look at the log, not at the packets.
+    }
 
     [Test]
     public async Task Summary_CleanInterval_Debug1201()
@@ -185,7 +188,9 @@ public class DataReceiverLoggingTests
 
     [Test]
     public void StatisticsLogInterval_Infinite_Accepted() =>
-        new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = Timeout.InfiniteTimeSpan }).Dispose();
+        Assert.That(
+            () => new NetSdrDataReceiver(Ignore, new DataReceiverOptions { StatisticsLogInterval = Timeout.InfiniteTimeSpan }).Dispose(),
+            Throws.Nothing);
 
     [Test]
     public async Task Dispose_FromHandler_StoppedLoggedLast_WithThatHandlersError()
@@ -205,7 +210,7 @@ public class DataReceiverLoggingTests
         c.Dispose();                                           // joins the receive thread: all it logged is collected
         var stopped = logs.Events(1203).Sole();
         Assert.That((stopped.Value("Received"), stopped.Value("HandlerErrors")), Is.EqualTo(("256", "1")));
-        Assert.That(logs.Collector.GetSnapshot().Last().Id.Id, Is.EqualTo(1203));
+        Assert.That(logs.Collector.GetSnapshot()[^1].Id.Id, Is.EqualTo(1203));
         Assert.That(logs.Events(1201).Concat(logs.Events(1202)), Is.Empty);
     }
 

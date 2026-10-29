@@ -42,7 +42,7 @@ public class ResilientTimeoutTests
             using var cancelA = new CancellationTokenSource();
             var a = client.GetAsync<ProductId>(cancelA.Token);
             await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == ProductId.Code));
-            cancelA.Cancel();                                                         // A's request stays on the line
+            await cancelA.CancelAsync();                                                         // A's request stays on the line
             await Assert.ThatAsync(() => a.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
             await Assert.ThatAsync(() => client.GetAsync<InterfaceVersion>().WaitAsync(Limits.Test), Throws.TypeOf<TimeoutException>());
             await Eventually.ThatAsync(() => logs.Events(1108).Count == 1);           // A's late reply settled the line
@@ -70,7 +70,7 @@ public class ResilientTimeoutTests
             switch (where)
             {
                 case "before the call":
-                    cancel.Cancel();
+                    await cancel.CancelAsync();
                     break;
                 case "on admission":                                                  // A holds admission until its late reply
                     _ = client.GetAsync<ProductId>();
@@ -81,7 +81,7 @@ public class ResilientTimeoutTests
                     {
                         var a = client.GetAsync<ProductId>(cancelA.Token);
                         await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == ProductId.Code));
-                        cancelA.Cancel();
+                        await cancelA.CancelAsync();
                         await Assert.ThatAsync(() => a.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
                     }
 
@@ -98,7 +98,7 @@ public class ResilientTimeoutTests
             if (!cancel.IsCancellationRequested)
             {
                 await Task.Delay(100);
-                cancel.Cancel();
+                await cancel.CancelAsync();
             }
 
             await Assert.ThatAsync(() => b.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
@@ -121,7 +121,7 @@ public class ResilientTimeoutTests
             using var cancel = new CancellationTokenSource();
             var call = client.GetAsync<ProductId>(cancel.Token);
             await device.ReadRequestAsync();                                          // written, and never answered
-            cancel.Cancel();
+            await cancel.CancelAsync();
             // The client's clock stands still, so returning at all proves the call waited for nothing on it: neither the
             // response timeout nor the late reply.
             await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
@@ -140,7 +140,7 @@ public class ResilientTimeoutTests
             using var cancel = new CancellationTokenSource();
             var first = client.SetAsync(new AfGain(0, 1), cancel.Token);
             await Eventually.ThatAsync(() => server.Received.Any(r => r.Code == AfGain.Code));
-            cancel.Cancel();
+            await cancel.CancelAsync();
             await Assert.ThatAsync(() => first.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
             Assert.That((await client.SetAsync(new AfGain(0, 2)).WaitAsync(Limits.Test)).Level, Is.EqualTo(2));
             await Eventually.ThatAsync(() => logs.Events(1108).Count == 1);

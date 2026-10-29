@@ -26,11 +26,11 @@ public class VegaEventTests
         await using var _ = emulator;
         await using var __ = vega;
         await emulator.SendTemperatureAsync(TemperatureSensor.Board, 36.6);
-        await emulator.SendOverloadAsync(1, OverloadFlags.Rf);
+        await emulator.SendOverloadAsync(1, OverloadedStages.Rf);
         byte? status = firmware == VegaFirmware.V2 ? (byte)0 : null;
         Assert.That(
             await TakeAsync(vega, 2),
-            Is.EqualTo(new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6, status), new OverloadDetected(1, OverloadFlags.Rf) }));
+            Is.EqualTo(new VegaEvent[] { new TemperatureReport(TemperatureSensor.Board, 36.6, status), new OverloadDetected(1, OverloadedStages.Rf) }));
     }
 
     [Test]
@@ -41,11 +41,11 @@ public class VegaEventTests
         await using var __ = vega;
         emulator.Server.OnRequest<BoardTemperatureV2>(r =>
         {
-            emulator.SendOverloadAsync(0, OverloadFlags.Adc).GetAwaiter().GetResult();
+            emulator.SendOverloadAsync(0, OverloadedStages.Adc).GetAwaiter().GetResult();
             return ControlReply.Item(BoardTemperatureV2.FromCelsius(r.Key<TemperatureSensor>(), 30));
         });
         Assert.That(await vega.GetTemperatureAsync(TemperatureSensor.Board), Is.EqualTo(30.0));
-        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(0, OverloadFlags.Adc) }));
+        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(0, OverloadedStages.Adc) }));
     }
 
     [Test]
@@ -56,7 +56,7 @@ public class VegaEventTests
         await using var __ = vega;
         await emulator.Server.SendUnsolicitedAsync(VegaProtocol.BoardTemperatureCode, new byte[] { 1 });
         await emulator.Server.SendUnsolicitedAsync(0x9999, new byte[] { 1, 2 });
-        await emulator.SendOverloadAsync(2, OverloadFlags.Adc);
-        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(2, OverloadFlags.Adc) }));
+        await emulator.SendOverloadAsync(2, OverloadedStages.Adc);
+        Assert.That(await TakeAsync(vega, 1), Is.EqualTo(new VegaEvent[] { new OverloadDetected(2, OverloadedStages.Adc) }));
     }
 }

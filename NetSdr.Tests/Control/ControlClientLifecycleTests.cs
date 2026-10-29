@@ -54,7 +54,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var call = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => call.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         Assert.That(device.Client.IsConnected, Is.True);
     }
@@ -66,7 +66,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
 
         var next = device.Client.GetAsync<InterfaceVersion>();
@@ -173,7 +173,7 @@ public class ControlClientLifecycleTests
         await device.ReadRequestAsync();
         using var cts = new CancellationTokenSource();
         var queued = device.Client.SetAsync(new RfGain(0, -20), cts.Token);
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => queued.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         Assert.That(device.Client.IsConnected, Is.True);
 
@@ -190,7 +190,7 @@ public class ControlClientLifecycleTests
     {
         await using var device = PipeDevice.Create();
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => device.Client.GetAsync<ProductId>(cts.Token), Throws.InstanceOf<OperationCanceledException>());
 
         var next = device.Client.GetAsync<InterfaceVersion>();
@@ -208,7 +208,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
 
         // The protocol cannot tell the cancelled request's late reply from this request's own, so the first one
@@ -234,7 +234,7 @@ public class ControlClientLifecycleTests
         }
         else
         {
-            cts.Cancel();
+            await cts.CancelAsync();
             await Assert.ThatAsync(() => dropped.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         }
 
@@ -258,7 +258,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
 
         var version = device.Client.GetAsync<InterfaceVersion>();
@@ -284,7 +284,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         await device.SendAsync(ProductReply);
         await device.Client.Unsolicited.ReadAsync().AsTask().WaitAsync(Limits.Test);
@@ -303,7 +303,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
 
         await device.SendAsync("02 00");
@@ -324,7 +324,7 @@ public class ControlClientLifecycleTests
         using var cts = new CancellationTokenSource();
         var abandoned = device.Client.GetAsync<ProductId>(cts.Token);
         await device.ReadRequestAsync();
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => abandoned.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
 
         var rejected = device.Client.GetAsync<InterfaceVersion>();

@@ -144,3 +144,25 @@ dotnet_naming_rule.members_pascal.symbols = members
 dotnet_naming_rule.members_pascal.style = pascal
 dotnet_naming_rule.members_pascal.severity = warning
 dotnet_naming_symbols.members.applicable_kinds = property,method,event
+
+# Analyzer rules that contradict deliberate choices of this codebase
+# S3236: ThrowIfNull(options.LoggerFactory, nameof(options)) names the argument the caller passed, not the member.
+dotnet_diagnostic.S3236.severity = none
+# S8949: Task.Run, waits and writes take no token where they must not be cancelled: a write never stops mid-frame.
+dotnet_diagnostic.S8949.severity = none
+# RCS1075: every catch that swallows on shutdown says why in a comment; slopwatch (SW003) tracks those blocks.
+dotnet_diagnostic.RCS1075.severity = none
+# S3358: a chained ternary picks one message out of several and reads like a table.
+dotnet_diagnostic.S3358.severity = none
+# RCS1194: the exceptions carry protocol data (the NAKed item, the identity); the parameterless constructors would lose it.
+dotnet_diagnostic.RCS1194.severity = none
+# S3871: private exceptions end an attempt series inside one type and never leave it.
+dotnet_diagnostic.S3871.severity = none
+# S2930: a CancellationTokenSource without a timer holds nothing to release, and its token is still read after shutdown.
+dotnet_diagnostic.S2930.severity = none
+# S2743: fires on the static abstract members of IControlItem<TSelf>, which are not fields.
+dotnet_diagnostic.S2743.severity = none
+# S3877: the static constructor of FrameHeader refuses a big-endian platform on purpose.
+dotnet_diagnostic.S3877.severity = none
+# S1215: a test forces a collection to surface unobserved task exceptions.
+dotnet_diagnostic.S1215.severity = none
