@@ -7,15 +7,15 @@ using NetSdr.Testing;
 
 namespace NetSdr.Tests.Testing;
 
-public class ServiceServerTests
+public class SupervisionServiceTests
 {
     private static readonly TimeSpan BootTime = TimeSpan.FromMilliseconds(300);
 
     /// <summary>A receiver and its service, both started.</summary>
-    private static async Task<(NetSdrTestServer Receiver, NetSdrServiceServer Service)> StartAsync(Action<NetSdrServiceServer>? setup = null)
+    private static async Task<(NetSdrTestServer Receiver, SupervisionService Service)> StartAsync(Action<SupervisionService>? setup = null)
     {
         var receiver = new NetSdrTestServer();
-        var service = new NetSdrServiceServer(receiver);
+        var service = new SupervisionService(receiver);
         setup?.Invoke(service);
         await receiver.StartAsync();
         await service.StartAsync();
@@ -49,6 +49,39 @@ public class ServiceServerTests
         Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":1}"""));
         Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":2}"""));
         Assert.That(service.Requests, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task Request_EndsWhereItsObjectCloses_WithoutALineBreak()
+    {
+        var (receiver, service) = await StartAsync(s => s.On("echo", ctx => ctx.ReplyAsync(new { N = ctx.Request.Get<int>("n") })));
+        await using var _ = receiver;
+        await using var __ = service;
+        await using var line = await LineClient.ConnectAsync(service.Port);
+
+        await line.SendRawAsync("""{"cmd":"echo","n":1}""");
+        Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":1}"""));
+        await line.SendRawAsync("""{"cmd":"echo","n":2}{"cmd":"echo","n":3} {"cmd":"echo","n":4}""");
+        Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":2}"""));
+        Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":3}"""));
+        Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"n":4}"""));
+        Assert.That(service.Requests.Select(r => r.Line).First(), Is.EqualTo("""{"cmd":"echo","n":1}"""));
+    }
+
+    [Test]
+    public async Task Request_SplitAcrossWrites_IsReadWhole_BracesInStringsDoNotCount()
+    {
+        var (receiver, service) = await StartAsync(s => s.On("echo", ctx => ctx.ReplyAsync(new { Text = ctx.Request.Get<string>("text") })));
+        await using var _ = receiver;
+        await using var __ = service;
+        await using var line = await LineClient.ConnectAsync(service.Port);
+
+        await line.SendRawAsync("""{"cmd":"echo","text":"}{","nested":{"a":[1,""");
+        await Task.Delay(50);
+        Assert.That(service.Requests, Is.Empty);    // still open
+        await line.SendRawAsync("""2]}}""");
+        Assert.That(await line.ReadLineAsync(), Is.EqualTo("""{"text":"}{"}"""));
+        Assert.That(service.Requests.Sole().Json?.GetProperty("nested").GetProperty("a").GetArrayLength(), Is.EqualTo(2));
     }
 
     [Test]
@@ -264,7 +297,7 @@ public class ServiceServerTests
         var receiver = new NetSdrTestServer();
         await using var _ = receiver;
         await receiver.StartAsync();
-        var service = new NetSdrServiceServer(receiver);
+        var service = new SupervisionService(receiver);
         await service.StartAsync();
         Task<bool> boot = service.RebootAsync(TimeSpan.FromMinutes(1));
         await Eventually.ThatAsync(() => receiver.Availability == ServerAvailability.CloseOnAccept);

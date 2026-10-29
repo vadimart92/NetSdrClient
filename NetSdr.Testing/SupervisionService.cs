@@ -9,16 +9,17 @@ namespace NetSdr.Testing;
 
 /// <summary>
 /// The service channel of an emulated receiver, as a microcontroller next to it would offer: a TCP server on loopback
-/// that reads one JSON object per line (<c>\n</c>, or <c>\r\n</c>) and runs the handler set for its command, the string
-/// in <see cref="CommandField"/>. The handler decides everything else: what to write back and when, whether to reboot
+/// that reads JSON objects one after another and runs the handler set for its command, the string in
+/// <see cref="CommandField"/>. A request ends where its object closes: no line break is needed after it, and whitespace
+/// between requests is skipped. Something that is not JSON has no end of its own, so it ends at the next line break. The handler decides everything else: what to write back and when, whether to reboot
 /// the receiver (<see cref="RebootAsync"/>), change <see cref="NetSdrTestServer.Availability"/>, or break the
 /// connection. A connection may send any number of requests; they are handled one at a time, in order, and several
 /// connections are served at once. The service does not own <see cref="Receiver"/>; dispose both.
 /// </summary>
-public sealed class NetSdrServiceServer : IAsyncDisposable
+public sealed class SupervisionService : IAsyncDisposable
 {
-    // A line this long is not a request: the connection is dropped instead of buffering without end.
-    private const int MaxLineLength = 64 * 1024;
+    // A request this long is not one: the connection is dropped instead of buffering without end.
+    private const int MaxRequestLength = 64 * 1024;
 
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -40,7 +41,7 @@ public sealed class NetSdrServiceServer : IAsyncDisposable
     private Task? _disposal;
 
     /// <param name="receiver">The emulated receiver the service controls.</param>
-    public NetSdrServiceServer(NetSdrTestServer receiver)
+    public SupervisionService(NetSdrTestServer receiver)
     {
         ArgumentNullException.ThrowIfNull(receiver);
         Receiver = receiver;
@@ -74,7 +75,7 @@ public sealed class NetSdrServiceServer : IAsyncDisposable
         }
     }
 
-    /// <summary>A snapshot of every line received so far, oldest first, whether it was a valid request or not. Blank lines are skipped.</summary>
+    /// <summary>A snapshot of every request received so far, oldest first, whether it was valid or not. Whitespace between requests is skipped.</summary>
     public IReadOnlyList<ServiceRequest> Requests
     {
         get
@@ -153,7 +154,7 @@ public sealed class NetSdrServiceServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sets the handler for a request without a handler of its own: a command nobody handles, and a line that is not a
+    /// Sets the handler for a request without a handler of its own: a command nobody handles, and a request that is not a
     /// JSON object or has no command (<see cref="ServiceRequest.Command"/> is null then). By default the first is
     /// answered with <c>{"error":"unknown command"}</c> and the second with <c>{"error":"bad request"}</c>.
     /// </summary>
@@ -363,26 +364,22 @@ public sealed class NetSdrServiceServer : IAsyncDisposable
             {
                 ReadResult result = await reader.ReadAsync(connection.Token).ConfigureAwait(false);
                 ReadOnlySequence<byte> buffer = result.Buffer;
-                while (TryTakeLine(ref buffer, out string line))
+                while (TryTakeRequest(ref buffer, out string text))
                 {
-                    if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        await HandleLineAsync(connection, line).ConfigureAwait(false);
-                    }
-
+                    await HandleRequestAsync(connection, text).ConfigureAwait(false);
                     if (connection.IsClosed)
                     {
                         return;
                     }
                 }
 
-                if (buffer.Length > MaxLineLength)
+                if (buffer.Length > MaxRequestLength)
                 {
                     return;
                 }
 
-                // Everything buffered has been examined, so the next read waits for more bytes. A last line without a
-                // line break is not a request: a client that leaves in the middle of a line has not sent it.
+                // Everything buffered has been examined, so the next read waits for more bytes. An object that is not
+                // closed is not a request: a client that leaves in the middle of one has not sent it.
                 reader.AdvanceTo(buffer.Start, buffer.End);
                 if (result.IsCompleted)
                 {
@@ -396,28 +393,80 @@ public sealed class NetSdrServiceServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Splits the next line off <paramref name="buffer"/>, without its <c>\n</c> or <c>\r\n</c>.</summary>
-    private static bool TryTakeLine(ref ReadOnlySequence<byte> buffer, out string line)
+    /// <summary>
+    /// Splits the next request off <paramref name="buffer"/>, skipping the whitespace before it: a JSON object or array
+    /// up to where it closes, or, for anything else, up to the next line break, without it.
+    /// </summary>
+    private static bool TryTakeRequest(ref ReadOnlySequence<byte> buffer, out string text)
     {
-        SequencePosition? end = buffer.PositionOf((byte)'\n');
-        if (end is null)
+        text = string.Empty;
+        buffer = SkipWhitespace(buffer);
+        if (buffer.IsEmpty)
         {
-            line = string.Empty;
             return false;
         }
 
-        line = Encoding.UTF8.GetString(buffer.Slice(0, end.Value)).TrimEnd('\r');
-        buffer = buffer.Slice(buffer.GetPosition(1, end.Value));
+        byte first = buffer.FirstSpan[0];
+        if (first is (byte)'{' or (byte)'[' && TryFindValueEnd(buffer, out SequencePosition? valueEnd))
+        {
+            if (valueEnd is null)
+            {
+                return false;
+            }
+
+            text = Encoding.UTF8.GetString(buffer.Slice(0, valueEnd.Value));
+            buffer = buffer.Slice(valueEnd.Value);
+            return true;
+        }
+
+        SequencePosition? lineEnd = buffer.PositionOf((byte)'\n');
+        if (lineEnd is null)
+        {
+            return false;
+        }
+
+        text = Encoding.UTF8.GetString(buffer.Slice(0, lineEnd.Value)).TrimEnd('\r');
+        buffer = buffer.Slice(buffer.GetPosition(1, lineEnd.Value));
         return true;
     }
 
-    private async Task HandleLineAsync(ServiceConnection connection, string line)
+    /// <summary>
+    /// Finds where the object or array at the start of <paramref name="buffer"/> closes; <paramref name="end"/> is null
+    /// while it is still open. False when it is not valid JSON, so it has no end of its own.
+    /// </summary>
+    private static bool TryFindValueEnd(ReadOnlySequence<byte> buffer, out SequencePosition? end)
+    {
+        end = null;
+        var reader = new Utf8JsonReader(buffer, isFinalBlock: false, state: default);
+        try
+        {
+            if (reader.Read() && reader.TrySkip())
+            {
+                end = reader.Position;
+            }
+
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static ReadOnlySequence<byte> SkipWhitespace(ReadOnlySequence<byte> buffer)
+    {
+        var reader = new SequenceReader<byte>(buffer);
+        reader.AdvancePastAny((byte)' ', (byte)'\t', (byte)'\r', (byte)'\n');
+        return buffer.Slice(reader.Position);
+    }
+
+    private async Task HandleRequestAsync(ServiceConnection connection, string text)
     {
         ServiceRequest request;
         Func<ServiceContext, Task>? handler;
         lock (_sync)
         {
-            request = ServiceRequest.Parse(line, _commandField);
+            request = ServiceRequest.Parse(text, _commandField);
             _requests.Add(request);
             if (request.Command is null || !_handlers.TryGetValue(request.Command, out handler))
             {

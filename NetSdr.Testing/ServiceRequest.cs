@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace NetSdr.Testing;
 
-/// <summary>One line a client sent to a <see cref="NetSdrServiceServer"/>, as read and, where it could be, parsed.</summary>
+/// <summary>One request a client sent to a <see cref="SupervisionService"/>, as read and, where it could be, parsed.</summary>
 public sealed class ServiceRequest
 {
     private ServiceRequest(string line, JsonElement? json, string? command)
@@ -13,14 +13,17 @@ public sealed class ServiceRequest
         Command = command;
     }
 
-    /// <summary>The line as received, without the line break.</summary>
+    /// <summary>
+    /// The request as received: the JSON object from its opening to its closing brace, or, for something that is not
+    /// JSON, the line without its line break.
+    /// </summary>
     public string Line { get; }
 
-    /// <summary>The parsed object; <see langword="null"/> when the line is not a JSON object.</summary>
+    /// <summary>The parsed object; <see langword="null"/> when the request is not a JSON object.</summary>
     public JsonElement? Json { get; }
 
     /// <summary>
-    /// The string in the field <see cref="NetSdrServiceServer.CommandField"/>; <see langword="null"/> when the line is
+    /// The string in the field <see cref="SupervisionService.CommandField"/>; <see langword="null"/> when the request is
     /// not a JSON object or that field is missing or not a string.
     /// </summary>
     public string? Command { get; }
@@ -35,7 +38,7 @@ public sealed class ServiceRequest
     /// <exception cref="JsonException">The value cannot be read as <typeparamref name="T"/>.</exception>
     public T? Get<T>(string field) =>
         Json is { } json && json.TryGetProperty(field, out JsonElement value)
-            ? value.Deserialize<T>(NetSdrServiceServer.JsonOptions)
+            ? value.Deserialize<T>(SupervisionService.JsonOptions)
             : default;
 
     /// <summary>Reads the field <paramref name="field"/> as <typeparamref name="T"/>; false when it is missing, null or of another type.</summary>
@@ -49,7 +52,7 @@ public sealed class ServiceRequest
 
         try
         {
-            value = element.Deserialize<T>(NetSdrServiceServer.JsonOptions);
+            value = element.Deserialize<T>(SupervisionService.JsonOptions);
             return value is not null;
         }
         catch (JsonException)
@@ -58,7 +61,7 @@ public sealed class ServiceRequest
         }
     }
 
-    /// <summary>Parses a line; a line that is not a JSON object is kept with <see cref="Json"/> null.</summary>
+    /// <summary>Parses a request; one that is not a JSON object is kept with <see cref="Json"/> null.</summary>
     internal static ServiceRequest Parse(string line, string commandField)
     {
         JsonElement root;

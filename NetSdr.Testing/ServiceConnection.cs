@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace NetSdr.Testing;
 
-/// <summary>One accepted client of a <see cref="NetSdrServiceServer"/>: its stream, a token that ends with it, and how it ends.</summary>
+/// <summary>One accepted client of a <see cref="SupervisionService"/>: its stream, a token that ends with it, and how it ends.</summary>
 internal sealed class ServiceConnection : IDisposable
 {
     private readonly Socket _socket;

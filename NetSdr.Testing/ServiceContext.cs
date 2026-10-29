@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace NetSdr.Testing;
 
 /// <summary>
-/// What a handler of <see cref="NetSdrServiceServer"/> gets for one request: the request, the receiver behind the
+/// What a handler of <see cref="SupervisionService"/> gets for one request: the request, the receiver behind the
 /// service, and the connection it came on. Nothing is written unless the handler writes it, and the order of the
 /// handler is the order on the wire: reply first and reboot after, or the other way round.
 /// </summary>
@@ -13,7 +13,7 @@ public sealed class ServiceContext
 {
     private readonly ServiceConnection _connection;
 
-    internal ServiceContext(NetSdrServiceServer service, ServiceRequest request, ServiceConnection connection)
+    internal ServiceContext(SupervisionService service, ServiceRequest request, ServiceConnection connection)
     {
         Service = service;
         Request = request;
@@ -22,7 +22,7 @@ public sealed class ServiceContext
 
     public ServiceRequest Request { get; }
 
-    public NetSdrServiceServer Service { get; }
+    public SupervisionService Service { get; }
 
     /// <summary>The emulated receiver the service controls.</summary>
     public NetSdrTestServer Receiver => Service.Receiver;
@@ -41,7 +41,7 @@ public sealed class ServiceContext
     /// <exception cref="ObjectDisposedException">The connection has been closed.</exception>
     public Task ReplyAsync<T>(T value)
     {
-        byte[] json = JsonSerializer.SerializeToUtf8Bytes(value, NetSdrServiceServer.JsonOptions);
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(value, SupervisionService.JsonOptions);
         var line = new byte[json.Length + 1];
         json.CopyTo(line, 0);
         line[^1] = (byte)'\n';
@@ -72,7 +72,7 @@ public sealed class ServiceContext
     /// </summary>
     public void Abort() => _connection.Abort();
 
-    /// <summary>Reboots the receiver, see <see cref="NetSdrServiceServer.RebootAsync"/>.</summary>
+    /// <summary>Reboots the receiver, see <see cref="SupervisionService.RebootAsync"/>.</summary>
     public Task<bool> RebootAsync(TimeSpan bootTime, bool clearState = false, Action<NetSdrTestServer>? onBoot = null) =>
         Service.RebootAsync(bootTime, clearState, onBoot);
 }
