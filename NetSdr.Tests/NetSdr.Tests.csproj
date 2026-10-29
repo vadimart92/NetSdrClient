@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.MTP" />
+    <PackageReference Include="JunitXml.TestLogger" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.Testing" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     <PackageReference Include="NUnit" />
