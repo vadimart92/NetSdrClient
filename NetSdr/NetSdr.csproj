@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <Version>$(NetSdrPackageVersion)</Version>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="NetSdr.Tests" />
   </ItemGroup>
