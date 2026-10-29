@@ -341,7 +341,7 @@ public sealed partial class ResilientControlClient
 
         // A non-blocking try never overtakes a queued command, and fails while a request is in flight or unanswered:
         // checking and taking the line is one atomic step.
-        if (!await link.Wire.WaitAsync(0).ConfigureAwait(false))
+        if (!await link.Wire.WaitAsync(0, CancellationToken.None).ConfigureAwait(false))
         {
             await Task.WhenAny(completion, Task.Delay(interval, _time, stop)).ConfigureAwait(false);
             return;
@@ -473,13 +473,28 @@ public sealed partial class ResilientControlClient
         bool reentered = ex is FatalRestoreException;
         bool policyGaveUp = ex is RecoveryGaveUpException;
         Exception cause = reentered || policyGaveUp ? ex.InnerException! : ex;
-        var failure = new IOException(
-            reentered
-                ? $"Gave up reconnecting to {_target}: ConnectionRestored called the ResilientControlClient instead of context.Client."
-                : watching
-                    ? $"Gave up on {_target}: watching the connection failed."
-                    : $"Gave up reconnecting to {_target} after {attempts} attempt(s).",
-            cause);
+
+        // The message and the logged reason are picked together. A give-up of the recovery policy keeps the message of
+        // exhausted attempts (Ruling 6) and differs only in the logged reason.
+        string message;
+        string reason;
+        if (reentered)
+        {
+            message = $"Gave up reconnecting to {_target}: ConnectionRestored called the ResilientControlClient instead of context.Client.";
+            reason = "ConnectionRestored called the ResilientControlClient";
+        }
+        else if (watching)
+        {
+            message = $"Gave up on {_target}: watching the connection failed.";
+            reason = "heartbeat failed";
+        }
+        else
+        {
+            message = $"Gave up reconnecting to {_target} after {attempts} attempt(s).";
+            reason = policyGaveUp ? "recovery policy gave up" : "attempts exhausted";
+        }
+
+        var failure = new IOException(message, cause);
 
         // Step 3.
         TaskCompletionSource changed;
@@ -511,13 +526,7 @@ public sealed partial class ResilientControlClient
             _ = _completion.Task.Exception;
         }
 
-        ResilientClientLog.ReconnectGaveUp(
-            _logger, _target, attempts,
-            reentered ? "ConnectionRestored called the ResilientControlClient"
-                : watching ? "heartbeat failed"
-                : policyGaveUp ? "recovery policy gave up"
-                : "attempts exhausted",
-            failure);
+        ResilientClientLog.ReconnectGaveUp(_logger, _target, attempts, reason, failure);
         _lifetime.Cancel();
         _unsolicited.Writer.TryComplete();
     }

@@ -145,7 +145,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
             Socket listener = _listener!;
             listener.Listen();
-            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
+            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener), CancellationToken.None);
         }
 
         return Task.CompletedTask;
@@ -283,7 +283,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     {
         lock (_sync)
         {
-            _disposal ??= Task.Run(DisposeCoreAsync);
+            _disposal ??= Task.Run(DisposeCoreAsync, CancellationToken.None);
             return new ValueTask(_disposal);
         }
     }
@@ -302,7 +302,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
 
         // Cancel before closing anything, so the accept loop takes the failures that follow for the shutdown.
         await _lifetime.CancelAsync().ConfigureAwait(false);
-        _clientConnected.TrySetCanceled();
+        _clientConnected.TrySetCanceled(CancellationToken.None);
         listener?.Dispose();
         client?.Close();
         try
@@ -735,7 +735,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         /// <summary>Writes a whole frame. Replies and unsolicited frames both go through here, so they cannot interleave.</summary>
         public async Task WriteAsync(ReadOnlyMemory<byte> frame)
         {
-            await _writeLock.WaitAsync().ConfigureAwait(false);
+            await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
                 // Never cancelled: an interrupted write would leave half a frame on the wire. Closing the stream ends it.

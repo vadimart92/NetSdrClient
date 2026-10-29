@@ -133,7 +133,7 @@ public sealed class SupervisionService : IAsyncDisposable
             listener.Start();
             _listener = listener;
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
+            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener), CancellationToken.None);
         }
 
         return Task.CompletedTask;
@@ -191,7 +191,7 @@ public sealed class SupervisionService : IAsyncDisposable
                 return Task.FromResult(false);
             }
 
-            boot = Task.Run(() => BootAsync(bootTime, clearState, onBoot));
+            boot = Task.Run(() => BootAsync(bootTime, clearState, onBoot), CancellationToken.None);
             _boot = boot;
         }
 
@@ -203,7 +203,7 @@ public sealed class SupervisionService : IAsyncDisposable
     {
         lock (_sync)
         {
-            _disposal ??= Task.Run(DisposeCoreAsync);
+            _disposal ??= Task.Run(DisposeCoreAsync, CancellationToken.None);
             return new ValueTask(_disposal);
         }
     }
@@ -300,7 +300,7 @@ public sealed class SupervisionService : IAsyncDisposable
                 lock (_sync)
                 {
                     _serving.RemoveAll(task => task.IsCompleted);
-                    _serving.Add(Task.Run(() => ServeAsync(socket)));
+                    _serving.Add(Task.Run(() => ServeAsync(socket), CancellationToken.None));
                 }
             }
         }
