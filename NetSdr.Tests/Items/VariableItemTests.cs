@@ -27,7 +27,10 @@ public class VariableItemTests
     {
         Assert.That(ControlFrames.Decode<StatusCodes>(Hex.Parse("05 00 05 00 0B")).Codes, Is.EqualTo(new[] { StatusCodes.Idle }));
         Assert.That(ControlFrames.Decode<StatusCodes>(Hex.Parse("05 20 05 00 20")).Codes, Is.EqualTo(new[] { StatusCodes.AdOverload }));
-        Assert.That(() => ItemCodec.Write(new StatusCodes([StatusCodes.Idle])), Throws.TypeOf<ArgumentException>());
+        Assert.That(
+            ControlFrames.Reply(ReplyType.Unsolicited, new StatusCodes([StatusCodes.Idle, StatusCodes.AdOverload])),
+            Is.EqualTo(Hex.Parse("06 20 05 00 0B 20")));
+        Assert.That(ItemCodec.Write(default(StatusCodes)), Is.Empty);
     }
 
     [Test]
@@ -37,6 +40,19 @@ public class VariableItemTests
             "18 00 0C 00 01 02 09 53 74 64 20 46 50 47 41 20 43 6F 6E 66 69 67 20 00"));
         Assert.That((config.Selected, config.Id, config.Revision, config.Description), Is.EqualTo((1, 2, 9, "Std FPGA Config ")));
         Assert.That(ControlFrames.Request(RequestType.Set, new FpgaConfiguration(2)), Is.EqualTo(Hex.Parse("05 00 0C 00 02")));
+        Assert.That(ItemCodec.Write(default(FpgaConfiguration)), Is.EqualTo(Hex.Parse("00")));
+    }
+
+    [Test]
+    public void FpgaConfiguration_FullForm_WritesTheReply()
+    {
+        const string frame = "18 00 0C 00 01 02 09 53 74 64 20 46 50 47 41 20 43 6F 6E 66 69 67 20 00";
+        Assert.That(
+            ControlFrames.Reply(ReplyType.Response, new FpgaConfiguration(1, 2, 9, "Std FPGA Config ")),
+            Is.EqualTo(Hex.Parse(frame)));
+        Assert.That(ControlFrames.Reply(ReplyType.Response, ControlFrames.Decode<FpgaConfiguration>(Hex.Parse(frame))), Is.EqualTo(Hex.Parse(frame)));
+        Assert.That(ItemCodec.Write(new FpgaConfiguration(1, 2, 9, "")), Is.EqualTo(Hex.Parse("01 02 09 00")));
+        Assert.That(() => ItemCodec.Write(new FpgaConfiguration(1, 2, 9, "Вега")), Throws.TypeOf<ArgumentException>());
     }
 
     private const string RangesFrame =
@@ -51,6 +67,21 @@ public class VariableItemTests
         Assert.That(
             ranges.Ranges,
             Is.EqualTo(new[] { new FrequencyRange(100_000, 34_000_000, 0), new FrequencyRange(140_000_000, 150_000_000, 160_000_000) }));
+    }
+
+    [Test]
+    public void FrequencyRanges_Write_MatchesTheSpecFrame()
+    {
+        var ranges = new FrequencyRanges(0, [new FrequencyRange(100_000, 34_000_000, 0), new FrequencyRange(140_000_000, 150_000_000, 160_000_000)]);
+        Assert.That(ControlFrames.Reply(ReplyType.RangeResponse, ranges), Is.EqualTo(Hex.Parse(RangesFrame)));
+        Assert.That(ItemCodec.Write(default(FrequencyRanges)), Is.EqualTo(Hex.Parse("00 00")));
+    }
+
+    [Test]
+    public void FrequencyRanges_Write_RejectsWhatTheWireCannotHold()
+    {
+        Assert.That(() => ItemCodec.Write(new FrequencyRanges(0, new FrequencyRange[256])), Throws.TypeOf<ArgumentOutOfRangeException>());
+        Assert.That(() => ItemCodec.Write(new FrequencyRanges(0, [new FrequencyRange(0, UInt40.MaxValue + 1, 0)])), Throws.TypeOf<OverflowException>());
     }
 
     [Test]

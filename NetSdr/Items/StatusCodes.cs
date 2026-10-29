@@ -2,8 +2,7 @@ namespace NetSdr.Items;
 
 /// <summary>
 /// Status or error codes, item 0x0005. The payload is a list of one-byte codes; the device sends this item
-/// unsolicited when its state changes. The item is read-only: <c>Write</c> is not overridden, so writing it
-/// throws <see cref="ArgumentException"/>.
+/// unsolicited when its state changes. Written too, so an emulated device can answer with it or send it.
 /// </summary>
 public readonly struct StatusCodes : IControlItem<StatusCodes>
 {
@@ -28,6 +27,12 @@ public readonly struct StatusCodes : IControlItem<StatusCodes>
 
     /// <summary>Every byte of the payload, in order; empty for <c>default</c>.</summary>
     public byte[] Codes => _codes ?? [];
+
+    /// <summary>One byte per code.</summary>
+    public static int GetSize(in StatusCodes item) => item.Codes.Length;
+
+    /// <summary>Writes every code as one byte, in order.</summary>
+    public static void Write(in StatusCodes item, Span<byte> destination) => item.Codes.CopyTo(destination);
 
     /// <summary>Reads every payload byte as a code.</summary>
     public static StatusCodes Read(ReadOnlySpan<byte> source) => new(source.ToArray());
