@@ -32,12 +32,12 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     private readonly List<Exception> _handlerErrors = [];
     private Connection? _client;
 
-    private TcpListener? _listener;
+    private Socket? _listener;          // bound by ReservePort or StartAsync, listening only after StartAsync
     private Task? _acceptLoop;
     private Task? _disposal;
     private volatile ServerAvailability _availability;    // read without the lock by the accept loop and every frame
 
-    /// <summary>The TCP port the server listens on; 0 until <see cref="StartAsync"/> has been called.</summary>
+    /// <summary>The TCP port the server listens on; 0 until <see cref="ReservePort"/> or <see cref="StartAsync"/> has been called.</summary>
     public int Port { get; private set; }
 
     /// <summary>Completes when the first client connects, and is cancelled if the server is disposed before that.</summary>
@@ -87,9 +87,41 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Starts listening on loopback.</summary>
-    /// <param name="port">The port to listen on; 0 lets the system choose, see <see cref="Port"/>.</param>
+    /// <summary>
+    /// Takes a port on loopback without listening on it, so the client can be told the port before the server starts:
+    /// until <see cref="StartAsync"/> a connection to it is refused, as with a device that is switched off. No other
+    /// socket can take the port meanwhile; <see cref="DisposeAsync"/> releases it.
+    /// </summary>
+    /// <param name="port">The port to take; 0 lets the system choose.</param>
+    /// <returns>The port taken, also in <see cref="Port"/>.</returns>
+    /// <exception cref="InvalidOperationException">A port has already been reserved, or the server has been started.</exception>
+    /// <exception cref="SocketException">The port is in use.</exception>
+    /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
+    public int ReservePort(int port = 0)
+    {
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposal is not null, this);
+            if (_listener is not null)
+            {
+                throw new InvalidOperationException(_acceptLoop is null
+                    ? "A port has already been reserved."
+                    : "The server has already been started.");
+            }
+
+            Bind(port);
+            return Port;
+        }
+    }
+
+    /// <summary>Starts listening on loopback, on the port taken by <see cref="ReservePort"/> if there is one.</summary>
+    /// <param name="port">
+    /// The port to listen on; 0 lets the system choose, see <see cref="Port"/>. After <see cref="ReservePort"/> it is
+    /// 0 or the reserved port.
+    /// </param>
     /// <exception cref="InvalidOperationException">The server has already been started.</exception>
+    /// <exception cref="ArgumentException">A different port has been reserved.</exception>
+    /// <exception cref="SocketException">The port is in use.</exception>
     /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
     public Task StartAsync(int port = 0, CancellationToken ct = default)
     {
@@ -97,19 +129,44 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposal is not null, this);
-            if (_listener is not null)
+            if (_acceptLoop is not null)
             {
                 throw new InvalidOperationException("The server has already been started.");
             }
 
-            var listener = new TcpListener(IPAddress.Loopback, port);
-            listener.Start();
-            _listener = listener;
-            Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            if (_listener is null)
+            {
+                Bind(port);
+            }
+            else if (port != 0 && port != Port)
+            {
+                throw new ArgumentException($"Port {Port} has been reserved, not {port}.", nameof(port));
+            }
+
+            Socket listener = _listener!;
+            listener.Listen();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>Binds the listening socket to <paramref name="port"/> on loopback and sets <see cref="Port"/>. Call under the lock.</summary>
+    private void Bind(int port)
+    {
+        var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            listener.Bind(new IPEndPoint(IPAddress.Loopback, port));
+        }
+        catch
+        {
+            listener.Dispose();
+            throw;
+        }
+
+        _listener = listener;
+        Port = ((IPEndPoint)listener.LocalEndPoint!).Port;
     }
 
     /// <summary>
@@ -235,7 +292,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
     {
         Task? acceptLoop;
         Connection? client;
-        TcpListener? listener;
+        Socket? listener;
         lock (_sync)
         {
             acceptLoop = _acceptLoop;
@@ -246,7 +303,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         // Cancel before closing anything, so the accept loop takes the failures that follow for the shutdown.
         await _lifetime.CancelAsync().ConfigureAwait(false);
         _clientConnected.TrySetCanceled();
-        listener?.Stop();
+        listener?.Dispose();
         client?.Close();
         try
         {
@@ -271,14 +328,14 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         ThrowStreamFault();
     }
 
-    private async Task AcceptLoopAsync(TcpListener listener)
+    private async Task AcceptLoopAsync(Socket listener)
     {
         CancellationToken token = _lifetime.Token;
         try
         {
             while (true)
             {
-                Socket socket = await listener.AcceptSocketAsync(token).ConfigureAwait(false);
+                Socket socket = await listener.AcceptAsync(token).ConfigureAwait(false);
                 if (_availability == ServerAvailability.CloseOnAccept)
                 {
                     // A booting device: the connection is accepted and closed before anything is read.
