@@ -20,7 +20,8 @@ public class ResilientRebootTests
         var (server, client) = await Resilient.StartAsync(options, s =>
         {
             setup?.Invoke(s);
-            options.WithRebooter(rebooter = FakeRebooter.Booting(s, TimeSpan.FromMilliseconds(200)), options.RecoveryPolicy);
+            rebooter = FakeRebooter.Booting(s, TimeSpan.FromMilliseconds(200));
+            options.WithRebooter(rebooter, options.RecoveryPolicy);
         });
         return (server, client, rebooter);
     }
@@ -99,7 +100,7 @@ public class ResilientRebootTests
             using var cancel = new CancellationTokenSource();
             var reboot = client.RebootAsync(RebootKind.Soft, cancel.Token);
             await entered.Task.WaitAsync(Limits.Test);
-            cancel.Cancel();
+            await cancel.CancelAsync();
             await Assert.ThatAsync(() => reboot.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
             gate.SetResult();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
@@ -112,7 +113,7 @@ public class ResilientRebootTests
     public async Task RebootAsync_CommandInFlight_RetriedAfterRestore()
     {
         var logs = new FakeLoggerFactory();
-        var (server, client, rebooter) = await StartAsync(logs, o => o.ResponseTimeout = TimeSpan.FromSeconds(1),
+        var (server, client, _) = await StartAsync(logs, o => o.ResponseTimeout = TimeSpan.FromSeconds(1),
             s => s.OnRequest(AfGain.Code, Resilient.Once(ControlReply.Silent)));
         await using (server)
         await using (client)

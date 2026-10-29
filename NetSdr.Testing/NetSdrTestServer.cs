@@ -431,7 +431,7 @@ public sealed partial class NetSdrTestServer : IAsyncDisposable
         }
         finally
         {
-            reader.Complete();
+            await reader.CompleteAsync().ConfigureAwait(false);
         }
     }
 

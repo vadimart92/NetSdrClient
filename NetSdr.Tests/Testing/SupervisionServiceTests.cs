@@ -305,7 +305,7 @@ public class SupervisionServiceTests
         await service.DisposeAsync().AsTask().WaitAsync(Limits.Test);
         Assert.That(await boot.WaitAsync(Limits.Test), Is.True);
         Assert.That(receiver.Availability, Is.EqualTo(ServerAvailability.Normal));
-        Assert.That(() => service.RebootAsync(TimeSpan.Zero), Throws.TypeOf<ObjectDisposedException>());
+        await Assert.ThatAsync(() => service.RebootAsync(TimeSpan.Zero), Throws.TypeOf<ObjectDisposedException>());
     }
 
     [Test]

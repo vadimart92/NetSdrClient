@@ -102,7 +102,7 @@ internal sealed class PipeDevice : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await Client.DisposeAsync();
-        _toClient.Writer.Complete();
-        _fromClient.Reader.Complete();
+        await _toClient.Writer.CompleteAsync();
+        await _fromClient.Reader.CompleteAsync();
     }
 }

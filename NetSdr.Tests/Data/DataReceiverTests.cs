@@ -210,7 +210,7 @@ public class DataReceiverTests
         var disposed = new TaskCompletionSource();
         using var c = new PacketCollector(onPacket: r => { r.Dispose(); disposed.TrySetResult(); });
         Send(c, UdpTestSender.Datagram(0, 1028));
-        await disposed.Task.WaitAsync(Limits.Test);
+        await Assert.ThatAsync(() => disposed.Task.WaitAsync(Limits.Test), Throws.Nothing);
     }
 
     [Test]

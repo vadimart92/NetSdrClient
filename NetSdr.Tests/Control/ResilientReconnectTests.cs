@@ -68,7 +68,7 @@ public class ResilientReconnectTests
             await server.DisconnectClientAsync();
             await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
             Assert.That(client.IsConnected, Is.True);
-            Assert.That(client.LocalEndPoint!.Port, Is.Not.EqualTo(oldPort));
+            Assert.That(client.LocalEndPoint.Port, Is.Not.EqualTo(oldPort));
             Assert.That(logs.Events(1103).Sole().Level, Is.EqualTo(LogLevel.Warning));
             Assert.That((logs.Events(1105)[0].Level, logs.Events(1105)[0].Value("Attempts")), Is.EqualTo((LogLevel.Information, "1")));
             Assert.That(restored, Is.EqualTo(1));
@@ -314,7 +314,7 @@ public class ResilientReconnectTests
         Assert.That(client.LocalEndPoint!.Address, Is.EqualTo(IPAddress.Loopback));
         await server.DisconnectClientAsync();
         await Eventually.ThatAsync(() => logs.Events(1105).Count == 1);
-        Assert.That(client.LocalEndPoint!.Address, Is.EqualTo(IPAddress.Loopback));
+        Assert.That(client.LocalEndPoint.Address, Is.EqualTo(IPAddress.Loopback));
         Assert.That(client.RemoteEndPoint, Is.EqualTo(new IPEndPoint(IPAddress.Loopback, server.Port)));
         _ = DataOutputUdpAddress.For(new IPEndPoint(client.LocalEndPoint.Address, 50_001));   // what a ConnectionRestored callback builds
         await client.DisposeAsync();

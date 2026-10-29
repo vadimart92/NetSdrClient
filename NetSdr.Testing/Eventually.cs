@@ -15,6 +15,7 @@ public static class Eventually
     /// <paramref name="timeout"/> is zero, negative or <see cref="Timeout.InfiniteTimeSpan"/>: a wait in a test must end.
     /// </exception>
     /// <exception cref="TimeoutException">The condition did not become true within <paramref name="timeout"/>.</exception>
+    [AssertionMethod]
     public static async Task ThatAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(condition);

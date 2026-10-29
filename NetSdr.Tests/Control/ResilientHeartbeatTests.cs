@@ -32,10 +32,11 @@ public class ResilientHeartbeatTests
     {
         try
         {
-            for (int n = 1; ; n++)
+            int read = 0;
+            while (true)
             {
                 requests.Enqueue(await device.ReadRequestAsync());
-                if (n <= answered)
+                if (++read <= answered)
                     await device.SendAsync(Resilient.Nak);
             }
         }
@@ -170,7 +171,7 @@ public class ResilientHeartbeatTests
             .StartAsync(FakeHeartbeat(logs, time));
         await using (client)
         {
-            time.Armed = true;                                                        // the first wait exists already
+            time.Arm();                                                        // the first wait exists already
             fake.Advance(Interval);                                                   // one probe, its NAK, then the next wait fails
             var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.InnerException, Is.TypeOf<InvalidOperationException>());
@@ -196,7 +197,7 @@ public class ResilientHeartbeatTests
             device.CloseRemote();
             await fake.AdvanceUntilAsync(() => logs.Events(1105).Count == 1, TimeSpan.FromMilliseconds(50));
             Assert.That(logs.Events(1105)[0].Value("Attempts"), Is.EqualTo("1"));
-            time.Armed = true;
+            time.Arm();
             await fake.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, TimeSpan.FromMilliseconds(10));
             var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
             Assert.That(failure.Message, Is.EqualTo("Gave up on pipe: watching the connection failed."));
@@ -205,16 +206,12 @@ public class ResilientHeartbeatTests
         }
     }
 
-    /// <summary><c>inner</c>, except that once <see cref="Armed"/> every new timer due within <c>failUpTo</c> fails.</summary>
+    /// <summary><c>inner</c>, except that once <see cref="Arm"/> has been called every new timer due within <c>failUpTo</c> fails.</summary>
     private sealed class FailingTimersTimeProvider(TimeProvider inner, TimeSpan failUpTo) : TimeProvider
     {
         private volatile bool _armed;
 
-        public bool Armed
-        {
-            get => _armed;
-            set => _armed = value;
-        }
+        public void Arm() => _armed = true;
 
         public override long TimestampFrequency => inner.TimestampFrequency;
 

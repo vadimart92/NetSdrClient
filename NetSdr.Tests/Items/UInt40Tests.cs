@@ -35,5 +35,5 @@ public class UInt40Tests
 
     [Test]
     public void FromValueAbove40Bits_Throws() =>
-        Assert.That(() => { UInt40 v = UInt40.MaxValue + 1; }, Throws.TypeOf<OverflowException>());
+        Assert.That(() => (UInt40)(UInt40.MaxValue + 1UL), Throws.TypeOf<OverflowException>());
 }

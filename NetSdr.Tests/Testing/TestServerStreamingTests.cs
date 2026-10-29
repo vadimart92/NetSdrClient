@@ -697,7 +697,7 @@ public class TestServerStreamingTests
         // ephemeral UDP ports one after another, so asking for port 0 can walk into a TCP-reserved block again and
         // again. A random port per attempt, and a generous number of attempts, makes that practically impossible.
         const int maxAttempts = 50;
-        for (var attempt = 1; ; attempt++)
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             int port = Random.Shared.Next(49152, 65536);
             var received = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -177,7 +177,7 @@ public sealed class VegaEmulator : IAsyncDisposable
             ? Server.SendUnsolicitedAsync(BoardTemperatureV1.FromCelsius(sensor, celsius))
             : Server.SendUnsolicitedAsync(BoardTemperatureV2.FromCelsius(sensor, celsius, status: 0));
 
-    public Task SendOverloadAsync(byte channel, OverloadFlags flags) =>
+    public Task SendOverloadAsync(byte channel, OverloadedStages flags) =>
         Server.SendUnsolicitedAsync(new OverloadEvent(channel, flags));
 
     public async ValueTask DisposeAsync()

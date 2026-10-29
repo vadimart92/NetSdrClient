@@ -137,7 +137,7 @@ public class ControlClientLoggingTests
 
         var published = logs.Events(1009).Sole();
         Assert.That((published.Level, published.Value("Reason")), Is.EqualTo((LogLevel.Debug, "Unsolicited")));
-        Assert.That(logs.Events(1003).Last().Value("Item"), Is.EqualTo("raw"));
+        Assert.That(logs.Events(1003)[^1].Value("Item"), Is.EqualTo("raw"));
     }
 
     [Test]

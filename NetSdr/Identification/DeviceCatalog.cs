@@ -28,6 +28,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     private readonly NetSdrControlClientOptions? _clientOptions;
     private readonly ILogger _logger;
     private readonly List<Registration> _registrations = new();
+    private readonly List<string> _names = new();
     private Func<INetSdrControlClient, DeviceIdentity, CancellationToken, Task<TDevice>>? _default;
 
     /// <param name="identification">
@@ -58,7 +59,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     }
 
     /// <summary>The names of the registrations, in the order they were registered.</summary>
-    public IReadOnlyList<string> Registrations => _registrations.Select(r => r.Name).ToArray();
+    public IReadOnlyList<string> Registrations => _names.AsReadOnly();
 
     /// <summary>Whether a default was set with <c>Default</c>.</summary>
     public bool HasDefault => _default is not null;
@@ -95,6 +96,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
         ArgumentNullException.ThrowIfNull(createAsync);
 
         _registrations.Add(new Registration(name, matches, createAsync));
+        _names.Add(name);
         return this;
     }
 
@@ -187,14 +189,13 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
     {
         DeviceIdentity identity = await DeviceIdentity.ReadAsync(client, _identification, ct).ConfigureAwait(false);
 
-        foreach (Registration registration in _registrations)
+        int match = _registrations.FindIndex(r => r.Matches(identity));
+        if (match >= 0)
         {
-            if (registration.Matches(identity))
-            {
-                IdentificationLog.DeviceMatched(_logger, identity.Name, identity.Model, registration.Name);
-                TDevice? device = await registration.CreateAsync(client, identity, ct).ConfigureAwait(false);
-                return device ?? throw FactoryReturnedNull($"The factory of registration \"{registration.Name}\"");
-            }
+            Registration registration = _registrations[match];
+            IdentificationLog.DeviceMatched(_logger, identity.Name, identity.Model, registration.Name);
+            TDevice? device = await registration.CreateAsync(client, identity, ct).ConfigureAwait(false);
+            return device ?? throw FactoryReturnedNull($"The factory of registration \"{registration.Name}\"");
         }
 
         if (_default is { } createDefault)
@@ -204,7 +205,7 @@ public sealed class DeviceCatalog<TDevice> where TDevice : class
             return device ?? throw FactoryReturnedNull("The default factory");
         }
 
-        IReadOnlyList<string> candidates = Registrations;
+        IReadOnlyList<string> candidates = [.. _names];
         if (_logger.IsEnabled(LogLevel.Warning))
         {
             IdentificationLog.DeviceNotRecognized(

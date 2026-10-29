@@ -1157,16 +1157,16 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
 
     /// <summary>
     /// Resolves an exchange exactly once: the state changes under <see cref="_sync"/>, then Wire is released and
-    /// <see cref="Exchange.Late"/> completes outside it. Returns <see langword="true"/> only for the call that resolved it.
+    /// <see cref="Exchange.Late"/> completes outside it. A call after the first does nothing.
     /// </summary>
-    private bool Resolve(Exchange exchange, Resolution resolution)
+    private void Resolve(Exchange exchange, Resolution resolution)
     {
         ITimer? deadline;
         lock (_sync)
         {
             if (exchange.State == ExchangeState.Resolved)
             {
-                return false;
+                return;
             }
 
             exchange.State = ExchangeState.Resolved;
@@ -1189,8 +1189,6 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         {
             exchange.Late.TrySetResult(resolution);
         }
-
-        return true;
     }
 
     /// <summary>Spec 6.5 step 5 and spec 8: whether a failed attempt gets another one.</summary>
@@ -1242,6 +1240,6 @@ public sealed partial class ResilientControlClient : INetSdrControlClient
         }
 
         Task completion = link.Client.Completion;
-        return completion.IsFaulted ? completion.Exception!.InnerException : null;
+        return completion.IsFaulted ? completion.Exception.InnerException : null;
     }
 }

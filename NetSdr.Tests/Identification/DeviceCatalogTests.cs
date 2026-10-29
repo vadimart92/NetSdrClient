@@ -164,7 +164,7 @@ public class DeviceCatalogTests
         using var cts = new CancellationTokenSource();
         var connect = catalog.ConnectAsync(At(server), cts.Token);
         await Eventually.ThatAsync(() => server.Received.Count > 0);
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => connect.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         await Loopback.AssertServerFreeAsync(server);
     }
@@ -199,7 +199,7 @@ public class DeviceCatalogTests
         using var cts = new CancellationTokenSource();
         var connect = catalog.ConnectAsync(At(server), cts.Token);
         await factoryStarted.Task.WaitAsync(Limits.Test);
-        cts.Cancel();
+        await cts.CancelAsync();
         await Assert.ThatAsync(() => connect.WaitAsync(Limits.Test), Throws.InstanceOf<OperationCanceledException>());
         await Loopback.AssertServerFreeAsync(server);
     }

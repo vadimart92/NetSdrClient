@@ -65,7 +65,7 @@ public class ResilientRecoveryTests
     public async Task Escalation_SoftAfterThree_BootWait_BackoffRestarts()
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
-        var (client, device, connector) = await Start(logs, time, rebooter, new EscalatingRecoveryPolicy { MaxRebootsPerLoss = 1 });   // Ruling C3
+        var (client, _, connector) = await Start(logs, time, rebooter, new EscalatingRecoveryPolicy { MaxRebootsPerLoss = 1 });   // Ruling C3
         await using (client)
         {
             DateTimeOffset lost = time.GetUtcNow();
@@ -108,7 +108,7 @@ public class ResilientRecoveryTests
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         RebootKind? seen = null;
-        var (client, _, connector) = await Start(logs, time, rebooter, back: () => rebooter.Calls.Count > 0,
+        var (client, _, _) = await Start(logs, time, rebooter, back: () => rebooter.Calls.Count > 0,
             restore: (ctx, _) => { seen = ctx.AfterReboot; return Task.CompletedTask; });
         await using (client)
         {
@@ -159,7 +159,7 @@ public class ResilientRecoveryTests
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         rebooter.OnReboot = (_, _, _) => new TaskCompletionSource().Task;            // never completes, ignores ct
-        var (client, _, connector) = await Start(logs, time, rebooter, configure: o => o.RebootTimeout = TimeSpan.FromMilliseconds(500));
+        var (client, _, _) = await Start(logs, time, rebooter, configure: o => o.RebootTimeout = TimeSpan.FromMilliseconds(500));
         await time.AdvanceUntilAsync(() => logs.Events(1115).Count == 1, Step);
         Assert.That(logs.Events(1115)[0].Exception, Is.TypeOf<TimeoutException>());
         await time.AdvanceUntilAsync(() => rebooter.Calls.Count == 2, Step);        // the hard reboot hangs now
@@ -175,11 +175,11 @@ public class ResilientRecoveryTests
     [Test]
     public Task BootTimeAboveInt32Milliseconds_TreatedAsFailure() => BootTimeIsFailureAsync(int.MaxValue + 1L);
 
-    private async Task BootTimeIsFailureAsync(long milliseconds)
+    private static async Task BootTimeIsFailureAsync(long milliseconds)
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         rebooter.BootTimeOf = _ => TimeSpan.FromMilliseconds(milliseconds);
-        var (client, _, connector) = await Start(logs, time, rebooter);
+        var (client, _, _) = await Start(logs, time, rebooter);
         await using (client)
         {
             await time.AdvanceUntilAsync(() => rebooter.Calls.Count == 2 && logs.Events(1115).Count == 2, Step);   // Ruling C6
@@ -211,7 +211,7 @@ public class ResilientRecoveryTests
     {
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         var policy = new RecordingPolicy { Decide = c => c.FailedAttempts == 2 ? RecoveryAction.GiveUp : RecoveryAction.Continue };
-        var (client, _, connector) = await Start(logs, time, rebooter, policy);
+        var (client, _, _) = await Start(logs, time, rebooter, policy);
         await time.AdvanceUntilAsync(() => logs.Events(1106).Count == 1, Step);
         var failure = await Assert.ThrowsAsync<IOException>(() => client.Completion.WaitAsync(Limits.Test));
         Assert.That(failure.InnerException, Is.TypeOf<SocketException>());
@@ -228,7 +228,7 @@ public class ResilientRecoveryTests
         // Connect: the seam refuses. Downtime grows with fake time, the counters start at zero.
         var (logs, time, rebooter) = (new FakeLoggerFactory(), new FakeTimeProvider(), new FakeRebooter());
         var policy = new RecordingPolicy();
-        var (client, _, connector) = await Start(logs, time, rebooter, policy);
+        var (client, _, _) = await Start(logs, time, rebooter, policy);
         await using (client)
         {
             await time.AdvanceUntilAsync(() => policy.Calls.Count >= 4, Step);

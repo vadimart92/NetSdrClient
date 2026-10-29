@@ -360,9 +360,6 @@ public class ControlClientProtocolTests
     }
 
     /// <summary>A key that cannot fit in a frame.</summary>
-    [InlineArray(9000)]
-    private struct HugeKey
-    {
-        private byte _element;
-    }
+    [StructLayout(LayoutKind.Sequential, Size = 9000)]
+    private struct HugeKey;
 }
