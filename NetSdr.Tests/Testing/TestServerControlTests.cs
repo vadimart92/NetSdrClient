@@ -247,7 +247,7 @@ public class TestServerControlTests
     {
         var (server, client) = await StartAsync(s => s.OnRequest<FrequencyRanges>(r =>
             r.Type == RequestType.GetRange
-                ? ControlReply.Bytes(Hex.Parse("00 01 A0 86 01 00 00 80 CC 06 02 00 00 00 00 00 00"))
+                ? ControlReply.Item(new FrequencyRanges(r.Key<byte>(), [new FrequencyRange(100_000, 34_000_000, 0)]))
                 : ControlReply.Nak));
         await using var _ = server;
         await using var __ = client;

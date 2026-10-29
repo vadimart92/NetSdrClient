@@ -5,8 +5,7 @@ namespace NetSdr.Items;
 /// <summary>
 /// Receiver frequency ranges, answered by the device to a range request for item 0x0020.
 /// The payload is <c>[channel][count]</c> followed by <c>count</c> records of three <see cref="UInt40"/>
-/// (minimum, maximum, VCO). The item is read-only: <c>Write</c> is not overridden, so writing it throws
-/// <see cref="ArgumentException"/>.
+/// (minimum, maximum, VCO). Written too, so an emulated device can answer the range request with it.
 /// </summary>
 public readonly struct FrequencyRanges : IControlItem<FrequencyRanges>
 {
@@ -29,6 +28,27 @@ public readonly struct FrequencyRanges : IControlItem<FrequencyRanges>
 
     /// <summary>The bands the channel covers; empty for <c>default</c>.</summary>
     public FrequencyRange[] Ranges => _ranges ?? [];
+
+    /// <summary>The bytes <see cref="Write"/> produces: <c>2 + count * 15</c>.</summary>
+    public static int GetSize(in FrequencyRanges item) => HeaderSize + item.Ranges.Length * RecordSize;
+
+    /// <summary>Writes the channel, the number of ranges and each range as three <see cref="UInt40"/>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">There are more than 255 ranges: the count is one byte.</exception>
+    /// <exception cref="OverflowException">A frequency is above <see cref="UInt40.MaxValue"/>.</exception>
+    public static void Write(in FrequencyRanges item, Span<byte> destination)
+    {
+        FrequencyRange[] ranges = item.Ranges;
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(ranges.Length, byte.MaxValue, nameof(item));
+        destination[0] = item.Channel;
+        destination[1] = (byte)ranges.Length;
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            Span<byte> record = destination.Slice(HeaderSize + i * RecordSize, RecordSize);
+            MemoryMarshal.Write(record, new UInt40(ranges[i].Min));
+            MemoryMarshal.Write(record[5..], new UInt40(ranges[i].Max));
+            MemoryMarshal.Write(record[10..], new UInt40(ranges[i].Vco));
+        }
+    }
 
     /// <summary>Reads the channel and the announced number of ranges; trailing bytes are ignored.</summary>
     /// <exception cref="ArgumentException">The payload is shorter than <c>2 + count * 15</c> bytes.</exception>

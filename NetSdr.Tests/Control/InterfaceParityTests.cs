@@ -64,7 +64,7 @@ public class InterfaceParityTests
             Assert.That(
                 () => { _ = client.SendAsync(RequestType.Data0, 0x7000, ReadOnlyMemory<byte>.Empty); },
                 Throws.TypeOf<ArgumentOutOfRangeException>());
-            Assert.That(() => { _ = client.SetAsync(new StatusCodes(new[] { StatusCodes.Idle })); }, Throws.TypeOf<ArgumentException>());
+            Assert.That(() => { _ = client.SetAsync(new TargetName("Вега")); }, Throws.TypeOf<ArgumentException>());
             await Task.Delay(100);
             Assert.That(server.Received, Has.None.Matches<ControlRequest>(r => r.Code == 0x7000 || r.Type == RequestType.Set));
         }
