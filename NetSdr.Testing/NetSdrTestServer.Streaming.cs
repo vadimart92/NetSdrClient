@@ -85,7 +85,7 @@ public sealed partial class NetSdrTestServer
     /// <summary>Stops the stream and returns when it has ended; does nothing when none runs.</summary>
     public async Task StopStreamingAsync()
     {
-        await _streamGate.WaitAsync().ConfigureAwait(false);
+        await _streamGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             await EndStreamAsync().ConfigureAwait(false);
@@ -96,9 +96,13 @@ public sealed partial class NetSdrTestServer
         }
     }
 
-    private static int DefaultPayloadSize(SampleFormat format, bool small) => format == SampleFormat.Int24
-        ? (small ? 384 : 1440)
-        : (small ? 512 : 1024);
+    private static int DefaultPayloadSize(SampleFormat format, bool small) => (format, small) switch
+    {
+        (SampleFormat.Int24, true) => 384,
+        (SampleFormat.Int24, false) => 1440,
+        (_, true) => 512,
+        _ => 1024,
+    };
 
     /// <summary>Whether a request is a Set of the receiver state that <see cref="AutoStream"/> acts on.</summary>
     private bool IsAutoStreamRequest(ControlRequest request) =>
@@ -154,7 +158,7 @@ public sealed partial class NetSdrTestServer
     /// <param name="owner">The client whose command started it, or <see langword="null"/> when started by hand.</param>
     private async Task StartStreamAsync(StreamPlan plan, Connection? owner)
     {
-        await _streamGate.WaitAsync().ConfigureAwait(false);
+        await _streamGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             lock (_sync)
@@ -179,7 +183,7 @@ public sealed partial class NetSdrTestServer
 
             var cancel = new CancellationTokenSource();
             var run = new StreamRun(owner, cancel);
-            run.Completion = Task.Run(() => RunStreamAsync(stream, cancel.Token));
+            run.Completion = Task.Run(() => RunStreamAsync(stream, cancel.Token), CancellationToken.None);
             _stream = run;
         }
         finally
@@ -191,7 +195,7 @@ public sealed partial class NetSdrTestServer
     /// <summary>Ends the stream that <paramref name="client"/> started, if that is the one running. Called when the client leaves.</summary>
     private async Task EndStreamOfAsync(Connection client)
     {
-        await _streamGate.WaitAsync().ConfigureAwait(false);
+        await _streamGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             if (ReferenceEquals(_stream?.Owner, client))

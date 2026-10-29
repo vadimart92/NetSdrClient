@@ -312,8 +312,21 @@ public class ResilientRestoreTests
         var logs = new FakeLoggerFactory();
         int calls = 0;
         var (server, client) = await Resilient.StartAsync(Restoring(logs, (ctx, ct) =>
-            Interlocked.Increment(ref calls) > 1 ? Task.CompletedTask
-            : kind == "throw" ? throw new ApplicationException("not async") : (Task)null!));
+        {
+            // Only the first attempt misbehaves, so the next one restores the connection. The lambda is not async, so
+            // the throw happens before any Task exists.
+            if (Interlocked.Increment(ref calls) > 1)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (kind == "throw")
+            {
+                throw new ApplicationException("not async");
+            }
+
+            return null!;
+        }));
         await using (server)
         await using (client)
         {

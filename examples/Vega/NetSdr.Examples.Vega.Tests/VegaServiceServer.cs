@@ -52,7 +52,7 @@ public sealed class VegaServiceServer(Func<ReadOnlyMemory<byte>, ReadOnlyMemory<
             listener.Start();
             _listener = listener;
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener));
+            _acceptLoop = Task.Run(() => AcceptLoopAsync(listener), CancellationToken.None);
         }
 
         return Task.CompletedTask;
@@ -63,7 +63,7 @@ public sealed class VegaServiceServer(Func<ReadOnlyMemory<byte>, ReadOnlyMemory<
     {
         lock (_sync)
         {
-            _disposal ??= Task.Run(DisposeCoreAsync);
+            _disposal ??= Task.Run(DisposeCoreAsync, CancellationToken.None);
             return new ValueTask(_disposal);
         }
     }
@@ -106,7 +106,7 @@ public sealed class VegaServiceServer(Func<ReadOnlyMemory<byte>, ReadOnlyMemory<
                 lock (_sync)
                 {
                     _connections.RemoveAll(task => task.IsCompleted);
-                    _connections.Add(Task.Run(() => ServeAsync(socket, token)));
+                    _connections.Add(Task.Run(() => ServeAsync(socket, token), CancellationToken.None));
                 }
             }
         }

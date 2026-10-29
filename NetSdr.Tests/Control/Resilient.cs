@@ -134,7 +134,7 @@ internal sealed class PipeConnector(TimeProvider? time = null)
             await before(attempt, ct);
         var device = PipeDevice.Attach(inner);
         if (Serve is { } serve)
-            _ = Task.Run(() => serve(device));
+            _ = Task.Run(() => serve(device), CancellationToken.None);
         _devices.Writer.TryWrite(device);
     }
 

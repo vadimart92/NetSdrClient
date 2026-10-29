@@ -33,7 +33,7 @@ internal sealed class ServiceConnection : IDisposable
     /// <summary>Writes the bytes whole; writes from several tasks do not interleave.</summary>
     public async Task WriteAsync(ReadOnlyMemory<byte> bytes)
     {
-        await _writeLock.WaitAsync().ConfigureAwait(false);
+        await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             // Never cancelled: an interrupted write would leave half a line on the wire. Closing the stream ends it.

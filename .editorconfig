@@ -146,23 +146,39 @@ dotnet_naming_rule.members_pascal.severity = warning
 dotnet_naming_symbols.members.applicable_kinds = property,method,event
 
 # Analyzer rules that contradict deliberate choices of this codebase
-# S3236: ThrowIfNull(options.LoggerFactory, nameof(options)) names the argument the caller passed, not the member.
+# S3236: ParamName always names the method's parameter (nameof(options), nameof(source)), not the checked member or
+# local (options.LoggerFactory, source.Length).
 dotnet_diagnostic.S3236.severity = none
-# S8949: Task.Run, waits and writes take no token where they must not be cancelled: a write never stops mid-frame.
-dotnet_diagnostic.S8949.severity = none
-# RCS1075: every catch that swallows on shutdown says why in a comment; slopwatch (SW003) tracks those blocks.
-dotnet_diagnostic.RCS1075.severity = none
-# S3358: a chained ternary picks one message out of several and reads like a table.
-dotnet_diagnostic.S3358.severity = none
-# RCS1194: the exceptions carry protocol data (the NAKed item, the identity); the parameterless constructors would lose it.
+# RCS1075: shown in the IDE only. The catch-all blocks swallow on shutdown, keep a never-throws contract, or end a
+# fire-and-forget test device, and each says why in a comment; slopwatch (SW003) tracks them too.
+dotnet_diagnostic.RCS1075.severity = suggestion
+
+# The sections below turn a rule off only in the files where it is wrong, so new code keeps it.
+
+# RCS1194: these exceptions take the data they report (the NAKed item, the identity); the standard (), (message) and
+# (message, inner) constructors would let them be thrown without it.
+[{NetSdr/NetSdrException.cs,NetSdr/NetSdrNakException.cs,NetSdr/Identification/DeviceNotRecognizedException.cs,examples/Vega/NetSdr.Examples.Vega/VegaException.cs}]
 dotnet_diagnostic.RCS1194.severity = none
-# S3871: private exceptions end an attempt series inside one type and never leave it.
+
+# S3871: the private exceptions here end an attempt series inside ResilientControlClient; each is caught or unwrapped
+# before anything reaches the caller, and a public type would put internal control flow into the public API.
+[NetSdr/Control/{ResilientControlClient.Recovery.cs,RestoreSession.cs}]
 dotnet_diagnostic.S3871.severity = none
-# S2930: a CancellationTokenSource without a timer holds nothing to release, and its token is still read after shutdown.
+
+# S2930: the _lifetime CancellationTokenSource of each control client has no timer and no parent, so it holds nothing to
+# release, and its token is still read and cancelled after shutdown.
+[NetSdr/Control/{NetSdrControlClient.cs,ResilientControlClient.cs}]
 dotnet_diagnostic.S2930.severity = none
-# S2743: fires on the static abstract members of IControlItem<TSelf>, which are not fields.
+
+# S2743: the static abstract members of IControlItem<TSelf> are not fields; each item struct supplies its own value.
+[NetSdr/Items/IControlItem.cs]
 dotnet_diagnostic.S2743.severity = none
+
 # S3877: the static constructor of FrameHeader refuses a big-endian platform on purpose.
+[NetSdr/Framing/FrameHeader.cs]
 dotnet_diagnostic.S3877.severity = none
-# S1215: a test forces a collection to surface unobserved task exceptions.
+
+# S1215: UnobservedTaskException is raised only when a faulted task is finalized, so a test that asserts none were
+# raised must force a collection.
+[NetSdr.Tests/**.cs]
 dotnet_diagnostic.S1215.severity = none

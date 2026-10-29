@@ -331,7 +331,7 @@ public sealed class NetSdrControlClient : INetSdrControlClient
             _localEndPoint = localEndPoint;
             _remoteEndPoint = remoteEndPoint;
             _state = State.Connected;
-            _readLoop = Task.Run(() => ReadLoopAsync(input));
+            _readLoop = Task.Run(() => ReadLoopAsync(input), CancellationToken.None);
         }
 
         ControlClientLog.Connected(
