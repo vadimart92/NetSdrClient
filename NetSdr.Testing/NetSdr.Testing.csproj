@@ -1,9 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <Version>$(NetSdrPackageVersion)</Version>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\NetSdr\NetSdr.csproj" />
   </ItemGroup>
